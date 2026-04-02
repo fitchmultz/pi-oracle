@@ -32,6 +32,12 @@ An oracle job:
 5. persists the response and any artifacts under `/tmp/oracle-<job-id>/`
 6. wakes the originating `pi` session on completion
 
+## Example
+
+```text
+/oracle Invoke the Oracle to have it generate a thorough code review of the current pending changes. Include all modified files, and adjacent files, in the archive. Use the Pro Model with Extended effort.
+```
+
 ## Why this exists
 
 The goal is to get strong ChatGPT web-model answers without:
