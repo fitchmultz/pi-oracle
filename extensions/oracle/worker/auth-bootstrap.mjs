@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, chmod, lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
@@ -49,6 +49,36 @@ function leaseKey(kind, key) {
   return `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
 }
 
+async function readLockProcessPid(path) {
+  const metadataPath = join(path, "metadata.json");
+  if (!existsSync(metadataPath)) return undefined;
+  try {
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    return typeof metadata?.processPid === "number" && Number.isInteger(metadata.processPid) && metadata.processPid > 0
+      ? metadata.processPid
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
+    return true;
+  }
+}
+
+async function maybeReclaimStaleLock(path) {
+  const processPid = await readLockProcessPid(path);
+  if (!processPid || isProcessAlive(processPid)) return false;
+  await rm(path, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
+
 async function acquireLock(kind, key, metadata, timeoutMs = 30_000) {
   const path = join(LOCKS_DIR, leaseKey(kind, key));
   const deadline = Date.now() + timeoutMs;
@@ -62,6 +92,7 @@ async function acquireLock(kind, key, metadata, timeoutMs = 30_000) {
       return path;
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+      if (await maybeReclaimStaleLock(path)) continue;
     }
     await sleep(200);
   }

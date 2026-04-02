@@ -14,7 +14,7 @@ import {
   updateJob,
   withJobPhase,
 } from "../extensions/oracle/lib/jobs.ts";
-import { withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
+import { acquireLock, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
 import { startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { acquireConversationLease, acquireRuntimeLease, releaseConversationLease, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
 
@@ -188,6 +188,18 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   await cleanupJob(jobId);
 }
 
+async function testStaleLockRecovery(): Promise<void> {
+  await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
+  await acquireLock("reconcile", "global", { processPid: 999_999_999, source: "oracle-sanity-stale-lock" });
+
+  let entered = false;
+  await withGlobalReconcileLock({ processPid: process.pid, source: "oracle-sanity-reclaim" }, async () => {
+    entered = true;
+  });
+
+  assert(entered, "expected stale reconcile lock to be reclaimed");
+}
+
 async function testPollerHostSafety(): Promise<void> {
   const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
   const pi: any = { sendMessage: () => {} };
@@ -226,6 +238,7 @@ async function main() {
   await testRuntimeConversationLeases(config);
   await testNotificationClaims(config);
   await testPollerNotification(config);
+  await testStaleLockRecovery();
   await testPollerHostSafety();
   await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
   console.log("oracle sanity checks passed");

@@ -53,6 +53,36 @@ async function writeMetadata(path: string, metadata: unknown): Promise<void> {
   await writeFile(join(path, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
+function readLockProcessPid(path: string): number | undefined {
+  const metadataPath = join(path, "metadata.json");
+  if (!existsSync(metadataPath)) return undefined;
+  try {
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as { processPid?: unknown };
+    return typeof metadata.processPid === "number" && Number.isInteger(metadata.processPid) && metadata.processPid > 0
+      ? metadata.processPid
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
+    return true;
+  }
+}
+
+async function maybeReclaimStaleLock(path: string): Promise<boolean> {
+  const processPid = readLockProcessPid(path);
+  if (!processPid || isProcessAlive(processPid)) return false;
+  await rm(path, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
+
 export async function acquireLock(
   kind: string,
   key: string,
@@ -70,6 +100,7 @@ export async function acquireLock(
       return { path };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+      if (await maybeReclaimStaleLock(path)) continue;
     }
     await sleep(POLL_MS);
   }

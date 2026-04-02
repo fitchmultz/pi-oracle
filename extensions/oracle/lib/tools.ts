@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { withGlobalReconcileLock, withLock } from "./locks.js";
+import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import { loadOracleConfig, EFFORTS, MODEL_FAMILIES, type OracleEffort, type OracleModelFamily } from "./config.js";
 import {
   cancelOracleJob,
@@ -37,9 +37,11 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
   }),
-  modelFamily: Type.Optional(StringEnum(MODEL_FAMILIES)),
-  effort: Type.Optional(StringEnum(EFFORTS)),
-  autoSwitchToThinking: Type.Optional(Type.Boolean()),
+  modelFamily: Type.Optional(StringEnum(MODEL_FAMILIES, { description: "ChatGPT model family: instant, thinking, or pro." })),
+  effort: Type.Optional(StringEnum(EFFORTS, { description: "Reasoning effort. Use only values supported by the chosen model family." })),
+  autoSwitchToThinking: Type.Optional(
+    Type.Boolean({ description: "Only valid when modelFamily is instant. Omit for thinking and pro." }),
+  ),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
 });
 
@@ -209,6 +211,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       "Gather context before calling oracle_submit.",
       "Always include a narrowly scoped archive of exact relevant files/directories.",
       "Stop after dispatching oracle_submit; do not continue the task while the oracle job is running.",
+      "If oracle_submit fails, stop and report the error instead of retrying automatically.",
+      "Only use autoSwitchToThinking with modelFamily=instant.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -224,9 +228,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
 
       validateSubmissionOptions(params, modelFamily, effort, autoSwitchToThinking);
-      await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
-        await reconcileStaleOracleJobs();
-      });
+      try {
+        await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
+          await reconcileStaleOracleJobs();
+        });
+      } catch (error) {
+        if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
+      }
 
       const jobId = randomUUID();
       const tempArchivePath = join(tmpdir(), `oracle-archive-${jobId}.tar.zst`);

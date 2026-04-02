@@ -6,7 +6,7 @@ import { loadOracleConfig } from "./config.js";
 import { buildOracleDispatchPrompt } from "./instructions.js";
 import { cancelOracleJob, isActiveOracleJob, listJobsForCwd, readJob, reconcileStaleOracleJobs } from "./jobs.js";
 import { refreshOracleStatus } from "./poller.js";
-import { withGlobalReconcileLock } from "./locks.js";
+import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
 
 function summarizeJob(jobId: string): string {
@@ -45,9 +45,13 @@ function readScopedJob(jobId: string, cwd: string) {
 
 async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<string> {
   const config = loadOracleConfig(cwd);
-  await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_auth", cwd }, async () => {
-    await reconcileStaleOracleJobs();
-  });
+  try {
+    await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_auth", cwd }, async () => {
+      await reconcileStaleOracleJobs();
+    });
+  } catch (error) {
+    if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
+  }
 
   return await new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [authWorkerPath, JSON.stringify(config)], {

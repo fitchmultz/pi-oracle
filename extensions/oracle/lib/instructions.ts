@@ -16,6 +16,8 @@ export function buildOracleDispatchPrompt(request: string): string {
     "- Always include an archive. Do not submit without context files.",
     "- Keep the archive narrowly scoped and relevant.",
     "- Prefer the configured default model/effort unless the task clearly needs something else.",
+    "- Only use autoSwitchToThinking with the instant model family.",
+    "- If oracle_submit fails, stop and report the error. Do not retry automatically.",
     "- After oracle_submit returns, end your turn. Do not keep working while the oracle runs.",
     "",
     "User request:",
