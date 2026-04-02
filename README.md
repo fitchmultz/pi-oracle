@@ -73,13 +73,13 @@ Not promised yet:
 
 ## Install
 
-Planned npm install path once published:
+npm:
 
 ```bash
 pi install npm:pi-oracle
 ```
 
-Current GitHub install path:
+GitHub:
 
 ```bash
 pi install https://github.com/fitchmultz/pi-oracle
