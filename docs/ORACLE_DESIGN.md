@@ -1,0 +1,519 @@
+# pi-oracle design
+
+Status: isolated-profile concurrency architecture implemented in code; major live validation now passes, but a few non-blocking hardening items remain.
+Date: 2026-04-02
+
+Companion doc:
+- `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
+
+## Goal
+
+Create a `pi` extension that lets the user or agent consult ChatGPT.com through the web product instead of the API, with:
+
+- manual invocation via `/oracle ...`
+- automatic invocation by the agent in rare high-difficulty cases
+- mandatory project-context archive upload (`.tar.zst`)
+- long-running execution in the background
+- wake-the-agent behavior when the oracle response is ready
+- persisted responses and artifacts under `/tmp`
+- optional same-thread follow-up questions later
+
+## Architecture decision
+
+The production architecture is now:
+
+- use `agent-browser`
+- do **not** automate the user’s real Chrome in production
+- maintain one authenticated **seed profile** via `/oracle-auth`
+- clone that seed into a **per-job runtime profile** for each oracle run
+- launch each job in its own **runtime browser session**
+- persist same-thread continuity by saved `chatUrl`, not by keeping tabs or browsers alive
+- allow parallel jobs only when they do not target the same ChatGPT conversation
+
+## Rejected production path
+
+The old real-Chrome/CDP architecture is rejected for production.
+
+Why:
+
+- `agent-browser tab new <url>` opens a new tab and selects it
+- `agent-browser tab <index>` switches the active tab
+- upstream `agent-browser` source calls `Page.bringToFront` during tab switching
+- this stole focus in the user’s real environment and disrupted typing
+
+That violates a hard requirement.
+
+Real-Chrome automation was useful for investigation and earlier smoke tests, but it is no longer the target architecture.
+
+## Current extension surface
+
+### Commands
+
+- `/oracle <request>`
+  - asks the agent to gather context and dispatch an oracle job
+- `/oracle-auth`
+  - syncs ChatGPT cookies from the user’s real Chrome into the isolated oracle profile and verifies them there
+- `/oracle-status [job-id]`
+  - shows job status
+- `/oracle-cancel [job-id]`
+  - cancels an active job
+- `/oracle-clean <job-id|all>`
+  - removes temp files for non-active jobs
+
+### Tools
+
+- `oracle_submit`
+  - low-level agent-facing dispatch tool
+  - creates archive and launches a detached worker
+  - supports optional `followUpJobId` to continue the same ChatGPT thread by persisted URL
+- `oracle_read`
+  - reads job status and outputs
+- `oracle_cancel`
+  - cancels an active job
+
+## High-level flow
+
+### `/oracle ...`
+
+`/oracle <request>` should not directly drive ChatGPT.
+
+Instead it instructs the agent to:
+
+1. understand the task
+2. gather repo context
+3. choose exact archive inputs
+4. craft the oracle prompt
+5. call `oracle_submit`
+6. stop and wait for completion wake-up
+
+### `/oracle-auth`
+
+Auth bootstrap flow:
+
+1. load oracle config
+2. acquire the global auth-maintenance lock
+3. read ChatGPT cookies directly from the user’s real Chrome cookie store in read-only mode
+   - configurable source profile / cookie DB path
+   - no launch or mutation of the real Chrome profile
+4. validate that `browser.authSeedProfileDir` is an absolute safe path and not inside the real Chrome user-data tree
+5. create a staged seed-profile path next to the target seed profile
+6. launch the isolated auth browser headed with:
+   - dedicated auth `--session`
+   - dedicated staged seed `--profile`
+   - configured executable path / user agent / launch args if set
+7. clear isolated browser cookies and seed the staged profile with imported ChatGPT cookies
+8. open ChatGPT in the isolated browser
+9. verify auth with `/backend-api/me` plus ChatGPT UI readiness checks
+10. on success, close the isolated browser so Chrome flushes profile state cleanly
+11. atomically swap the staged profile into `browser.authSeedProfileDir`, keeping `*.prev` as rollback
+12. write a seed-generation marker used by future runtime clones
+13. if ChatGPT presents a challenge page, leave the staged auth browser/profile open for the user to solve and reuse
+
+This keeps production oracle jobs off the user’s real Chrome while using the user’s existing authenticated ChatGPT cookies as the bootstrap source.
+
+The authenticated seed profile remains the source of truth for future oracle runtimes.
+
+### `oracle_submit`
+
+1. validate config and model options
+2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`
+3. build the archive first into a temporary path
+4. allocate a unique runtime:
+   - `runtimeId`
+   - `runtimeSessionName`
+   - `runtimeProfileDir`
+5. acquire admission/lease state:
+   - runtime lease (capacity control)
+   - conversation lease for follow-up jobs
+6. create `/tmp/oracle-<job-id>/...` job state
+7. move the prepared archive into the job directory with a unique filename
+8. spawn a detached worker
+9. return immediately
+10. stop the agent turn until the completion wake-up arrives
+
+### Worker run flow
+
+Per job:
+
+1. clone the authenticated seed profile into the job’s `runtimeProfileDir` under the auth lock
+2. launch a fresh isolated browser with:
+   - the job’s `runtimeSessionName`
+   - the job’s `runtimeProfileDir`
+   - headless by default
+3. open either:
+   - the saved `chatUrl` for follow-up jobs, or
+   - the configured default ChatGPT URL
+4. classify page state before touching the UI
+5. fail fast on:
+   - login required
+   - challenge/verification page
+   - transient outage after one retry
+6. configure model family / effort
+7. upload archive
+8. wait for upload confirmation scoped to the active composer
+9. fill prompt
+10. send
+11. wait for a stable conversation URL and persist `chatUrl` / `conversationId`
+12. wait for completion anchored to the current turn only
+13. persist plain-text response
+14. download any response-local artifacts directly into the job artifact directory
+15. close the isolated browser session and delete the runtime profile in `finally`
+
+## Persistence model
+
+### Default auth persistence
+
+Default and recommended:
+
+- auth seed via `--profile <authSeedProfileDir>` for durable ChatGPT authentication state
+- per-job runtime via unique `--session <runtimeSessionName>` + unique `--profile <runtimeProfileDir>`
+
+Not the default:
+
+- `--session-name`
+- `state save/load` as the primary auth bootstrap path
+
+Reason:
+
+`--profile` is the broadest persistence primitive and preserves full browser profile state such as cookies, localStorage, IndexedDB, service workers, cache, and login sessions. The safe concurrent design is therefore:
+
+- one persistent authenticated seed profile
+- many disposable runtime profile clones derived from that seed
+
+## Config files
+
+Merged config locations:
+
+- global: `~/.pi/agent/extensions/oracle.json`
+- project: `.pi/extensions/oracle.json`
+
+Project config remains restricted to safe overrides only.
+
+Browser/auth settings are global-only because they control local privileged browser state.
+
+### Current config shape
+
+```json
+{
+  "defaults": {
+    "modelFamily": "pro",
+    "effort": "extended",
+    "autoSwitchToThinking": false
+  },
+  "browser": {
+    "sessionPrefix": "oracle",
+    "authSeedProfileDir": "<absolute path to oracle auth seed profile>",
+    "runtimeProfilesDir": "<absolute path to oracle runtime profiles dir>",
+    "maxConcurrentJobs": 2,
+    "cloneStrategy": "apfs-clone",
+    "chatUrl": "https://chatgpt.com/",
+    "authUrl": "https://chatgpt.com/auth/login",
+    "runMode": "headless",
+    "executablePath": "<optional absolute path to Chrome executable>",
+    "userAgent": "<optional real-Chrome UA override>",
+    "args": ["--disable-blink-features=AutomationControlled"]
+  },
+  "auth": {
+    "pollMs": 1000,
+    "bootstrapTimeoutMs": 600000,
+    "chromeProfile": "<optional Chrome profile name>",
+    "chromeCookiePath": "<optional absolute path to Chrome Cookies DB>"
+  },
+  "worker": {
+    "pollMs": 5000,
+    "completionTimeoutMs": 5400000
+  },
+  "poller": {
+    "intervalMs": 5000
+  },
+  "artifacts": {
+    "capture": true
+  }
+}
+```
+
+## Job layout under `/tmp`
+
+```text
+/tmp/oracle-<job-id>/
+  job.json
+  prompt.md
+  context-<job-id>.tar.zst
+  response.md
+  artifacts.json
+  artifacts/
+    ...downloaded files...
+  logs/
+    worker.log
+    ...diagnostic captures on failure...
+```
+
+### `job.json` fields
+
+Important fields include:
+
+- `id`
+- `status`: `preparing | submitted | waiting | complete | failed | cancelled`
+- `phase`: `submitted | cloning_runtime | launching_browser | verifying_auth | configuring_model | uploading_archive | awaiting_response | extracting_response | downloading_artifacts | complete | complete_with_artifact_errors | failed | cancelled`
+- `phaseAt`
+- `createdAt`
+- `submittedAt`
+- `completedAt`
+- `heartbeatAt`
+- `cwd`
+- `projectId`
+- `sessionId`
+- `originSessionFile`
+- `requestSource`
+- `chatModelFamily`
+- `effort`
+- `autoSwitchToThinking`
+- `followUpToJobId`
+- `chatUrl`
+- `conversationId`
+- `responsePath`
+- `responseFormat` (`text/plain`)
+- `artifactPaths`
+- `artifactsManifestPath`
+- `archivePath`
+- `archiveSha256`
+- `archiveDeletedAfterUpload`
+- `notifiedAt`
+- `notifyClaimedAt`
+- `notifyClaimedBy`
+- `artifactFailureCount`
+- `error`
+- `workerPid`
+- `workerNonce`
+- `workerStartedAt`
+- `runtimeId`
+- `runtimeSessionName`
+- `runtimeProfileDir`
+- `seedGeneration`
+- `config`
+
+## Response format
+
+Canonical oracle response format remains:
+
+- `text/plain`
+
+The saved file path is currently `response.md` for continuity with earlier job layouts, but the content contract is normalized plain text for agent consumption.
+
+## ChatGPT page-state classifier
+
+Before upload/send, the worker classifies ChatGPT as one of:
+
+- `authenticated_and_ready`
+- `login_required`
+- `challenge_blocking`
+- `transient_outage_error`
+- `unknown`
+
+Signals used:
+
+- current URL
+- accessibility snapshot
+- body text
+
+### Ready
+
+Require all of:
+
+- ChatGPT origin is correct
+- not on `/auth/*`
+- composer exists
+- `Add files and more` exists
+- model selector / selected model control exists
+- no login/challenge/outage signals
+
+### Login required
+
+Any of:
+
+- URL on `/auth/*`
+- login/provider signals like `Log in`, `Sign up`, `Continue with Google`, etc.
+- logged-out page shape where a composer may exist but required oracle controls do not
+- redirect away from the expected ChatGPT origin
+
+### Challenge blocking
+
+Examples:
+
+- `Just a moment`
+- `Verify you are human`
+- `Cloudflare`
+- captcha / turnstile markers
+- suspicious or unusual activity messages
+
+### Transient outage
+
+Examples:
+
+- `Something went wrong`
+- `A network error occurred`
+- websocket error text
+- `Try again later`
+
+## Artifact strategy
+
+The artifact path is now direct and browser-local.
+
+Use response-local candidate detection exactly as before, but replace browser-download-manager scraping with direct `agent-browser` downloads:
+
+- find artifact candidates only in the current assistant response region
+- for each candidate ref:
+  - call `agent-browser download <ref> <dest>`
+  - write directly into `/tmp/oracle-<job-id>/artifacts`
+  - compute size / sha256 / detected type
+  - append manifest entry
+
+This deliberately avoids:
+
+- `chrome://downloads`
+- downloads-tab ownership logic
+- browser-global download history heuristics
+- focus-sensitive tab hacks
+
+Visible labels are still not trusted as authoritative filenames. They are treated primarily as display metadata.
+
+## Same-thread follow-ups
+
+Same-thread continuity is persisted as data, not runtime browser state.
+
+Approach:
+
+- store `chatUrl` only after the conversation URL stabilizes
+- derive and persist `conversationId` from that URL when possible
+- for a follow-up job, resolve `followUpJobId` to the prior `chatUrl`
+- acquire a conversation lease before launching the follow-up
+- launch a fresh isolated browser using a fresh runtime clone of the auth seed
+- open that URL
+- continue there if authentication and page-state checks pass
+
+Do not keep a browser or tab alive between jobs just to preserve thread continuity.
+Do not allow concurrent jobs to target the same `conversationId`.
+
+## Poller / wake-up model
+
+The extension still uses the same general `pi`-native background completion pattern:
+
+- detached worker writes `/tmp/oracle-*` state
+- poller scans jobs on an interval
+- when a matching job reaches `complete` or `failed`, the extension sends a message with `triggerTurn: true`
+- the agent wakes up and continues from the saved response/artifacts
+
+## What was removed by this pivot
+
+The isolated-profile design deletes or supersedes the old real-Chrome-specific machinery:
+
+- CDP attach/verification to port `9222`
+- `cdpVerified` / `cdpUrl` job state
+- dedicated oracle tab parking/reuse in the user’s browser
+- wrong-tab drift handling
+- selected-tab / tab-index tracking
+- temporary `chrome://downloads` tabs
+- browser download-manager scraping via `downloads-manager.items_`
+- copy-from-`~/Downloads` artifact recovery flow
+
+## Current implementation status
+
+Implemented in code for the pivot and concurrency redesign:
+
+- config now uses `browser.*` + `auth.*`
+- `/oracle-auth` now syncs real-Chrome ChatGPT cookies into the authenticated seed profile instead of opening a manual-login browser
+- `oracle_submit` supports follow-ups via persisted `chatUrl`
+- job state no longer stores CDP verification fields
+- workers now run with per-job runtime sessions and per-job runtime profile clones
+- runtime admission is controlled by runtime leases and `browser.maxConcurrentJobs`
+- follow-up jobs now acquire conversation leases
+- persisted job state now records explicit lifecycle phases instead of relying only on coarse statuses
+- poller notifications now use per-job notification claims rather than broad global scan serialization
+- worker now uses a structured ChatGPT page-state classifier
+- worker now downloads artifacts directly with `agent-browser download <ref> <dest>`
+- poller scans are now best-effort/non-fatal with per-session in-flight guards
+- worker heartbeats during artifact downloads, writes artifact manifests incrementally, and reopens the saved conversation before artifact capture/download
+- artifact-only responses are treated as valid completion content
+- the repo now includes a repeatable sanity harness: `npm run sanity:oracle`
+- the repo now includes a safe expired-auth recovery drill: `docs/ORACLE_RECOVERY_DRILL.md`
+- worker closes the isolated browser, removes the runtime profile, and releases leases in `finally`
+
+Retained from the earlier MVP:
+
+- `/oracle`, `/oracle-status`, `/oracle-cancel`, `/oracle-clean`
+- `oracle_submit`, `oracle_read`, `oracle_cancel`
+- detached background worker model
+- `/tmp/oracle-<job-id>/...` state layout
+- shell-safe archive creation using `tar` piped to `zstd`
+- private permissions and atomic writes
+- stale-worker reconciliation
+- upload ordering: attach → confirm → fill → send
+- current-turn response anchoring
+- plain-text canonical response extraction
+- wake-the-agent poller integration
+- unique archive filenames per job
+- worker PID identity checks using recorded process start time
+- composer-scoped upload confirmation
+- stable `chatUrl` capture after send
+- redacted `oracle_read` details and same-project job scoping
+- serialized poller scans
+
+## Live validation status
+
+Live-validated after the concurrency redesign:
+
+- `/oracle-auth` happy path still works against the seed profile
+- headless normal oracle runs still work using per-job runtime clones
+- two concurrent runs in different projects work with isolated runtimes
+- two concurrent runs in the same project but different `pi` sessions work when they target different conversations
+- same-conversation concurrent follow-up rejection works and fails fast with a clear lease error
+- runtime profile cleanup works on completion and cancellation
+- runtime/conversation lease cleanup works on completion and cancellation
+- global browser args overrides (for example `--disable-gpu`) apply to real jobs
+- artifact-producing runs work with direct `download <ref> <dest>`
+- multi-artifact runs complete, wake the correct `pi` session, and persist both downloaded files with correct contents
+- the poller no longer needs the worker to stay alive just to observe completion for artifact-producing runs
+- expired/missing auth now fails as a clean auth-related error instead of generic UI/config drift
+- `/oracle-auth` repairs the seed profile and a post-repair probe succeeds again
+- live auth recovery also exposed and corrected a real source-profile misconfiguration during validation; the configured Chrome profile must actually contain the active ChatGPT session cookies
+
+## Known remaining work
+
+Still to verify live after this pivot:
+
+- model-selection verification against the current ChatGPT UI under additional real-world variation
+- optional richer terminal semantics for partial artifact failure (`complete_with_artifact_errors`) in more live scenarios
+
+## Production readiness criteria
+
+This architecture is now live-validated for the core release path:
+
+- no interaction with the user’s real Chrome during normal jobs
+- no focus disruption during normal jobs
+- the seed profile survives browser restarts and can be cloned into runtime profiles repeatedly
+- different projects / sessions can run in parallel without co-mingled data
+- same-conversation follow-ups are rejected while another job owns that conversation lease
+- artifact capture works without `chrome://downloads`
+- artifact-only responses and multi-artifact responses both complete correctly
+- same-thread follow-ups reopen correctly from persisted `chatUrl`
+- failure modes are clearly classified as auth / challenge / outage / UI drift
+- expired/missing auth now fails cleanly, `/oracle-auth` repairs the seed profile, and the post-repair probe succeeds again
+
+### Current readiness summary
+
+Current release blockers for the validated scope:
+- none currently known
+
+Remaining non-blocking hardening work:
+- broaden live proof of the new lifecycle/state-machine model across more degraded paths
+- broaden live proof of notification-claim semantics under more concurrent completions
+- extend regression-harness coverage for browser/download failure classes
+- polish partial-artifact terminal semantics (`complete_with_artifact_errors`)
+- keep hardening model-selection verification against future ChatGPT UI variation
+
+Recent proof points:
+- expired-auth drill fail path: `a2460bc1-7d89-4041-b67d-39680d310325`
+- `/oracle-auth` repair evidence: `/tmp/oracle-auth.log`
+- expired-auth drill post-repair success: `fa26a2a7-0057-4a21-b3e0-71c1d020facf`
+- successful multi-artifact completion: `b6b3599c-6b91-4315-adfa-8a83aa5eda9b`
+- repo-owned sanity harness: `npm run sanity:oracle`

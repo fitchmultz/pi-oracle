@@ -1,0 +1,41 @@
+{
+  "name": "pi-oracle",
+  "version": "0.1.0",
+  "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
+  "private": true,
+  "license": "MIT",
+  "author": "Mitch Fultz (https://github.com/fitchmultz)",
+  "type": "module",
+  "keywords": ["pi-package", "pi", "pi-extension", "extension", "chatgpt", "oracle"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fitchmultz/pi-oracle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fitchmultz/pi-oracle/issues"
+  },
+  "homepage": "https://github.com/fitchmultz/pi-oracle#readme",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./extensions/oracle/index.ts"]
+  },
+  "scripts": {
+    "check:oracle-extension": "node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:@sinclair/typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "sanity:oracle": "tsx scripts/oracle-sanity.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "@steipete/sweet-cookie": "^0.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0",
+    "tsx": "^4.20.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
