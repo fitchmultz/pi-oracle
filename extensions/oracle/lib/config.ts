@@ -18,7 +18,7 @@ export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
 const PRO_EFFORTS = ["standard", "extended"] as const satisfies readonly OracleEffort[];
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
-const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts"]);
+const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application Support", "Google", "Chrome");
 
@@ -56,6 +56,10 @@ export interface OracleConfig {
   };
   artifacts: {
     capture: boolean;
+  };
+  cleanup: {
+    completeJobRetentionMs: number;
+    failedJobRetentionMs: number;
   };
 }
 
@@ -126,6 +130,10 @@ export const DEFAULT_CONFIG: OracleConfig = {
   },
   artifacts: {
     capture: true,
+  },
+  cleanup: {
+    completeJobRetentionMs: 14 * 24 * 60 * 60 * 1000,
+    failedJobRetentionMs: 30 * 24 * 60 * 60 * 1000,
   },
 };
 
@@ -303,6 +311,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const worker = expectObject(root.worker, "worker");
   const poller = expectObject(root.poller, "poller");
   const artifacts = expectObject(root.artifacts, "artifacts");
+  const cleanup = expectObject(root.cleanup, "cleanup");
 
   const authSeedProfileDir = expectSafeProfileDir(browser.authSeedProfileDir, "browser.authSeedProfileDir");
   const runtimeProfilesDir = expectSafeProfileDir(browser.runtimeProfilesDir, "browser.runtimeProfilesDir");
@@ -344,6 +353,10 @@ function validateOracleConfig(value: unknown): OracleConfig {
     },
     artifacts: {
       capture: expectBoolean(artifacts.capture, "artifacts.capture"),
+    },
+    cleanup: {
+      completeJobRetentionMs: expectInteger(cleanup.completeJobRetentionMs, "cleanup.completeJobRetentionMs", 0),
+      failedJobRetentionMs: expectInteger(cleanup.failedJobRetentionMs, "cleanup.failedJobRetentionMs", 0),
     },
   };
 }

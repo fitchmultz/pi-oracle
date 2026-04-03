@@ -9,13 +9,14 @@ import {
   isActiveOracleJob,
   listOracleJobDirs,
   markJobNotified,
+  pruneTerminalOracleJobs,
   readJob,
-  releaseNotificationClaim,
+  removeTerminalOracleJob,
   tryClaimNotification,
   updateJob,
   withJobPhase,
 } from "../extensions/oracle/lib/jobs.ts";
-import { acquireLock, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
+import { acquireLock, sweepStaleLocks, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
 import { startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { acquireConversationLease, acquireRuntimeLease, releaseConversationLease, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
 
@@ -231,6 +232,77 @@ async function testStaleLockRecovery(): Promise<void> {
   assert(entered, "expected stale reconcile lock to be reclaimed");
 }
 
+async function testDeadPidLockSweep(): Promise<void> {
+  await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
+  await acquireLock("job", `stale-job-lock-${randomUUID()}`, { processPid: 999_999_999, source: "oracle-sanity-dead-lock" });
+  const removed = await sweepStaleLocks();
+  assert(removed.length === 1, `expected exactly one stale lock to be removed, saw ${removed.length}`);
+}
+
+async function testTerminalJobPruningAndCleanup(config: OracleConfig): Promise<void> {
+  const retentionConfig: OracleConfig = {
+    ...config,
+    cleanup: {
+      completeJobRetentionMs: 60_000,
+      failedJobRetentionMs: 120_000,
+    },
+  };
+  const cwd = process.cwd();
+  const sessionId = "/tmp/oracle-sanity-session-prune.jsonl";
+  const oldCompleteJobId = await createTerminalJob(retentionConfig, cwd, sessionId);
+  const oldFailedJobId = await createTerminalJob(retentionConfig, cwd, sessionId);
+  const retainedJobId = await createTerminalJob(retentionConfig, cwd, sessionId);
+  const cleanupJobId = await createTerminalJob(retentionConfig, cwd, sessionId);
+
+  const cleanupTargetJob = readJob(cleanupJobId);
+  assert(cleanupTargetJob, "cleanup target job should exist");
+  await mkdir(cleanupTargetJob.runtimeProfileDir, { recursive: true, mode: 0o700 });
+  await acquireRuntimeLease(retentionConfig, {
+    jobId: cleanupTargetJob.id,
+    runtimeId: cleanupTargetJob.runtimeId,
+    runtimeSessionName: cleanupTargetJob.runtimeSessionName,
+    runtimeProfileDir: cleanupTargetJob.runtimeProfileDir,
+    projectId: cleanupTargetJob.projectId,
+    sessionId: cleanupTargetJob.sessionId,
+    createdAt: new Date().toISOString(),
+  });
+  const cleanupConversationId = cleanupTargetJob.conversationId || `conversation-${randomUUID()}`;
+  await acquireConversationLease({
+    jobId: cleanupTargetJob.id,
+    conversationId: cleanupConversationId,
+    projectId: cleanupTargetJob.projectId,
+    sessionId: cleanupTargetJob.sessionId,
+    createdAt: new Date().toISOString(),
+  });
+  await updateJob(cleanupTargetJob.id, (job) => ({ ...job, conversationId: cleanupConversationId }));
+  const cleanupReadyJob = readJob(cleanupTargetJob.id);
+  assert(cleanupReadyJob, "cleanup-ready job should still exist");
+  await removeTerminalOracleJob(cleanupReadyJob);
+  assert(!readJob(cleanupReadyJob.id), "removeTerminalOracleJob should delete the job directory");
+
+  const oldTimestamp = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const completePruneTimestamp = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  await updateJob(oldCompleteJobId, (job) => ({ ...job, createdAt: completePruneTimestamp, completedAt: completePruneTimestamp, notifiedAt: completePruneTimestamp }));
+  await updateJob(oldFailedJobId, (job) => ({
+    ...job,
+    status: "failed",
+    phase: "failed",
+    createdAt: oldTimestamp,
+    completedAt: oldTimestamp,
+    phaseAt: oldTimestamp,
+  }));
+  await updateJob(retainedJobId, (job) => ({ ...job, createdAt: completePruneTimestamp, completedAt: completePruneTimestamp, notifiedAt: undefined }));
+
+  const pruned = await pruneTerminalOracleJobs(Date.now());
+  assert(pruned.includes(oldCompleteJobId), "old notified complete job should be pruned");
+  assert(pruned.includes(oldFailedJobId), "old failed job should be pruned");
+  assert(!pruned.includes(retainedJobId), "unnotified complete job should be retained");
+  assert(!readJob(oldCompleteJobId), "pruned complete job should be removed");
+  assert(!readJob(oldFailedJobId), "pruned failed job should be removed");
+  assert(Boolean(readJob(retainedJobId)), "retained job should still exist");
+  await cleanupJob(retainedJobId);
+}
+
 async function testPollerHostSafety(): Promise<void> {
   const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
   const pi: any = { sendMessage: () => {} };
@@ -271,6 +343,8 @@ async function main() {
   await testNotificationClaims(config);
   await testPollerNotification(config);
   await testStaleLockRecovery();
+  await testDeadPidLockSweep();
+  await testTerminalJobPruningAndCleanup(config);
   await testPollerHostSafety();
   await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
   console.log("oracle sanity checks passed");

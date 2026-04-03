@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { OracleConfig, OracleEffort, OracleModelFamily } from "./config.js";
 import { withJobLock } from "./locks.js";
-import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId } from "./runtime.js";
+import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, type OracleCleanupReport } from "./runtime.js";
 
 export type OracleJobStatus = "preparing" | "submitted" | "waiting" | "complete" | "failed" | "cancelled";
 export type OracleJobPhase =
@@ -28,6 +28,8 @@ export const ACTIVE_ORACLE_JOB_STATUSES: OracleJobStatus[] = ["preparing", "subm
 export const ORACLE_MISSING_WORKER_GRACE_MS = 30_000;
 export const ORACLE_STALE_HEARTBEAT_MS = 3 * 60 * 1000;
 export const ORACLE_NOTIFICATION_CLAIM_TTL_MS = 60_000;
+const ORACLE_COMPLETE_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function isActiveOracleJob(job: Pick<OracleJob, "status">): boolean {
   return ACTIVE_ORACLE_JOB_STATUSES.includes(job.status);
@@ -119,6 +121,8 @@ export interface OracleJob {
   runtimeProfileDir: string;
   seedGeneration?: string;
   config: OracleConfig;
+  cleanupWarnings?: string[];
+  lastCleanupAt?: string;
 }
 
 export interface OracleSubmitInput {
@@ -301,13 +305,63 @@ export function getStaleOracleJobReason(job: OracleJob, now = Date.now()): strin
   return undefined;
 }
 
-async function cleanupJobResources(job: OracleJob): Promise<void> {
-  await cleanupRuntimeArtifacts({
+export async function cleanupJobResources(
+  job: Pick<OracleJob, "runtimeId" | "runtimeProfileDir" | "runtimeSessionName" | "conversationId">,
+): Promise<OracleCleanupReport> {
+  return cleanupRuntimeArtifacts({
     runtimeId: job.runtimeId,
     runtimeProfileDir: job.runtimeProfileDir,
     runtimeSessionName: job.runtimeSessionName,
     conversationId: job.conversationId,
-  }).catch(() => undefined);
+  });
+}
+
+function getCleanupRetentionMs(job: OracleJob): { complete: number; failed: number } {
+  return {
+    complete: job.config.cleanup?.completeJobRetentionMs ?? ORACLE_COMPLETE_JOB_RETENTION_MS,
+    failed: job.config.cleanup?.failedJobRetentionMs ?? ORACLE_FAILED_JOB_RETENTION_MS,
+  };
+}
+
+function shouldPruneTerminalJob(job: OracleJob, now = Date.now()): boolean {
+  if (!isTerminalOracleJobStatus(job.status)) return false;
+  const completedMs = parseTimestamp(job.completedAt) ?? parseTimestamp(job.createdAt);
+  if (completedMs === undefined) return false;
+  const ageMs = now - completedMs;
+
+  const retention = getCleanupRetentionMs(job);
+
+  if ((job.status === "complete" || job.status === "cancelled") && job.notifiedAt) {
+    return ageMs >= retention.complete;
+  }
+
+  if (job.status === "failed") {
+    return ageMs >= retention.failed;
+  }
+
+  return false;
+}
+
+export async function removeTerminalOracleJob(job: OracleJob): Promise<{ removed: boolean; cleanupReport: OracleCleanupReport }> {
+  if (isActiveOracleJob(job)) return { removed: false, cleanupReport: { attempted: [], warnings: [] } };
+  const cleanupReport = await cleanupJobResources(job);
+  await rm(getJobDir(job.id), { recursive: true, force: true });
+  return { removed: true, cleanupReport };
+}
+
+export async function pruneTerminalOracleJobs(now = Date.now()): Promise<string[]> {
+  const removedJobIds: string[] = [];
+
+  for (const jobDir of listOracleJobDirs()) {
+    const job = readJob(jobDir);
+    if (!job || !shouldPruneTerminalJob(job, now)) continue;
+    const removed = await removeTerminalOracleJob(job);
+    if (removed.removed) {
+      removedJobIds.push(job.id);
+    }
+  }
+
+  return removedJobIds;
 }
 
 export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
@@ -340,7 +394,15 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
           : `Recovered stale job: ${staleReason}.${suffix}`.trim(),
       }, new Date(now).toISOString()),
     }));
-    await cleanupJobResources(repairedJob);
+    const cleanupReport = await cleanupJobResources(repairedJob);
+    if (cleanupReport.warnings.length > 0) {
+      await updateJob(repairedJob.id, (current) => ({
+        ...current,
+        cleanupWarnings: [...(current.cleanupWarnings || []), ...cleanupReport.warnings],
+        lastCleanupAt: new Date(now).toISOString(),
+        error: [current.error, ...cleanupReport.warnings].filter(Boolean).join("\n"),
+      }));
+    }
     repaired.push(repairedJob);
   }
 
@@ -425,8 +487,15 @@ export async function cancelOracleJob(id: string, reason = "Cancelled by user"):
       error: terminated ? reason : `${reason}; worker PID ${job.workerPid ?? "unknown"} did not exit`,
     }, now),
   }));
-  await cleanupJobResources(cancelled);
-  return cancelled;
+  const cleanupReport = await cleanupJobResources(cancelled);
+  if (cleanupReport.warnings.length === 0) return cancelled;
+
+  return updateJob(id, (job) => ({
+    ...job,
+    cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupReport.warnings],
+    lastCleanupAt: now,
+    error: [job.error, ...cleanupReport.warnings].filter(Boolean).join("\n"),
+  }));
 }
 
 export async function createJob(

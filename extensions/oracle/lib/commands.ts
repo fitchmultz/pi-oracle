@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { loadOracleConfig } from "./config.js";
 import { buildOracleDispatchPrompt } from "./instructions.js";
-import { cancelOracleJob, isActiveOracleJob, listJobsForCwd, readJob, reconcileStaleOracleJobs } from "./jobs.js";
+import {
+  cancelOracleJob,
+  isActiveOracleJob,
+  listJobsForCwd,
+  pruneTerminalOracleJobs,
+  readJob,
+  reconcileStaleOracleJobs,
+  removeTerminalOracleJob,
+} from "./jobs.js";
 import { refreshOracleStatus } from "./poller.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
@@ -27,6 +33,8 @@ function summarizeJob(jobId: string): string {
     job.responsePath ? `response: ${job.responsePath}` : undefined,
     job.responseFormat ? `response-format: ${job.responseFormat}` : undefined,
     typeof job.artifactFailureCount === "number" ? `artifact-failures: ${job.artifactFailureCount}` : undefined,
+    job.lastCleanupAt ? `last-cleanup: ${job.lastCleanupAt}` : undefined,
+    job.cleanupWarnings?.length ? `cleanup-warnings: ${job.cleanupWarnings.join(" | ")}` : undefined,
     job.error ? `error: ${job.error}` : undefined,
   ]
     .filter(Boolean)
@@ -48,6 +56,7 @@ async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<st
   try {
     await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_auth", cwd }, async () => {
       await reconcileStaleOracleJobs();
+      await pruneTerminalOracleJobs();
     });
   } catch (error) {
     if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
@@ -176,13 +185,28 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string)
         return;
       }
 
-      for (const job of jobs) {
-        if (!job) continue;
-        await rm(join("/tmp", `oracle-${job.id}`), { recursive: true, force: true });
+      const cleanupWarnings: string[] = [];
+      const removeJobs = async () => {
+        for (const job of jobs) {
+          if (!job) continue;
+          const result = await removeTerminalOracleJob(job);
+          cleanupWarnings.push(...result.cleanupReport.warnings.map((warning) => `${job.id}: ${warning}`));
+        }
+      };
+
+      try {
+        await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_clean", cwd: ctx.cwd }, async () => {
+          await reconcileStaleOracleJobs();
+          await removeJobs();
+        });
+      } catch (error) {
+        if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
+        await removeJobs();
       }
 
       refreshOracleStatus(ctx);
-      ctx.ui.notify(`Removed ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}`, "info");
+      const warningSuffix = cleanupWarnings.length > 0 ? ` Cleanup warnings:\n${cleanupWarnings.join("\n")}` : "";
+      ctx.ui.notify(`Removed ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}.${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
     },
   });
 }

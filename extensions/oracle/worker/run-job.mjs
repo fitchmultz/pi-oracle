@@ -36,6 +36,7 @@ const ARTIFACT_CANDIDATE_STABILITY_POLLS = 2;
 const ARTIFACT_DOWNLOAD_HEARTBEAT_MS = 10_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000;
 const ARTIFACT_DOWNLOAD_MAX_ATTEMPTS = 2;
+const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 
 let currentJob;
 let browserStarted = false;
@@ -272,11 +273,33 @@ async function cloneSeedProfileToRuntime(job) {
 async function cleanupRuntime(job) {
   if (!job || cleaningUpRuntime) return;
   cleaningUpRuntime = true;
+  const warnings = [];
   try {
-    await closeBrowser(job).catch(() => undefined);
-    await releaseLease("conversation", job.conversationId).catch(() => undefined);
-    await releaseLease("runtime", job.runtimeId).catch(() => undefined);
-    await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
+    await closeBrowser(job).catch(async (error) => {
+      const message = `Browser close warning during cleanup: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    });
+    await releaseLease("conversation", job.conversationId).catch(async (error) => {
+      const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    });
+    await releaseLease("runtime", job.runtimeId).catch(async (error) => {
+      const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    });
+    await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(async (error) => {
+      const message = `Runtime profile cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    });
+    if (warnings.length === 0) {
+      await log(`Cleanup summary: runtime ${job.runtimeId} released with no warnings`).catch(() => undefined);
+    } else {
+      await log(`Cleanup summary: runtime ${job.runtimeId} released with ${warnings.length} warning(s)`).catch(() => undefined);
+    }
   } finally {
     cleaningUpRuntime = false;
   }
@@ -298,7 +321,13 @@ async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
   cleaningUpBrowser = true;
   try {
-    await spawnCommand("agent-browser", [...browserBaseArgs(job), "close"], { allowFailure: true });
+    const result = await spawnCommand("agent-browser", [...browserBaseArgs(job), "close"], {
+      allowFailure: true,
+      timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
+    });
+    if (result.code !== 0) {
+      throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
+    }
   } finally {
     browserStarted = false;
     cleaningUpBrowser = false;

@@ -30,6 +30,7 @@ An oracle job:
 3. uploads the archive and sends the prompt
 4. waits in the background
 5. persists the response and any artifacts under `/tmp/oracle-<job-id>/`
+   - old terminal jobs are later pruned according to cleanup retention settings
 6. wakes the originating `pi` session on completion
 
 ## Example
@@ -105,8 +106,16 @@ Common settings:
 - `browser.runtimeProfilesDir`
 - `auth.chromeProfile`
 - `auth.chromeCookiePath`
+- `cleanup.completeJobRetentionMs`
+- `cleanup.failedJobRetentionMs`
 
 Project config should only override safe, non-privileged settings.
+
+Cleanup behavior:
+- terminal job directories under `/tmp/oracle-<job-id>/` are retained for inspection, then pruned conservatively
+- completed/cancelled jobs are pruned after `cleanup.completeJobRetentionMs` once they have been notified
+- failed jobs are pruned after `cleanup.failedJobRetentionMs`
+- `/oracle-clean` performs runtime cleanup before removing the job directory and reports cleanup warnings if any residual cleanup step fails
 
 Detailed design and maintainer docs:
 - `docs/ORACLE_DESIGN.md`

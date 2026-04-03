@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 
@@ -35,6 +35,7 @@ const SCREENSHOT_PATH = "/tmp/oracle-auth.png";
 const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
 const ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
+const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 let runtimeProfileDir = config.browser.authSeedProfileDir;
 
@@ -180,6 +181,42 @@ async function ensureNotSymlink(path, label) {
   }
 }
 
+async function isAuthBrowserConnected() {
+  const result = await spawnCommand("agent-browser", [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
+  try {
+    const parsed = JSON.parse(result.stdout || "{}");
+    return parsed?.data?.connected === true;
+  } catch {
+    return false;
+  }
+}
+
+async function sweepStaleStagingProfiles(targetDir) {
+  const parentDir = dirname(targetDir);
+  const prefix = `${basename(targetDir)}.staging-`;
+  const now = Date.now();
+
+  if (await isAuthBrowserConnected()) {
+    await log(`Skipping stale staging-profile sweep while auth browser session ${authSessionName()} is still connected`);
+    return;
+  }
+
+  const names = await readdir(parentDir).catch(() => []);
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const candidatePath = join(parentDir, name);
+    try {
+      const stats = await stat(candidatePath);
+      if (!stats.isDirectory()) continue;
+      if (now - stats.mtimeMs < STALE_STAGING_PROFILE_MAX_AGE_MS) continue;
+      await rm(candidatePath, { recursive: true, force: true });
+      await log(`Removed stale auth staging profile ${candidatePath}`);
+    } catch (error) {
+      await log(`Failed to remove stale auth staging profile ${candidatePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 async function createProfilePlan(profileDir) {
   const targetDir = resolve(profileDir);
   if (!targetDir.startsWith("/")) {
@@ -198,6 +235,7 @@ async function createProfilePlan(profileDir) {
   await ensureNotSymlink(dirname(targetDir), "Oracle profile parent directory");
   await ensureNotSymlink(targetDir, "Oracle profile directory");
   await ensureNotSymlink(backupDir, "Oracle backup profile directory");
+  await sweepStaleStagingProfiles(targetDir);
   return { targetDir, stagingDir, backupDir };
 }
 

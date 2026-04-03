@@ -172,24 +172,78 @@ export async function cloneSeedProfileToRuntime(config: OracleConfig, runtimePro
   return getSeedGeneration(config);
 }
 
+const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+
+export interface OracleCleanupReport {
+  attempted: Array<"browser" | "runtimeProfileDir" | "conversationLease" | "runtimeLease">;
+  warnings: string[];
+}
+
+async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    const child = spawn("agent-browser", ["--session", runtimeSessionName, "close"], { stdio: "ignore" });
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let timedOut = false;
+
+    const finish = (warning?: string) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolve(warning);
+    };
+
+    timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(`Timed out closing agent-browser session ${runtimeSessionName} after ${AGENT_BROWSER_CLOSE_TIMEOUT_MS}ms`);
+      }, 2_000).unref?.();
+    }, AGENT_BROWSER_CLOSE_TIMEOUT_MS);
+    timeout.unref?.();
+
+    child.on("error", (error) => finish(`Failed to close agent-browser session ${runtimeSessionName}: ${error.message}`));
+    child.on("close", (code) => {
+      if (timedOut || code === 0) finish();
+      else finish(`agent-browser close exited with code ${code} for session ${runtimeSessionName}`);
+    });
+  });
+}
+
 export async function cleanupRuntimeArtifacts(runtime: {
   runtimeId?: string;
   runtimeProfileDir?: string;
   runtimeSessionName?: string;
   conversationId?: string;
-}): Promise<void> {
+}): Promise<OracleCleanupReport> {
+  const report: OracleCleanupReport = { attempted: [], warnings: [] };
+
   if (runtime.runtimeSessionName) {
-    await new Promise<void>((resolve) => {
-      const child = spawn("agent-browser", ["--session", runtime.runtimeSessionName, "close"], { stdio: "ignore" });
-      child.on("error", () => resolve());
-      child.on("close", () => resolve());
-    });
+    report.attempted.push("browser");
+    const warning = await closeRuntimeBrowserSession(runtime.runtimeSessionName).catch((error: Error) => error.message);
+    if (warning) report.warnings.push(warning);
   }
   if (runtime.runtimeProfileDir) {
-    await rm(runtime.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
+    report.attempted.push("runtimeProfileDir");
+    await rm(runtime.runtimeProfileDir, { recursive: true, force: true }).catch((error: Error) => {
+      report.warnings.push(`Failed to remove runtime profile ${runtime.runtimeProfileDir}: ${error.message}`);
+    });
   }
-  await releaseConversationLease(runtime.conversationId);
-  await releaseRuntimeLease(runtime.runtimeId);
+  if (runtime.conversationId) {
+    report.attempted.push("conversationLease");
+  }
+  await releaseConversationLease(runtime.conversationId).catch((error: Error) => {
+    report.warnings.push(`Failed to release conversation lease ${runtime.conversationId}: ${error.message}`);
+  });
+  if (runtime.runtimeId) {
+    report.attempted.push("runtimeLease");
+  }
+  await releaseRuntimeLease(runtime.runtimeId).catch((error: Error) => {
+    report.warnings.push(`Failed to release runtime lease ${runtime.runtimeId}: ${error.message}`);
+  });
+
+  return report;
 }
 
 export function stableProjectLabel(projectId: string): string {

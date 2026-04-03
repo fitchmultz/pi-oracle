@@ -228,9 +228,37 @@ Browser/auth settings are global-only because they control local privileged brow
   },
   "artifacts": {
     "capture": true
+  },
+  "cleanup": {
+    "completeJobRetentionMs": 1209600000,
+    "failedJobRetentionMs": 2592000000
   }
 }
 ```
+
+## Cleanup maintenance model
+
+Long-run hygiene is intentionally conservative:
+
+- runtime profiles, runtime leases, and conversation leases are cleaned immediately as part of worker/command cleanup paths
+- browser close is time-bounded so cleanup can continue even if `agent-browser close` wedges
+- `/oracle-clean` performs runtime cleanup before removing the persisted job directory
+- stale lock directories are swept before reconcile maintenance
+- old auth `.staging-*` profiles are swept during `/oracle-auth` startup when the auth browser session is not still active
+- terminal job directories are retained for inspection, then pruned later based on configurable retention windows
+
+Current retention policy is configurable via `cleanup.*`:
+
+- `cleanup.completeJobRetentionMs`
+  - applies to `complete` and `cancelled` jobs after they have been notified
+- `cleanup.failedJobRetentionMs`
+  - applies to `failed` jobs
+
+Cleanup warnings are treated as diagnostics, not silent no-ops:
+
+- worker cleanup warnings are appended to `logs/worker.log`
+- command-side cleanup warnings are surfaced to the user
+- cancellation/stale-job recovery persists cleanup warnings into `job.json`
 
 ## Job layout under `/tmp`
 
@@ -283,6 +311,8 @@ Important fields include:
 - `notifyClaimedBy`
 - `artifactFailureCount`
 - `error`
+- `cleanupWarnings`
+- `lastCleanupAt`
 - `workerPid`
 - `workerNonce`
 - `workerStartedAt`

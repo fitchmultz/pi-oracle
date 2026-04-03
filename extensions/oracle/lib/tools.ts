@@ -13,6 +13,7 @@ import {
   getSessionFile,
   isActiveOracleJob,
   readJob,
+  pruneTerminalOracleJobs,
   reconcileStaleOracleJobs,
   resolveArchiveInputs,
   sha256File,
@@ -196,6 +197,8 @@ function redactJobDetails(job: NonNullable<ReturnType<typeof readJob>>) {
     artifactsManifestPath: job.artifactsManifestPath,
     archiveDeletedAfterUpload: job.archiveDeletedAfterUpload,
     runtimeId: job.runtimeId,
+    cleanupWarnings: job.cleanupWarnings,
+    lastCleanupAt: job.lastCleanupAt,
     error: job.error,
   };
 }
@@ -231,6 +234,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       try {
         await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
           await reconcileStaleOracleJobs();
+          await pruneTerminalOracleJobs();
         });
       } catch (error) {
         if (!isLockTimeoutError(error, "reconcile", "global")) throw error;

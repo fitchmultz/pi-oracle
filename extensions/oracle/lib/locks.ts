@@ -83,6 +83,20 @@ async function maybeReclaimStaleLock(path: string): Promise<boolean> {
   return true;
 }
 
+export async function sweepStaleLocks(): Promise<string[]> {
+  const dir = getLocksDir();
+  const removed: string[] = [];
+
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (await maybeReclaimStaleLock(path)) {
+      removed.push(path);
+    }
+  }
+
+  return removed;
+}
+
 export async function acquireLock(
   kind: string,
   key: string,
@@ -143,6 +157,7 @@ export async function withGlobalReconcileLock<T>(
   fn: () => Promise<T>,
   options?: { timeoutMs?: number },
 ): Promise<T> {
+  await sweepStaleLocks();
   return withLock("reconcile", "global", metadata, fn, { timeoutMs: options?.timeoutMs ?? 30_000 });
 }
 
