@@ -106,7 +106,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     sessionPrefix: "oracle",
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
     runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
-    maxConcurrentJobs: 2,
+    maxConcurrentJobs: 8,
     cloneStrategy: "apfs-clone",
     chatUrl: "https://chatgpt.com/",
     authUrl: "https://chatgpt.com/auth/login",

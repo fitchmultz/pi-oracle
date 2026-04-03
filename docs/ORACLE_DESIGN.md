@@ -220,7 +220,7 @@ Browser/auth settings are global-only because they control local privileged brow
     "sessionPrefix": "oracle",
     "authSeedProfileDir": "<absolute path to oracle auth seed profile>",
     "runtimeProfilesDir": "<absolute path to oracle runtime profiles dir>",
-    "maxConcurrentJobs": 2,
+    "maxConcurrentJobs": 8,
     "cloneStrategy": "apfs-clone",
     "chatUrl": "https://chatgpt.com/",
     "authUrl": "https://chatgpt.com/auth/login",
