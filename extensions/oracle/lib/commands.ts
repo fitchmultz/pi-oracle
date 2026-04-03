@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { loadOracleConfig } from "./config.js";
-import { buildOracleDispatchPrompt } from "./instructions.js";
 import {
   cancelOracleJob,
   isActiveOracleJob,
@@ -86,25 +85,6 @@ async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<st
 }
 
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string): void {
-  pi.registerCommand("oracle", {
-    description: "Ask the agent to prepare and dispatch a ChatGPT web oracle job",
-    handler: async (args, ctx) => {
-      const request = args.trim();
-      if (!request) {
-        ctx.ui.notify("Usage: /oracle <request>", "warning");
-        return;
-      }
-
-      const message = buildOracleDispatchPrompt(request);
-      if (ctx.isIdle()) {
-        pi.sendUserMessage(message);
-      } else {
-        pi.sendUserMessage(message, { deliverAs: "followUp" });
-        ctx.ui.notify("Queued oracle preparation as a follow-up", "info");
-      }
-    },
-  });
-
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT cookies from real Chrome into the oracle auth seed profile",
     handler: async (_args, ctx) => {

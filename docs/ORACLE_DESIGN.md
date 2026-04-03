@@ -1,10 +1,14 @@
 # pi-oracle design
 
 Status: isolated-profile concurrency architecture implemented in code; major live validation now passes, but a few non-blocking hardening items remain.
-Date: 2026-04-02
+Date: 2026-04-03
 
 Companion doc:
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
+
+Compatibility target:
+- `pi` 0.65.0+
+- current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 
 ## Goal
 
@@ -47,10 +51,21 @@ Real-Chrome automation was useful for investigation and earlier smoke tests, but
 
 ## Current extension surface
 
-### Commands
+The extension now follows the current `pi` session lifecycle model:
+
+- session transitions are handled from `session_start`
+- previous runtimes are expected to clean up in `session_shutdown`
+- no new logic depends on removed post-transition events
+
+### Prompt template
 
 - `/oracle <request>`
+  - implemented as a prompt template, not an extension command
   - asks the agent to gather context and dispatch an oracle job
+  - intentionally uses native pi prompt/template queueing so submissions survive streaming and compaction
+
+### Commands
+
 - `/oracle-auth`
   - syncs ChatGPT cookies from the user’s real Chrome into the isolated oracle profile and verifies them there
 - `/oracle-status [job-id]`
@@ -76,6 +91,7 @@ Real-Chrome automation was useful for investigation and earlier smoke tests, but
 ### `/oracle ...`
 
 `/oracle <request>` should not directly drive ChatGPT.
+It expands through the prompt-template path so pi can apply its native queueing semantics before the agent starts work.
 
 Instead it instructs the agent to:
 

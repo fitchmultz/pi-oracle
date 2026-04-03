@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type OracleConfig } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
@@ -303,6 +303,27 @@ async function testTerminalJobPruningAndCleanup(config: OracleConfig): Promise<v
   await cleanupJob(retainedJobId);
 }
 
+async function testLifecycleEventCutover(): Promise<void> {
+  const extensionSource = await readFile(new URL("../extensions/oracle/index.ts", import.meta.url), "utf8");
+  assert(extensionSource.includes('pi.on("session_start"'), "oracle extension should bind session_start");
+  assert(!extensionSource.includes('pi.on("session_switch"'), "oracle extension must not bind removed session_switch event");
+  assert(!extensionSource.includes('pi.on("session_fork"'), "oracle extension must not bind removed session_fork event");
+}
+
+async function testOraclePromptTemplateCutover(): Promise<void> {
+  const commandsSource = await readFile(new URL("../extensions/oracle/lib/commands.ts", import.meta.url), "utf8");
+  const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+    files?: string[];
+    pi?: { prompts?: string[] };
+  };
+
+  assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");
+  assert(promptSource.includes("You are preparing an /oracle job."), "/oracle prompt template should contain the oracle dispatch instructions");
+  assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
+  assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
+}
+
 async function testPollerHostSafety(): Promise<void> {
   const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
   const pi: any = { sendMessage: () => {} };
@@ -345,6 +366,8 @@ async function main() {
   await testStaleLockRecovery();
   await testDeadPidLockSweep();
   await testTerminalJobPruningAndCleanup(config);
+  await testLifecycleEventCutover();
+  await testOraclePromptTemplateCutover();
   await testPollerHostSafety();
   await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
   console.log("oracle sanity checks passed");

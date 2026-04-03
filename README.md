@@ -12,10 +12,14 @@ Normal oracle jobs run in an isolated browser profile, not in the user’s activ
 
 Status: experimental public beta, validated primarily on macOS.
 
+Compatibility target: current lifecycle/event model in `pi` 0.65.0+.
+This package intentionally uses the current `session_start`-based session lifecycle and does not ship backward-compatibility shims for removed extension events.
+
 ## What it does
 
 The extension adds:
 - `/oracle <request>`
+  - implemented as a prompt template so it keeps native pi queueing behavior during streaming and compaction
 - `/oracle-auth`
 - `/oracle-status [job-id]`
 - `/oracle-cancel [job-id]`
@@ -68,7 +72,7 @@ Not promised yet:
 - macOS
 - Google Chrome installed
 - ChatGPT already signed into a local Chrome profile
-- `pi` installed
+- `pi` 0.65.0 or newer installed
 - `agent-browser` available on the machine
 - `tar` and `zstd` available
 

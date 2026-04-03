@@ -5,7 +5,7 @@ import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
 import { pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./lib/locks.js";
-import { refreshOracleStatus, startPoller, stopPoller, stopPollerForSession } from "./lib/poller.js";
+import { refreshOracleStatus, startPoller, stopPoller } from "./lib/poller.js";
 import { registerOracleTools } from "./lib/tools.js";
 
 export default function oracleExtension(pi: ExtensionAPI) {
@@ -27,8 +27,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
     }
   }
 
-  function startPollerForContext(previousSessionFile: string | undefined, ctx: ExtensionContext) {
-    stopPollerForSession(previousSessionFile, ctx.cwd);
+  function startPollerForContext(ctx: ExtensionContext) {
     try {
       const config = loadOracleConfig(ctx.cwd);
       void runStartupMaintenance(ctx).catch((error) => {
@@ -44,8 +43,8 @@ export default function oracleExtension(pi: ExtensionAPI) {
     }
   }
 
-  pi.on("session_start", async (event, ctx) => {
-    startPollerForContext(event.previousSessionFile, ctx);
+  pi.on("session_start", async (_event, ctx) => {
+    startPollerForContext(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
