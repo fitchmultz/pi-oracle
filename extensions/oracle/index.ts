@@ -44,15 +44,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
     }
   }
 
-  pi.on("session_start", async (_event, ctx) => {
-    startPollerForContext(undefined, ctx);
-  });
-
-  pi.on("session_switch", async (event, ctx) => {
-    startPollerForContext(event.previousSessionFile, ctx);
-  });
-
-  pi.on("session_fork", async (event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     startPollerForContext(event.previousSessionFile, ctx);
   });
 
