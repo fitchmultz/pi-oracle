@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type OracleConfig } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
@@ -20,6 +21,7 @@ import {
 import { acquireLock, getOracleStateDir, sweepStaleLocks, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
 import { startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { acquireConversationLease, acquireRuntimeLease, releaseConversationLease, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
+import { resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -390,6 +392,67 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
 }
 
+async function testArchiveDefaultExclusions(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-sanity-"));
+  const excludedOnlyDir = await mkdtemp(join(tmpdir(), "oracle-archive-empty-"));
+  try {
+    await mkdir(join(fixtureDir, "src", "build"), { recursive: true });
+    await mkdir(join(fixtureDir, "build"), { recursive: true });
+    await mkdir(join(fixtureDir, "dist"), { recursive: true });
+    await mkdir(join(fixtureDir, "node_modules", "pkg"), { recursive: true });
+    await mkdir(join(fixtureDir, "packages", "app", ".yarn", "cache"), { recursive: true });
+    await mkdir(join(fixtureDir, "linked"), { recursive: true });
+    await writeFile(join(fixtureDir, "src", "build", "keeper.ts"), "export const keeper = true;\n");
+    await writeFile(join(fixtureDir, "src", "regular.ts"), "export const regular = true;\n");
+    await writeFile(join(fixtureDir, "build", "root-output.js"), "console.log('build');\n");
+    await writeFile(join(fixtureDir, "dist", "root-output.js"), "console.log('dist');\n");
+    await writeFile(join(fixtureDir, "node_modules", "pkg", "index.js"), "module.exports = {};\n");
+    await writeFile(join(fixtureDir, "packages", "app", ".yarn", "cache", "pkg.tgz"), "pkg\n");
+    await symlink(join(fixtureDir, "src"), join(fixtureDir, "coverage"));
+    await symlink(join(fixtureDir, "src"), join(fixtureDir, "linked", "node_modules"));
+
+    const rootEntries = await resolveExpandedArchiveEntries(fixtureDir, ["."]);
+    assert(rootEntries.includes("src/build/keeper.ts"), "root archive expansion should preserve legitimate nested src/build content");
+    assert(rootEntries.includes("src/regular.ts"), "root archive expansion should preserve regular source files");
+    assert(!rootEntries.includes("build/root-output.js"), "root archive expansion should exclude top-level build output");
+    assert(!rootEntries.includes("dist/root-output.js"), "root archive expansion should exclude top-level dist output");
+    assert(!rootEntries.includes("node_modules/pkg/index.js"), "root archive expansion should exclude node_modules anywhere");
+    assert(!rootEntries.includes("packages/app/.yarn/cache/pkg.tgz"), "root archive expansion should exclude nested .yarn/cache content");
+    assert(!rootEntries.includes("coverage"), "root archive expansion should exclude symlinked top-level coverage directories");
+    assert(!rootEntries.includes("linked/node_modules"), "root archive expansion should exclude symlinked nested node_modules directories");
+
+    const srcEntries = await resolveExpandedArchiveEntries(fixtureDir, ["src"]);
+    assert(srcEntries.includes("src/build/keeper.ts"), "explicit source-directory selection should preserve nested build-named directories");
+    assert(srcEntries.includes("src/regular.ts"), "explicit source-directory selection should preserve regular source files");
+
+    const explicitBuildDirEntries = await resolveExpandedArchiveEntries(fixtureDir, ["build"]);
+    assert(explicitBuildDirEntries.includes("build/root-output.js"), "explicitly requested build directories should not be silently dropped");
+
+    const explicitNodeModulesEntries = await resolveExpandedArchiveEntries(fixtureDir, ["node_modules"]);
+    assert(explicitNodeModulesEntries.includes("node_modules/pkg/index.js"), "explicitly requested node_modules directories should include their subtree");
+
+    const explicitYarnCacheEntries = await resolveExpandedArchiveEntries(fixtureDir, ["packages/app/.yarn/cache"]);
+    assert(explicitYarnCacheEntries.includes("packages/app/.yarn/cache/pkg.tgz"), "explicitly requested .yarn/cache directories should include their subtree");
+
+    const explicitBuildFileEntries = await resolveExpandedArchiveEntries(fixtureDir, ["build/root-output.js"]);
+    assert(explicitBuildFileEntries.length === 1 && explicitBuildFileEntries[0] === "build/root-output.js", "explicitly requested files should always be preserved");
+
+    const explicitCoverageSymlinkEntries = await resolveExpandedArchiveEntries(fixtureDir, ["coverage"]);
+    assert(explicitCoverageSymlinkEntries.length === 1 && explicitCoverageSymlinkEntries[0] === "coverage", "explicitly requested excluded-directory symlinks should be preserved as explicit paths");
+
+    const explicitNodeModulesSymlinkEntries = await resolveExpandedArchiveEntries(fixtureDir, ["linked/node_modules"]);
+    assert(explicitNodeModulesSymlinkEntries.length === 1 && explicitNodeModulesSymlinkEntries[0] === "linked/node_modules", "explicitly requested nested excluded-directory symlinks should be preserved as explicit paths");
+
+    await mkdir(join(excludedOnlyDir, "build"), { recursive: true });
+    await writeFile(join(excludedOnlyDir, "build", "only.js"), "console.log('only');\n");
+    const excludedOnlyEntries = await resolveExpandedArchiveEntries(excludedOnlyDir, ["."]);
+    assert(excludedOnlyEntries.length === 0, "root expansion should drop only-excluded top-level outputs");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(excludedOnlyDir, { recursive: true, force: true });
+  }
+}
+
 function testThinkingClosedStateVerification(): void {
   const closedThinkingSnapshot = [
     '- button "Thinking, click to remove" [ref=e110]',
@@ -567,6 +630,7 @@ async function main() {
   await testLifecycleEventCutover();
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
+  await testArchiveDefaultExclusions();
   await testSanityRunnerIsolation();
   testThinkingClosedStateVerification();
   testArtifactCandidateHeuristics();

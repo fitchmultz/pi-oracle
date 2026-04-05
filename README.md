@@ -35,6 +35,7 @@ An oracle job:
 4. waits in the background
 5. persists the response and any artifacts under `/tmp/oracle-<job-id>/`
    - old terminal jobs are later pruned according to cleanup retention settings
+   - when directory inputs are expanded, project archives automatically skip common bulky generated caches and top-level build outputs such as `node_modules/`, `target/`, virtualenv caches, coverage outputs, and `dist/`/`build/`/`out/`, unless you explicitly pass those directories
 6. wakes the originating `pi` session on completion
 
 ## Example

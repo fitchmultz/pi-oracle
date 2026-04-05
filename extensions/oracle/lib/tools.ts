@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, posix } from "node:path";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -60,11 +60,137 @@ const VALID_EFFORTS: Record<OracleModelFamily, readonly OracleEffort[]> = {
   pro: ["standard", "extended"],
 };
 
-async function createArchive(cwd: string, files: string[], archivePath: string): Promise<string> {
+const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  "node_modules",
+  "target",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".tox",
+  ".nox",
+  ".hypothesis",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  ".parcel-cache",
+  ".cache",
+  ".gradle",
+  ".terraform",
+  "DerivedData",
+  ".build",
+  ".pnpm-store",
+  ".serverless",
+  ".aws-sam",
+]);
+const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_AT_REPO_ROOT = new Set(["coverage", "htmlcov", "tmp", "temp", ".tmp", "dist", "build", "out"]);
+const DEFAULT_ARCHIVE_EXCLUDED_FILES = new Set([".coverage", ".DS_Store", "Thumbs.db"]);
+const DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES = [".pyc", ".pyo", ".pyd", ".tsbuildinfo", ".tfstate"];
+const DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS = [".tfstate."];
+const DEFAULT_ARCHIVE_EXCLUDED_PATH_SEQUENCES = [[".yarn", "cache"]] as const;
+
+function pathContainsSequence(relativePath: string, sequence: readonly string[]): boolean {
+  const segments = relativePath.split("/").filter(Boolean);
+  if (sequence.length === 0 || segments.length < sequence.length) return false;
+  for (let index = 0; index <= segments.length - sequence.length; index += 1) {
+    if (sequence.every((segment, offset) => segments[index + offset] === segment)) return true;
+  }
+  return false;
+}
+
+function getRelativeDepth(relativePath: string): number {
+  return relativePath.split("/").filter(Boolean).length;
+}
+
+function shouldExcludeArchivePath(relativePath: string, isDirectory: boolean, options?: { forceInclude?: boolean }): boolean {
+  const normalized = posix.normalize(relativePath).replace(/^\.\//, "");
+  if (!normalized || normalized === ".") return false;
+  if (options?.forceInclude) return false;
+  const name = basename(normalized);
+  if (DEFAULT_ARCHIVE_EXCLUDED_PATH_SEQUENCES.some((sequence) => pathContainsSequence(normalized, sequence))) return true;
+  if (isDirectory) {
+    if (DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE.has(name)) return true;
+    if (getRelativeDepth(normalized) === 1 && DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_AT_REPO_ROOT.has(name)) return true;
+    return false;
+  }
+  if (DEFAULT_ARCHIVE_EXCLUDED_FILES.has(name)) return true;
+  if (DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES.some((suffix) => name.endsWith(suffix))) return true;
+  if (DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS.some((needle) => name.includes(needle))) return true;
+  return false;
+}
+
+async function isSymlinkToDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function shouldExcludeArchiveChild(
+  absolutePath: string,
+  relativePath: string,
+  child: { isDirectory(): boolean; isSymbolicLink(): boolean },
+  options?: { forceInclude?: boolean },
+): Promise<boolean> {
+  const isDirectoryLike = child.isDirectory() || (child.isSymbolicLink() && await isSymlinkToDirectory(absolutePath));
+  return shouldExcludeArchivePath(relativePath, isDirectoryLike, options);
+}
+
+async function expandArchiveEntries(cwd: string, relativePath: string, options?: { forceIncludeSubtree?: boolean }): Promise<string[]> {
+  const normalized = posix.normalize(relativePath).replace(/^\.\//, "");
+  if (normalized === ".") {
+    const children = await readdir(cwd, { withFileTypes: true });
+    const results: string[] = [];
+    for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+      const childRelative = child.name;
+      if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child)) continue;
+      if (child.isDirectory()) results.push(...await expandArchiveEntries(cwd, childRelative));
+      else results.push(childRelative);
+    }
+    return results;
+  }
+
+  const absolute = join(cwd, normalized);
+  const entry = await lstat(absolute);
+  if (!entry.isDirectory()) return [normalized];
+  if (shouldExcludeArchivePath(normalized, true, { forceInclude: options?.forceIncludeSubtree })) return [];
+
+  const children = await readdir(absolute, { withFileTypes: true });
+  const results: string[] = [];
+  for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+    const childRelative = posix.join(normalized, child.name);
+    if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child, { forceInclude: options?.forceIncludeSubtree })) continue;
+    if (child.isDirectory()) results.push(...await expandArchiveEntries(cwd, childRelative, { forceIncludeSubtree: options?.forceIncludeSubtree }));
+    else results.push(childRelative);
+  }
+  return results;
+}
+
+export async function resolveExpandedArchiveEntries(cwd: string, files: string[]): Promise<string[]> {
   const entries = resolveArchiveInputs(cwd, files);
+  return Array.from(new Set((await Promise.all(entries.map(async (entry) => {
+    const absolute = join(cwd, entry.relative);
+    const statEntry = await lstat(absolute);
+    const forceIncludeSubtree = statEntry.isDirectory() && entry.relative !== "." && shouldExcludeArchivePath(entry.relative, true);
+    return expandArchiveEntries(cwd, entry.relative, { forceIncludeSubtree });
+  }))).flat())).sort();
+}
+
+async function createArchive(cwd: string, files: string[], archivePath: string): Promise<string> {
+  const expandedEntries = await resolveExpandedArchiveEntries(cwd, files);
+  if (expandedEntries.length === 0) {
+    throw new Error("Oracle archive inputs are empty after default exclusions");
+  }
   const listDir = await mkdtemp(join(tmpdir(), "oracle-filelist-"));
   const listPath = join(listDir, "files.list");
-  await writeFile(listPath, Buffer.from(`${entries.map((entry) => entry.relative).join("\0")}\0`), { mode: 0o600 });
+  await writeFile(listPath, Buffer.from(`${expandedEntries.join("\0")}\0`), { mode: 0o600 });
 
   try {
     const { spawn } = await import("node:child_process");
