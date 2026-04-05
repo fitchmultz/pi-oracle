@@ -4,7 +4,9 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+export const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+export const ORACLE_STATE_DIR_ENV = "PI_ORACLE_STATE_DIR";
+const ORACLE_STATE_DIR = process.env[ORACLE_STATE_DIR_ENV]?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
 const LEASES_DIR = join(ORACLE_STATE_DIR, "leases");
 const DEFAULT_WAIT_MS = 30_000;

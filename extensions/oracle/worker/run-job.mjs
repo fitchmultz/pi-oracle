@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
+import { FILE_LABEL_PATTERN_SOURCE, filterStructuralArtifactCandidates, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries } from "./artifact-heuristics.mjs";
 
 const jobId = process.argv[2];
 if (!jobId) {
@@ -10,7 +11,9 @@ if (!jobId) {
   process.exit(1);
 }
 
-const jobDir = `/tmp/oracle-${jobId}`;
+const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
+const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE_JOBS_DIR;
+const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
@@ -26,7 +29,8 @@ const MODEL_FAMILY_PREFIX = {
   pro: "Pro ",
 };
 
-const ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
 const LEASES_DIR = join(ORACLE_STATE_DIR, "leases");
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
@@ -37,6 +41,9 @@ const ARTIFACT_DOWNLOAD_HEARTBEAT_MS = 10_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000;
 const ARTIFACT_DOWNLOAD_MAX_ATTEMPTS = 2;
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+const MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS = 20_000;
+const MODEL_CONFIGURATION_SETTLE_POLL_MS = 250;
+const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
@@ -539,27 +546,6 @@ function buildLoginProbeScript(timeoutMs) {
   `);
 }
 
-function parseSnapshotEntries(snapshot) {
-  return snapshot
-    .split("\n")
-    .map((line) => {
-      const refMatch = line.match(/\bref=(e\d+)\b/);
-      if (!refMatch) return undefined;
-      const kindMatch = line.match(/^\s*-\s*([^\s]+)/);
-      const quotedMatch = line.match(/"([^"]*)"/);
-      const valueMatch = line.match(/:\s*(.+)$/);
-      return {
-        line,
-        ref: `@${refMatch[1]}`,
-        kind: kindMatch ? kindMatch[1] : undefined,
-        label: quotedMatch ? quotedMatch[1] : undefined,
-        value: valueMatch ? valueMatch[1].trim() : undefined,
-        disabled: /\bdisabled\b/.test(line),
-      };
-    })
-    .filter(Boolean);
-}
-
 function findEntry(snapshot, predicate) {
   return parseSnapshotEntries(snapshot).find(predicate);
 }
@@ -572,12 +558,19 @@ function findLastEntry(snapshot, predicate) {
   return undefined;
 }
 
-function matchesModelFamilyButton(candidate, family) {
-  return candidate.kind === "button" && typeof candidate.label === "string" && candidate.label.startsWith(MODEL_FAMILY_PREFIX[family]) && !candidate.disabled;
-}
-
 function titleCase(value) {
   return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+}
+
+function matchesModelFamilyLabel(label, family) {
+  const normalized = String(label || "");
+  const prefix = MODEL_FAMILY_PREFIX[family];
+  const exact = prefix.trim();
+  return normalized === exact || normalized.startsWith(prefix) || normalized.startsWith(`${exact},`);
+}
+
+function matchesModelFamilyButton(candidate, family) {
+  return candidate.kind === "button" && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
 }
 
 function requestedEffortLabel(job) {
@@ -612,9 +605,9 @@ function snapshotHasModelConfigurationUi(snapshot) {
     entries
       .filter((entry) => entry.kind === "button" && typeof entry.label === "string")
       .flatMap((entry) =>
-        Object.entries(MODEL_FAMILY_PREFIX)
-          .filter(([, prefix]) => entry.label.startsWith(prefix))
-          .map(([family]) => family),
+        Object.keys(MODEL_FAMILY_PREFIX)
+          .filter((family) => matchesModelFamilyLabel(entry.label, family))
+          .map((family) => family),
       ),
   );
   const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === CHATGPT_LABELS.close && !entry.disabled);
@@ -627,18 +620,35 @@ function snapshotHasModelConfigurationUi(snapshot) {
 function snapshotStronglyMatchesRequestedModel(snapshot, job) {
   const entries = parseSnapshotEntries(snapshot);
   const familyMatched = entries.some((entry) => matchesModelFamilyButton(entry, job.chatModelFamily));
+  const effortLabel = requestedEffortLabel(job);
   if (job.chatModelFamily === "thinking") {
-    return familyMatched || effortSelectionVisible(snapshot, requestedEffortLabel(job));
+    return familyMatched || effortSelectionVisible(snapshot, effortLabel);
   }
   if (job.chatModelFamily === "pro") {
-    return familyMatched;
+    return effortLabel ? familyMatched && effortSelectionVisible(snapshot, effortLabel) : familyMatched;
   }
   return familyMatched;
 }
 
+function thinkingSelectionVisible(snapshot) {
+  const entries = parseSnapshotEntries(snapshot);
+  return entries.some((entry) => !entry.disabled && entry.kind === "button" && matchesModelFamilyLabel(entry.label, "thinking"));
+}
+
+function composerControlsVisible(snapshot) {
+  const entries = parseSnapshotEntries(snapshot);
+  const hasComposer = entries.some(
+    (entry) => entry.kind === "textbox" && entry.label === CHATGPT_LABELS.composer && !entry.disabled,
+  );
+  const hasAddFiles = entries.some(
+    (entry) => entry.kind === "button" && entry.label === CHATGPT_LABELS.addFiles && !entry.disabled,
+  );
+  return hasComposer && hasAddFiles;
+}
+
 function snapshotWeaklyMatchesRequestedModel(snapshot, job) {
   if (job.chatModelFamily === "thinking") {
-    return effortSelectionVisible(snapshot, requestedEffortLabel(job));
+    return effortSelectionVisible(snapshot, requestedEffortLabel(job)) || thinkingSelectionVisible(snapshot);
   }
   if (job.chatModelFamily === "pro") {
     return !thinkingChipVisible(snapshot);
@@ -955,6 +965,54 @@ async function openModelConfiguration(job) {
   throw new Error("Could not open model configuration UI");
 }
 
+async function waitForModelConfigurationToSettle(job, options = {}) {
+  const deadline = Date.now() + MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS;
+  let lastCloseAttemptAt = 0;
+  let fallbackLogged = false;
+  let lastSnapshot = "";
+
+  while (Date.now() < deadline) {
+    const snapshot = await snapshotText(job);
+    lastSnapshot = snapshot;
+    const configurationUiVisible = snapshotHasModelConfigurationUi(snapshot);
+
+    if (!configurationUiVisible) {
+      if (snapshotWeaklyMatchesRequestedModel(snapshot, job)) return;
+      if (options.stronglyVerified) {
+        if (!fallbackLogged) {
+          fallbackLogged = true;
+          await log(`Model configuration closed after strong in-dialog verification for family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+        }
+        return;
+      }
+    }
+
+    if (!configurationUiVisible && composerControlsVisible(snapshot) && options.stronglyVerified) {
+      if (!fallbackLogged) {
+        fallbackLogged = true;
+        await log(`Composer became usable after strong in-dialog verification for family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+      }
+      return;
+    }
+
+    if (Date.now() - lastCloseAttemptAt >= MODEL_CONFIGURATION_CLOSE_RETRY_MS) {
+      lastCloseAttemptAt = Date.now();
+      if (!(await maybeClickLabeledEntry(job, CHATGPT_LABELS.close, { kind: "button" }))) {
+        await agentBrowser(job, "press", "Escape").catch(() => undefined);
+      }
+    }
+
+    await sleep(MODEL_CONFIGURATION_SETTLE_POLL_MS);
+  }
+
+  if (options.stronglyVerified && lastSnapshot && !snapshotHasModelConfigurationUi(lastSnapshot)) {
+    await log(`Model configuration closed only after settle-timeout for family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+    return;
+  }
+
+  throw new Error(`Could not verify requested model settings after configuration for ${job.chatModelFamily}`);
+}
+
 async function configureModel(job) {
   const initialSnapshot = await snapshotText(job);
   if (snapshotStronglyMatchesRequestedModel(initialSnapshot, job)) {
@@ -964,6 +1022,7 @@ async function configureModel(job) {
 
   await log(`Configuring model family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
   let familySnapshot = await openModelConfiguration(job);
+  let verificationSnapshot = familySnapshot;
 
   let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.chatModelFamily));
   if (!familyEntry && snapshotStronglyMatchesRequestedModel(familySnapshot, job)) {
@@ -977,6 +1036,7 @@ async function configureModel(job) {
     await clickRef(job, familyEntry.ref);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
+    verificationSnapshot = familySnapshot;
   }
 
   if (job.chatModelFamily === "thinking" || job.chatModelFamily === "pro") {
@@ -990,6 +1050,7 @@ async function configureModel(job) {
       await clickLabeledEntry(job, effortLabel, { kind: "option" });
       await agentBrowser(job, "wait", "400");
       const effortSnapshot = await snapshotText(job);
+      verificationSnapshot = effortSnapshot;
       const selectedEffort = findEntry(
         effortSnapshot,
         (candidate) => candidate.kind === "combobox" && candidate.value === effortLabel && !candidate.disabled,
@@ -1002,17 +1063,18 @@ async function configureModel(job) {
 
   if (job.chatModelFamily === "instant" && job.autoSwitchToThinking) {
     await maybeClickLabeledEntry(job, CHATGPT_LABELS.autoSwitchToThinking);
+    verificationSnapshot = await snapshotText(job);
+  }
+
+  const stronglyVerified = snapshotStronglyMatchesRequestedModel(verificationSnapshot, job);
+  if (!stronglyVerified) {
+    throw new Error(`Could not verify requested model settings in configuration UI for ${job.chatModelFamily}`);
   }
 
   if (!(await maybeClickLabeledEntry(job, CHATGPT_LABELS.close, { kind: "button" }))) {
     await agentBrowser(job, "press", "Escape").catch(() => undefined);
   }
-  await agentBrowser(job, "wait", "500");
-
-  const postCloseSnapshot = await snapshotText(job);
-  if (!snapshotWeaklyMatchesRequestedModel(postCloseSnapshot, job)) {
-    throw new Error(`Could not verify requested model settings after configuration for ${job.chatModelFamily}`);
-  }
+  await waitForModelConfigurationToSettle(job, { stronglyVerified });
 }
 
 async function uploadArchive(job) {
@@ -1192,14 +1254,6 @@ async function detectType(path) {
   return result.stdout || "unknown";
 }
 
-function isLikelyArtifactLabel(label) {
-  const normalized = String(label || "").trim();
-  if (!normalized) return false;
-  const upper = normalized.toUpperCase();
-  if (upper === "ATTACHED" || upper === "DONE") return true;
-  return /(?:^|[^\w])[^\n]*\.[A-Za-z0-9]{1,12}(?:$|[^\w])/.test(normalized);
-}
-
 function preferredArtifactName(label, index) {
   const normalized = String(label || "").trim();
   const fileNameMatch = normalized.match(/([A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12})(?!.*[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,12})/);
@@ -1207,57 +1261,82 @@ function preferredArtifactName(label, index) {
   return `artifact-${String(index + 1).padStart(2, "0")}`;
 }
 
-function artifactCandidatesFromEntries(entries) {
-  const excluded = new Set([
-    "Copy response",
-    "Good response",
-    "Bad response",
-    "Share",
-    "Switch model",
-    "More actions",
-    CHATGPT_LABELS.addFiles,
-    "Start dictation",
-    "Start Voice",
-    "Model selector",
-    "Open conversation options",
-    "Scroll to bottom",
-    CHATGPT_LABELS.close,
-  ]);
-
-  const seen = new Set();
-  const candidates = [];
-  for (const entry of entries) {
-    if (!entry.label) continue;
-    if (excluded.has(entry.label)) continue;
-    if (entry.label.startsWith("Thought for ")) continue;
-    if (entry.kind !== "button" && entry.kind !== "link") continue;
-    if (!isLikelyArtifactLabel(entry.label)) continue;
-    if (seen.has(entry.label)) continue;
-    seen.add(entry.label);
-    candidates.push({ label: entry.label });
-  }
-  return candidates;
-}
-
-async function collectArtifactCandidates(job, responseIndex) {
+async function collectArtifactCandidates(job, responseIndex, responseText = "") {
   const snapshot = await snapshotText(job);
   const targetSlice = assistantSnapshotSlice(snapshot, responseIndex);
   if (!targetSlice) return { snapshot, targetSlice, candidates: [] };
+
+  const structural = await evalPage(
+    job,
+    toJsonScript(`
+      const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+      const genericArtifactLabels = new Set(${JSON.stringify(GENERIC_ARTIFACT_LABELS)});
+      const fileLabelPattern = new RegExp(${JSON.stringify(FILE_LABEL_PATTERN_SOURCE)});
+      const isFileLabel = (value) => {
+        const normalized = normalize(value);
+        if (!normalized) return false;
+        if (genericArtifactLabels.has(normalized.toUpperCase())) return true;
+        return fileLabelPattern.test(normalized);
+      };
+      const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
+        .filter((el) => normalize(el.textContent) === 'ChatGPT said:');
+      const host = headings[${responseIndex}]?.nextElementSibling;
+      if (!host) return { candidates: [] };
+
+      const fileButtons = (node) => node
+        ? Array.from(node.querySelectorAll('button, a')).map((candidate) => normalize(candidate.textContent)).filter(isFileLabel)
+        : [];
+      const otherTextLength = (text, labels) => {
+        let remaining = normalize(text);
+        for (const label of labels || []) {
+          remaining = normalize(remaining.replaceAll(label, ' '));
+        }
+        remaining = normalize(remaining.replaceAll('Coding Citation', ' '));
+        return remaining.length;
+      };
+      const focusableFor = (node) => node?.closest('[tabindex]');
+
+      const candidates = Array.from(host.querySelectorAll('button, a'))
+        .map((button) => {
+          const label = normalize(button.textContent);
+          if (!isFileLabel(label)) return null;
+          const paragraph = button.closest('p');
+          const listItem = button.closest('li');
+          const focusable = focusableFor(button);
+          const paragraphFileLabels = fileButtons(paragraph);
+          const focusableFileLabels = fileButtons(focusable);
+          return {
+            label,
+            paragraphText: normalize(paragraph?.textContent),
+            listItemText: normalize(listItem?.textContent),
+            paragraphFileButtonCount: paragraphFileLabels.length,
+            paragraphOtherTextLength: otherTextLength(paragraph?.textContent, paragraphFileLabels),
+            listItemFileButtonCount: fileButtons(listItem).length,
+            focusableFileButtonCount: focusableFileLabels.length,
+            focusableOtherTextLength: otherTextLength(focusable?.textContent, focusableFileLabels),
+          };
+        })
+        .filter(Boolean);
+
+      return { candidates };
+    `),
+  );
+
   return {
     snapshot,
     targetSlice,
-    candidates: artifactCandidatesFromEntries(parseSnapshotEntries(targetSlice)),
+    candidates: filterStructuralArtifactCandidates(structural?.candidates || []),
   };
 }
 
-async function waitForStableArtifactCandidates(job, responseIndex) {
+async function waitForStableArtifactCandidates(job, responseIndex, responseText = "") {
   const deadline = Date.now() + ARTIFACT_CANDIDATE_STABILITY_TIMEOUT_MS;
   let lastSignature;
   let stablePolls = 0;
   let latest = { snapshot: "", targetSlice: undefined, candidates: [] };
 
   while (Date.now() < deadline) {
-    latest = await collectArtifactCandidates(job, responseIndex);
+    latest = await collectArtifactCandidates(job, responseIndex, responseText);
     const signature = latest.candidates.map((candidate) => candidate.label).join("\n");
     if (signature === lastSignature) stablePolls += 1;
     else {
@@ -1272,12 +1351,12 @@ async function waitForStableArtifactCandidates(job, responseIndex) {
   return latest;
 }
 
-async function reopenConversationForArtifacts(job, responseIndex, reason) {
+async function reopenConversationForArtifacts(job, responseIndex, responseText, reason) {
   const targetUrl = job.chatUrl || stripQuery(await currentUrl(job));
   await log(`Reopening conversation before artifact capture (${reason}): ${targetUrl}`);
   await agentBrowser(job, "open", targetUrl);
   await agentBrowser(job, "wait", "1500");
-  return waitForStableArtifactCandidates(job, responseIndex);
+  return waitForStableArtifactCandidates(job, responseIndex, responseText);
 }
 
 async function withHeartbeatWhile(task, intervalMs = ARTIFACT_DOWNLOAD_HEARTBEAT_MS) {
@@ -1309,14 +1388,14 @@ async function flushArtifactsState(artifacts) {
   }));
 }
 
-async function downloadArtifacts(job, responseIndex) {
+async function downloadArtifacts(job, responseIndex, responseText = "") {
   if (!job.config.artifacts.capture) {
     await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
     await mutateJob((current) => ({ ...current, artifactPaths: [] }));
     return [];
   }
 
-  const { targetSlice, candidates } = await reopenConversationForArtifacts(job, responseIndex, "initial");
+  const { targetSlice, candidates } = await reopenConversationForArtifacts(job, responseIndex, responseText, "initial");
   if (!targetSlice) {
     await log(`No assistant response found in snapshot for response index ${responseIndex}`);
     await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
@@ -1378,7 +1457,7 @@ async function downloadArtifacts(job, responseIndex) {
         if (attempt >= ARTIFACT_DOWNLOAD_MAX_ATTEMPTS) {
           artifacts.push({ displayName: candidate.label, unconfirmed: true, error: message });
         } else {
-          await reopenConversationForArtifacts(job, responseIndex, `retry ${attempt + 1} for ${candidate.label}`);
+          await reopenConversationForArtifacts(job, responseIndex, responseText, `retry ${attempt + 1} for ${candidate.label}`);
           await sleep(1_000);
         }
       } finally {
@@ -1443,7 +1522,7 @@ async function run() {
     currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("extracting_response", { heartbeatAt: new Date().toISOString() }) }));
     await secureWriteText(currentJob.responsePath, `${completion.responseText.trim()}\n`);
     currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("downloading_artifacts", { heartbeatAt: new Date().toISOString() }) }));
-    const artifacts = await downloadArtifacts(currentJob, completion.responseIndex);
+    const artifacts = await downloadArtifacts(currentJob, completion.responseIndex, completion.responseText);
     const artifactFailureCount = artifacts.filter((artifact) => artifact.unconfirmed || artifact.error).length;
 
     await heartbeat(

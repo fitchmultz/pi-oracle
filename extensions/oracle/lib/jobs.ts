@@ -30,6 +30,9 @@ export const ORACLE_STALE_HEARTBEAT_MS = 3 * 60 * 1000;
 export const ORACLE_NOTIFICATION_CLAIM_TTL_MS = 60_000;
 const ORACLE_COMPLETE_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
+export const ORACLE_JOBS_DIR_ENV = "PI_ORACLE_JOBS_DIR";
+const ORACLE_JOBS_DIR = process.env[ORACLE_JOBS_DIR_ENV]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
 
 export function isActiveOracleJob(job: Pick<OracleJob, "status">): boolean {
   return ACTIVE_ORACLE_JOB_STATUSES.includes(job.status);
@@ -148,20 +151,24 @@ export function getSessionFile(ctx: ExtensionContext): string | undefined {
   return manager.getSessionFile?.();
 }
 
+export function getOracleJobsDir(): string {
+  return ORACLE_JOBS_DIR;
+}
+
 export function getJobDir(id: string): string {
-  return join("/tmp", `oracle-${id}`);
+  return join(ORACLE_JOBS_DIR, `oracle-${id}`);
 }
 
 export function listOracleJobDirs(): string[] {
-  if (!existsSync("/tmp")) return [];
-  return readdirSync("/tmp")
+  if (!existsSync(ORACLE_JOBS_DIR)) return [];
+  return readdirSync(ORACLE_JOBS_DIR)
     .filter((name) => name.startsWith("oracle-"))
-    .map((name) => join("/tmp", name))
+    .map((name) => join(ORACLE_JOBS_DIR, name))
     .filter((path) => existsSync(join(path, "job.json")));
 }
 
 export function readJob(jobDirOrId: string): OracleJob | undefined {
-  const jobDir = jobDirOrId.startsWith("/tmp/oracle-") ? jobDirOrId : getJobDir(jobDirOrId);
+  const jobDir = existsSync(join(jobDirOrId, "job.json")) ? jobDirOrId : getJobDir(jobDirOrId);
   const jobPath = join(jobDir, "job.json");
   if (!existsSync(jobPath)) return undefined;
   try {
@@ -528,6 +535,10 @@ export async function createJob(
   await chmod(promptPath, 0o600).catch(() => undefined);
 
   const now = new Date().toISOString();
+  const normalizedEffort = input.modelFamily === "instant" ? undefined : (input.effort ?? config.defaults.effort);
+  const normalizedAutoSwitchToThinking = input.modelFamily === "instant"
+    ? (input.autoSwitchToThinking ?? config.defaults.autoSwitchToThinking)
+    : false;
   const job: OracleJob = {
     id,
     status: "submitted",
@@ -541,8 +552,8 @@ export async function createJob(
     originSessionFile,
     requestSource: input.requestSource,
     chatModelFamily: input.modelFamily,
-    effort: input.effort,
-    autoSwitchToThinking: input.autoSwitchToThinking,
+    effort: normalizedEffort,
+    autoSwitchToThinking: normalizedAutoSwitchToThinking,
     followUpToJobId: input.followUpToJobId,
     chatUrl: input.followUpToJobId ? input.chatUrl : undefined,
     conversationId,

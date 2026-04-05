@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type OracleConfig } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
+import { filterStructuralArtifactCandidates, parseSnapshotEntries } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
   createJob,
   getJobDir,
@@ -16,7 +17,7 @@ import {
   updateJob,
   withJobPhase,
 } from "../extensions/oracle/lib/jobs.ts";
-import { acquireLock, sweepStaleLocks, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
+import { acquireLock, getOracleStateDir, sweepStaleLocks, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
 import { startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { acquireConversationLease, acquireRuntimeLease, releaseConversationLease, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
 
@@ -34,7 +35,7 @@ async function ensureNoActiveJobs(): Promise<void> {
     .filter((job): job is NonNullable<typeof job> => Boolean(job))
     .filter((job) => isActiveOracleJob(job));
   if (activeJobs.length > 0) {
-    throw new Error(`Refusing to run oracle sanity checks while active jobs exist: ${activeJobs.map((job) => job.id).join(", ")}`);
+    throw new Error(`Refusing to run oracle sanity checks while active jobs exist in the configured jobs dir: ${activeJobs.map((job) => job.id).join(", ")}`);
   }
 }
 
@@ -49,7 +50,7 @@ async function cleanupJob(id: string): Promise<void> {
 }
 
 async function testRuntimeConversationLeases(config: OracleConfig): Promise<void> {
-  await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
+  await rm(getOracleStateDir(), { recursive: true, force: true });
   const jobA = `sanity-lease-${randomUUID()}`;
   const jobB = `sanity-lease-${randomUUID()}`;
   await writeActiveJob(jobA);
@@ -144,6 +145,60 @@ async function createTerminalJob(config: OracleConfig, cwd: string, sessionId: s
   return jobId;
 }
 
+async function testJobCreationNormalizesEffort(config: OracleConfig): Promise<void> {
+  const cwd = process.cwd();
+  const sessionId = "/tmp/oracle-sanity-session-normalize.jsonl";
+
+  const thinkingJobId = `sanity-job-${randomUUID()}`;
+  const thinkingRuntime = {
+    runtimeId: `runtime-${randomUUID()}`,
+    runtimeSessionName: `oracle-runtime-${randomUUID()}`,
+    runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
+    seedGeneration: new Date().toISOString(),
+  };
+  await createJob(
+    thinkingJobId,
+    {
+      prompt: "sanity",
+      files: ["docs/ORACLE_DESIGN.md"],
+      modelFamily: "thinking",
+      requestSource: "tool",
+    },
+    cwd,
+    sessionId,
+    config,
+    thinkingRuntime,
+  );
+  const thinkingJob = readJob(thinkingJobId);
+  assert(thinkingJob?.effort === config.defaults.effort, "thinking jobs should inherit default effort when omitted");
+  assert(thinkingJob?.autoSwitchToThinking === false, "thinking jobs should not enable autoSwitchToThinking");
+  await cleanupJob(thinkingJobId);
+
+  const instantJobId = `sanity-job-${randomUUID()}`;
+  const instantRuntime = {
+    runtimeId: `runtime-${randomUUID()}`,
+    runtimeSessionName: `oracle-runtime-${randomUUID()}`,
+    runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
+    seedGeneration: new Date().toISOString(),
+  };
+  await createJob(
+    instantJobId,
+    {
+      prompt: "sanity",
+      files: ["docs/ORACLE_DESIGN.md"],
+      modelFamily: "instant",
+      requestSource: "tool",
+    },
+    cwd,
+    sessionId,
+    config,
+    instantRuntime,
+  );
+  const instantJob = readJob(instantJobId);
+  assert(instantJob?.effort === undefined, "instant jobs should never persist an effort");
+  await cleanupJob(instantJobId);
+}
+
 async function testNotificationClaims(config: OracleConfig): Promise<void> {
   const cwd = process.cwd();
   const sessionId = "/tmp/oracle-sanity-session-a.jsonl";
@@ -221,7 +276,7 @@ function testAuthCookiePolicy(): void {
 }
 
 async function testStaleLockRecovery(): Promise<void> {
-  await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
+  await rm(getOracleStateDir(), { recursive: true, force: true });
   await acquireLock("reconcile", "global", { processPid: 999_999_999, source: "oracle-sanity-stale-lock" });
 
   let entered = false;
@@ -233,7 +288,7 @@ async function testStaleLockRecovery(): Promise<void> {
 }
 
 async function testDeadPidLockSweep(): Promise<void> {
-  await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
+  await rm(getOracleStateDir(), { recursive: true, force: true });
   await acquireLock("job", `stale-job-lock-${randomUUID()}`, { processPid: 999_999_999, source: "oracle-sanity-dead-lock" });
   const removed = await sweepStaleLocks();
   assert(removed.length === 1, `expected exactly one stale lock to be removed, saw ${removed.length}`);
@@ -326,8 +381,144 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
 
 async function testResponseTimeoutGuard(): Promise<void> {
   const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
+  const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
+  assert(workerSource.includes("querySelectorAll('button, a')"), "worker should scan both button and link artifact controls");
+  assert(workerSource.includes("ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000"), "worker should keep the longer artifact download timeout");
+  assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
+  assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
+}
+
+function testThinkingClosedStateVerification(): void {
+  const closedThinkingSnapshot = [
+    '- button "Thinking, click to remove" [ref=e110]',
+    '- button "Thinking" [expanded=false, ref=e111]',
+  ].join("\n");
+  const entries = parseSnapshotEntries(closedThinkingSnapshot);
+  const thinkingVisible = entries.some((entry) => {
+    if (entry.disabled || entry.kind !== "button") return false;
+    const label = String(entry.label || "").toLowerCase();
+    return label === "thinking" || label === "thinking, click to remove" || label.startsWith("thinking ");
+  });
+  assert(thinkingVisible, "closed thinking snapshots should still verify model selection even when effort is hidden");
+}
+
+async function testSanityRunnerIsolation(): Promise<void> {
+  const runnerSource = await readFile(new URL("./oracle-sanity-runner.mjs", import.meta.url), "utf8");
+  assert(runnerSource.includes("/tmp/pi-oracle-sanity-state-"), "sanity runner should force an isolated oracle state dir");
+  assert(runnerSource.includes("/tmp/pi-oracle-sanity-jobs-"), "sanity runner should force an isolated oracle jobs dir");
+  assert(!runnerSource.includes("process.env.PI_ORACLE_STATE_DIR?.trim()"), "sanity runner should not reuse inherited production state dir env");
+  assert(!runnerSource.includes("process.env.PI_ORACLE_JOBS_DIR?.trim()"), "sanity runner should not reuse inherited production jobs dir env");
+}
+
+function testArtifactCandidateHeuristics(): void {
+  const successCandidates = filterStructuralArtifactCandidates([
+    {
+      label: "sup-homie.txt",
+      paragraphText: "Created the artifact: sup-homie.txt",
+      listItemText: "",
+      paragraphFileButtonCount: 1,
+      paragraphOtherTextLength: 21,
+      listItemFileButtonCount: 0,
+      focusableFileButtonCount: 1,
+      focusableOtherTextLength: 21,
+    },
+    {
+      label: "linked-download.txt",
+      paragraphText: "linked-download.txt",
+      listItemText: "linked-download.txt",
+      paragraphFileButtonCount: 1,
+      paragraphOtherTextLength: 0,
+      listItemFileButtonCount: 1,
+      focusableFileButtonCount: 1,
+      focusableOtherTextLength: 0,
+    },
+    {
+      label: "Attached",
+      paragraphText: "Attached",
+      listItemText: "Attached",
+      paragraphFileButtonCount: 1,
+      paragraphOtherTextLength: 0,
+      listItemFileButtonCount: 1,
+      focusableFileButtonCount: 1,
+      focusableOtherTextLength: 0,
+    },
+    {
+      label: "Done",
+      paragraphText: "Done",
+      listItemText: "Done",
+      paragraphFileButtonCount: 1,
+      paragraphOtherTextLength: 0,
+      listItemFileButtonCount: 1,
+      focusableFileButtonCount: 1,
+      focusableOtherTextLength: 0,
+    },
+  ]);
+  assert(successCandidates.some((candidate) => candidate.label === "sup-homie.txt"), "artifact heuristics should preserve real downloadable artifacts");
+  assert(successCandidates.some((candidate) => candidate.label === "linked-download.txt"), "artifact heuristics should preserve link-rendered downloadable artifacts");
+  assert(successCandidates.some((candidate) => candidate.label === "Attached"), "artifact heuristics should preserve generic Attached download controls");
+  assert(successCandidates.some((candidate) => candidate.label === "Done"), "artifact heuristics should preserve generic Done download controls");
+
+  const falsePositiveCandidates = filterStructuralArtifactCandidates([
+    {
+      label: "package.json",
+      paragraphText: "Related process issue: the current flow is still self-inconsistent. check:release starts with the clean-tree guard in package.json via scripts/check-clean-worktree.mjs, while the README says to regenerate provider QA bundles first and then run release check in README.md.",
+      listItemText: "",
+      paragraphFileButtonCount: 3,
+      paragraphOtherTextLength: 180,
+      listItemFileButtonCount: 0,
+      focusableFileButtonCount: 3,
+      focusableOtherTextLength: 180,
+    },
+    {
+      label: "scripts/check-clean-worktree.mjs",
+      paragraphText: "Related process issue: the current flow is still self-inconsistent. check:release starts with the clean-tree guard in package.json via scripts/check-clean-worktree.mjs, while the README says to regenerate provider QA bundles first and then run release check in README.md.",
+      listItemText: "",
+      paragraphFileButtonCount: 3,
+      paragraphOtherTextLength: 180,
+      listItemFileButtonCount: 0,
+      focusableFileButtonCount: 3,
+      focusableOtherTextLength: 180,
+    },
+  ]);
+  assert(falsePositiveCandidates.length === 0, "artifact heuristics should ignore inline file-reference buttons in normal prose responses");
+
+  const artifactOnlyCandidates = filterStructuralArtifactCandidates([
+    {
+      label: "report.csv",
+      paragraphText: "report.csv",
+      listItemText: "report.csv",
+      paragraphFileButtonCount: 1,
+      paragraphOtherTextLength: 0,
+      listItemFileButtonCount: 1,
+      focusableFileButtonCount: 1,
+      focusableOtherTextLength: 0,
+    },
+    {
+      label: "dog.txt",
+      paragraphText: "dog.txt cat.txt",
+      listItemText: "",
+      paragraphFileButtonCount: 2,
+      paragraphOtherTextLength: 0,
+      listItemFileButtonCount: 0,
+      focusableFileButtonCount: 2,
+      focusableOtherTextLength: 8,
+    },
+    {
+      label: "cat.txt",
+      paragraphText: "dog.txt cat.txt",
+      listItemText: "",
+      paragraphFileButtonCount: 2,
+      paragraphOtherTextLength: 0,
+      listItemFileButtonCount: 0,
+      focusableFileButtonCount: 2,
+      focusableOtherTextLength: 8,
+    },
+  ]);
+  assert(artifactOnlyCandidates.some((candidate) => candidate.label === "report.csv"), "empty artifact-only responses should still allow artifact capture");
+  assert(artifactOnlyCandidates.some((candidate) => candidate.label === "dog.txt"), "compact multi-file artifact blocks should still allow artifact capture");
+  assert(artifactOnlyCandidates.some((candidate) => candidate.label === "cat.txt"), "compact multi-file artifact blocks should still allow artifact capture");
 }
 
 async function testPollerHostSafety(): Promise<void> {
@@ -367,6 +558,7 @@ async function main() {
 
   testAuthCookiePolicy();
   await testRuntimeConversationLeases(config);
+  await testJobCreationNormalizesEffort(config);
   await testNotificationClaims(config);
   await testPollerNotification(config);
   await testStaleLockRecovery();
@@ -375,8 +567,11 @@ async function main() {
   await testLifecycleEventCutover();
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
+  await testSanityRunnerIsolation();
+  testThinkingClosedStateVerification();
+  testArtifactCandidateHeuristics();
   await testPollerHostSafety();
-  await rm("/tmp/pi-oracle-state", { recursive: true, force: true });
+  await rm(getOracleStateDir(), { recursive: true, force: true });
   console.log("oracle sanity checks passed");
 }
 
