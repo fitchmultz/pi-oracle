@@ -44,6 +44,7 @@ const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS = 20_000;
 const MODEL_CONFIGURATION_SETTLE_POLL_MS = 250;
 const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
+const POST_SEND_SETTLE_MS = 15_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
@@ -1510,6 +1511,8 @@ async function run() {
     const baselineAssistantCount = (await assistantMessages(currentJob)).length;
     await log(`Assistant response count before send: ${baselineAssistantCount}`);
     await clickSend(currentJob);
+    await log(`Waiting ${POST_SEND_SETTLE_MS}ms after send to avoid streaming interruption`);
+    await sleep(POST_SEND_SETTLE_MS);
 
     const chatUrl = await waitForStableChatUrl(currentJob, currentJob.chatUrl);
     const conversationId = parseConversationId(chatUrl) || currentJob.conversationId;

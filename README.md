@@ -36,12 +36,14 @@ An oracle job:
 5. persists the response and any artifacts under `/tmp/oracle-<job-id>/`
    - old terminal jobs are later pruned according to cleanup retention settings
    - when directory inputs are expanded, project archives automatically skip common bulky generated caches and top-level build outputs such as `node_modules/`, `target/`, virtualenv caches, coverage outputs, and `dist/`/`build/`/`out/`, unless you explicitly pass those directories
+   - whole-repo archive defaults also skip obvious credentials/private data such as `.env` files, key material, credential dotfiles, local database files, and root `secrets/` directories unless you explicitly pass them
+   - if a whole-repo archive is still too large after default exclusions, submit automatically prunes the largest nested directories with generic generated-output names like `build/`, `dist/`, `out/`, `coverage/`, and `tmp/` outside obvious source roots like `src/` and `lib/`, and successful submissions report what was pruned
 6. wakes the originating `pi` session on completion
 
 ## Example
 
 ```text
-/oracle Invoke the Oracle to have it generate a thorough code review of the current pending changes. Include all modified files, and adjacent files, in the archive. Use the Pro Model with Extended effort.
+/oracle Invoke the Oracle to have it generate a thorough code review of the current pending changes. By default include the whole repo archive unless the request clearly needs a narrower scope. Use the Pro Model with Extended effort.
 ```
 
 ## Why this exists

@@ -60,6 +60,8 @@ const VALID_EFFORTS: Record<OracleModelFamily, readonly OracleEffort[]> = {
   pro: ["standard", "extended"],
 };
 
+const MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
+
 const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".git",
   ".hg",
@@ -89,11 +91,35 @@ const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".serverless",
   ".aws-sam",
 ]);
-const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_AT_REPO_ROOT = new Set(["coverage", "htmlcov", "tmp", "temp", ".tmp", "dist", "build", "out"]);
-const DEFAULT_ARCHIVE_EXCLUDED_FILES = new Set([".coverage", ".DS_Store", "Thumbs.db"]);
-const DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES = [".pyc", ".pyo", ".pyd", ".tsbuildinfo", ".tfstate"];
+const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_AT_REPO_ROOT = new Set(["coverage", "htmlcov", "tmp", "temp", ".tmp", "dist", "build", "out", "secrets", ".secrets"]);
+const DEFAULT_ARCHIVE_EXCLUDED_FILES = new Set([
+  ".coverage",
+  ".DS_Store",
+  ".env",
+  ".netrc",
+  ".npmrc",
+  ".pypirc",
+  "Thumbs.db",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "id_rsa",
+]);
+const DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES = [".db", ".key", ".p12", ".pfx", ".pyc", ".pyd", ".pyo", ".pem", ".sqlite", ".sqlite3", ".tsbuildinfo", ".tfstate"];
 const DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS = [".tfstate."];
+const DEFAULT_ARCHIVE_EXCLUDED_ENV_ALLOWLIST = new Set([".env.dist", ".env.example", ".env.sample", ".env.template"]);
 const DEFAULT_ARCHIVE_EXCLUDED_PATH_SEQUENCES = [[".yarn", "cache"]] as const;
+const ADAPTIVE_ARCHIVE_PRUNE_DIR_NAMES_ANYWHERE = new Set(["build", "dist", "out", "coverage", "htmlcov", "tmp", "temp", ".tmp"]);
+const ADAPTIVE_ARCHIVE_PRUNE_PROTECTED_ANCESTOR_DIR_NAMES = new Set(["src", "source", "sources", "lib"]);
+
+type ArchiveSizeBreakdownRow = { relativePath: string; bytes: number };
+type ArchiveCreationResult = {
+  sha256: string;
+  archiveBytes: number;
+  initialArchiveBytes?: number;
+  autoPrunedPrefixes: ArchiveSizeBreakdownRow[];
+  includedEntries: string[];
+};
 
 function pathContainsSequence(relativePath: string, sequence: readonly string[]): boolean {
   const segments = relativePath.split("/").filter(Boolean);
@@ -108,6 +134,62 @@ function getRelativeDepth(relativePath: string): number {
   return relativePath.split("/").filter(Boolean).length;
 }
 
+function formatBytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
+function formatDirectoryLabel(relativePath: string): string {
+  return relativePath.endsWith("/") ? relativePath : `${relativePath}/`;
+}
+
+function summarizeByKey(
+  entrySizes: ArchiveSizeBreakdownRow[],
+  keyForEntry: (relativePath: string) => string | undefined,
+  limit = 7,
+): ArchiveSizeBreakdownRow[] {
+  const totals = new Map<string, number>();
+  for (const entry of entrySizes) {
+    const key = keyForEntry(entry.relativePath);
+    if (!key) continue;
+    totals.set(key, (totals.get(key) ?? 0) + entry.bytes);
+  }
+  return [...totals.entries()]
+    .map(([relativePath, bytes]) => ({ relativePath, bytes }))
+    .sort((left, right) => right.bytes - left.bytes || left.relativePath.localeCompare(right.relativePath))
+    .slice(0, limit);
+}
+
+function summarizeTopLevelIncludedPaths(entrySizes: ArchiveSizeBreakdownRow[]): ArchiveSizeBreakdownRow[] {
+  return summarizeByKey(entrySizes, (relativePath) => {
+    const [topLevel, ...rest] = relativePath.split("/").filter(Boolean);
+    if (!topLevel) return undefined;
+    return rest.length > 0 ? `${topLevel}/` : topLevel;
+  });
+}
+
+function getAdaptivePrunePrefix(relativePath: string): string | undefined {
+  const segments = relativePath.split("/").filter(Boolean);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const name = segments[index];
+    if (!ADAPTIVE_ARCHIVE_PRUNE_DIR_NAMES_ANYWHERE.has(name)) continue;
+    const ancestors = segments.slice(0, index);
+    if (ancestors.some((segment) => ADAPTIVE_ARCHIVE_PRUNE_PROTECTED_ANCESTOR_DIR_NAMES.has(segment))) continue;
+    return segments.slice(0, index + 1).join("/");
+  }
+  return undefined;
+}
+
+function summarizeAdaptivePruneCandidates(
+  entrySizes: ArchiveSizeBreakdownRow[],
+  minimumBytes = 0,
+): ArchiveSizeBreakdownRow[] {
+  return summarizeByKey(entrySizes, getAdaptivePrunePrefix, Number.POSITIVE_INFINITY).filter((entry) => entry.bytes >= minimumBytes);
+}
+
+function pruneEntriesByPrefix(entries: string[], prefix: string): string[] {
+  return entries.filter((entry) => entry !== prefix && !entry.startsWith(`${prefix}/`));
+}
+
 function shouldExcludeArchivePath(relativePath: string, isDirectory: boolean, options?: { forceInclude?: boolean }): boolean {
   const normalized = posix.normalize(relativePath).replace(/^\.\//, "");
   if (!normalized || normalized === ".") return false;
@@ -120,6 +202,7 @@ function shouldExcludeArchivePath(relativePath: string, isDirectory: boolean, op
     return false;
   }
   if (DEFAULT_ARCHIVE_EXCLUDED_FILES.has(name)) return true;
+  if (name.startsWith(".env.") && !DEFAULT_ARCHIVE_EXCLUDED_ENV_ALLOWLIST.has(name)) return true;
   if (DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES.some((suffix) => name.endsWith(suffix))) return true;
   if (DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS.some((needle) => name.includes(needle))) return true;
   return false;
@@ -173,85 +256,168 @@ async function expandArchiveEntries(cwd: string, relativePath: string, options?:
   return results;
 }
 
-export async function resolveExpandedArchiveEntries(cwd: string, files: string[]): Promise<string[]> {
-  const entries = resolveArchiveInputs(cwd, files);
+async function resolveExpandedArchiveEntriesFromInputs(
+  cwd: string,
+  entries: Array<{ absolute: string; relative: string }>,
+): Promise<string[]> {
   return Array.from(new Set((await Promise.all(entries.map(async (entry) => {
-    const absolute = join(cwd, entry.relative);
-    const statEntry = await lstat(absolute);
+    const statEntry = await lstat(entry.absolute);
     const forceIncludeSubtree = statEntry.isDirectory() && entry.relative !== "." && shouldExcludeArchivePath(entry.relative, true);
     return expandArchiveEntries(cwd, entry.relative, { forceIncludeSubtree });
   }))).flat())).sort();
 }
 
-async function createArchive(cwd: string, files: string[], archivePath: string): Promise<string> {
-  const expandedEntries = await resolveExpandedArchiveEntries(cwd, files);
+export async function resolveExpandedArchiveEntries(cwd: string, files: string[]): Promise<string[]> {
+  return resolveExpandedArchiveEntriesFromInputs(cwd, resolveArchiveInputs(cwd, files));
+}
+
+function isWholeRepoArchiveSelection(entries: Array<{ absolute: string; relative: string }>): boolean {
+  return entries.length === 1 && entries[0]?.relative === ".";
+}
+
+async function measureArchiveEntrySizes(cwd: string, entries: string[]): Promise<ArchiveSizeBreakdownRow[]> {
+  return Promise.all(entries.map(async (relativePath) => ({ relativePath, bytes: (await lstat(join(cwd, relativePath))).size })));
+}
+
+function formatArchiveOversizeError(args: {
+  archiveBytes: number;
+  maxBytes: number;
+  entrySizes: ArchiveSizeBreakdownRow[];
+  autoPrunedPrefixes: ArchiveSizeBreakdownRow[];
+  adaptivePruneMinBytes?: number;
+}): string {
+  const topLevel = summarizeTopLevelIncludedPaths(args.entrySizes);
+  const adaptiveCandidates = summarizeAdaptivePruneCandidates(args.entrySizes, args.adaptivePruneMinBytes).slice(0, 7);
+  return [
+    `Oracle archive exceeds ChatGPT upload limit after default exclusions${args.autoPrunedPrefixes.length > 0 ? " and automatic generic generated-output-dir pruning" : ""}: ${args.archiveBytes} bytes >= ${args.maxBytes} bytes`,
+    args.autoPrunedPrefixes.length > 0 ? "Automatically pruned generic generated-output paths before failing:" : undefined,
+    ...args.autoPrunedPrefixes.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
+    topLevel.length > 0 ? "Approx top-level included sizes:" : undefined,
+    ...topLevel.map((entry) => `- ${entry.relativePath} — ${formatBytes(entry.bytes)}`),
+    adaptiveCandidates.length > 0 ? "Largest remaining generic generated-output-dir candidates:" : undefined,
+    ...adaptiveCandidates.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
+    "Retry with narrower archive inputs, starting with modified files plus adjacent files plus directly relevant subtrees.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function writeArchiveFile(cwd: string, entries: string[], archivePath: string, listPath: string): Promise<number> {
+  await writeFile(listPath, Buffer.from(`${entries.join("\0")}\0`), { mode: 0o600 });
+  await rm(archivePath, { force: true }).catch(() => undefined);
+
+  const { spawn } = await import("node:child_process");
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const tar = spawn("tar", ["--null", "-cf", "-", "-T", listPath], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const zstd = spawn("zstd", ["-19", "-T0", "-f", "-o", archivePath], {
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+
+    let stderr = "";
+    let settled = false;
+    let tarCode: number | null | undefined;
+    let zstdCode: number | null | undefined;
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      if (error) {
+        settled = true;
+        tar.kill("SIGTERM");
+        zstd.kill("SIGTERM");
+        rejectPromise(error);
+        return;
+      }
+      if (tarCode === undefined || zstdCode === undefined) return;
+      settled = true;
+      if (tarCode === 0 && zstdCode === 0) resolvePromise();
+      else rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}, zstd=${zstdCode})`));
+    };
+
+    tar.stderr.on("data", (data) => {
+      stderr += String(data);
+    });
+    zstd.stderr.on("data", (data) => {
+      stderr += String(data);
+    });
+    tar.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+    zstd.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+    tar.on("close", (code) => {
+      tarCode = code;
+      finish();
+    });
+    zstd.on("close", (code) => {
+      zstdCode = code;
+      finish();
+    });
+    tar.stdout.pipe(zstd.stdin);
+  });
+
+  return (await stat(archivePath)).size;
+}
+
+export async function createArchiveForTesting(
+  cwd: string,
+  files: string[],
+  archivePath: string,
+  options?: { maxBytes?: number; adaptivePruneMinBytes?: number },
+): Promise<ArchiveCreationResult> {
+  const archiveInputs = resolveArchiveInputs(cwd, files);
+  const wholeRepoSelection = isWholeRepoArchiveSelection(archiveInputs);
+  let expandedEntries = await resolveExpandedArchiveEntriesFromInputs(cwd, archiveInputs);
   if (expandedEntries.length === 0) {
     throw new Error("Oracle archive inputs are empty after default exclusions");
   }
+
   const listDir = await mkdtemp(join(tmpdir(), "oracle-filelist-"));
   const listPath = join(listDir, "files.list");
-  await writeFile(listPath, Buffer.from(`${expandedEntries.join("\0")}\0`), { mode: 0o600 });
+  const maxBytes = options?.maxBytes ?? MAX_ARCHIVE_BYTES;
+  const adaptivePruneMinBytes = options?.adaptivePruneMinBytes ?? 0;
+  const autoPrunedPrefixes: ArchiveSizeBreakdownRow[] = [];
+  let initialArchiveBytes: number | undefined;
 
   try {
-    const { spawn } = await import("node:child_process");
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      const tar = spawn("tar", ["--null", "-cf", "-", "-T", listPath], {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const zstd = spawn("zstd", ["-19", "-T0", "-o", archivePath], {
-        stdio: ["pipe", "ignore", "pipe"],
-      });
+    while (true) {
+      if (expandedEntries.length === 0) {
+        throw new Error("Oracle archive inputs are empty after default exclusions and automatic size pruning");
+      }
 
-      let stderr = "";
-      let settled = false;
-      let tarCode: number | null | undefined;
-      let zstdCode: number | null | undefined;
+      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath);
+      if (archiveBytes < maxBytes) {
+        return {
+          sha256: await sha256File(archivePath),
+          archiveBytes,
+          initialArchiveBytes,
+          autoPrunedPrefixes,
+          includedEntries: [...expandedEntries],
+        };
+      }
 
-      const finish = (error?: Error) => {
-        if (settled) return;
-        if (error) {
-          settled = true;
-          tar.kill("SIGTERM");
-          zstd.kill("SIGTERM");
-          rejectPromise(error);
-          return;
-        }
-        if (tarCode === undefined || zstdCode === undefined) return;
-        settled = true;
-        if (tarCode === 0 && zstdCode === 0) resolvePromise();
-        else rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}, zstd=${zstdCode})`));
-      };
+      if (initialArchiveBytes === undefined) initialArchiveBytes = archiveBytes;
+      const entrySizes = await measureArchiveEntrySizes(cwd, expandedEntries);
+      if (!wholeRepoSelection) {
+        throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
+      }
 
-      tar.stderr.on("data", (data) => {
-        stderr += String(data);
-      });
-      zstd.stderr.on("data", (data) => {
-        stderr += String(data);
-      });
-      tar.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
-      zstd.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
-      tar.on("close", (code) => {
-        tarCode = code;
-        finish();
-      });
-      zstd.on("close", (code) => {
-        zstdCode = code;
-        finish();
-      });
-      tar.stdout.pipe(zstd.stdin);
-    });
+      const nextCandidate = summarizeAdaptivePruneCandidates(entrySizes, adaptivePruneMinBytes).find(
+        (entry) => !autoPrunedPrefixes.some((pruned) => pruned.relativePath === entry.relativePath),
+      );
+      if (!nextCandidate) {
+        throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
+      }
 
-    const archiveStat = await stat(archivePath);
-    const maxBytes = 250 * 1024 * 1024;
-    if (archiveStat.size >= maxBytes) {
-      throw new Error(`Oracle archive exceeds ChatGPT upload limit: ${archiveStat.size} bytes`);
+      autoPrunedPrefixes.push(nextCandidate);
+      expandedEntries = pruneEntriesByPrefix(expandedEntries, nextCandidate.relativePath);
     }
-
-    return sha256File(archivePath);
   } finally {
     await rm(listDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function createArchive(cwd: string, files: string[], archivePath: string): Promise<ArchiveCreationResult> {
+  return createArchiveForTesting(cwd, files, archivePath);
 }
 
 function validateSubmissionOptions(
@@ -338,9 +504,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     promptSnippet: "Dispatch a background ChatGPT web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
-      "Always include a narrowly scoped archive of exact relevant files/directories.",
+      "By default, archive the whole repo by passing '.'; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and root secrets directories.",
+      "Only narrow file selection when the user explicitly asks, the task is clearly scoped smaller, or privacy/sensitivity requires it.",
+      "For very targeted asks like a single function or stack trace, a smaller archive is preferable.",
+      "When files='.' and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like build/, dist/, out/, coverage/, and tmp/ outside obvious source roots like src/ and lib/ until the archive fits or no candidate remains; successful submissions report what was pruned.",
+      "If a submitted oracle job later fails because upload is rejected, retry smaller: remove the largest obviously irrelevant/generated content first, then narrow to modified files plus adjacent files plus directly relevant subtrees, then explain the cut or ask the user if still needed.",
+      "If oracle_submit itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error instead of retrying automatically.",
       "Stop after dispatching oracle_submit; do not continue the task while the oracle job is running.",
-      "If oracle_submit fails, stop and report the error instead of retrying automatically.",
       "Only use autoSwitchToThinking with modelFamily=instant.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
@@ -372,7 +542,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       let job;
 
       try {
-        const archiveSha256 = await createArchive(ctx.cwd, params.files, tempArchivePath);
+        const archive = await createArchive(ctx.cwd, params.files, tempArchivePath);
         await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
           await acquireRuntimeLease(config, {
             jobId,
@@ -414,7 +584,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
         const worker = await spawnWorker(workerPath, job.id);
         await updateJob(job.id, (current) => ({
           ...current,
-          archiveSha256,
+          archiveSha256: archive.sha256,
           workerPid: worker.pid,
           workerNonce: worker.nonce,
           workerStartedAt: worker.startedAt,
@@ -430,6 +600,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
                 followUp.followUpToJobId ? `Follow-up to: ${followUp.followUpToJobId}` : undefined,
                 `Prompt: ${job.promptPath}`,
                 `Archive: ${job.archivePath}`,
+                archive.autoPrunedPrefixes.length > 0
+                  ? `Archive auto-pruned generic generated-output-name dirs to fit size limit: ${archive.autoPrunedPrefixes.map((entry) => `${entry.relativePath}/ (${formatBytes(entry.bytes)})`).join(", ")}`
+                  : undefined,
                 `Response will be written to: ${job.responsePath}`,
                 "Stop now and wait for the oracle completion wake-up.",
               ]
@@ -437,7 +610,15 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
                 .join("\n"),
             },
           ],
-          details: { jobId: job.id, archiveSha256, runtimeId: job.runtimeId, followUpToJobId: followUp.followUpToJobId },
+          details: {
+            jobId: job.id,
+            archiveSha256: archive.sha256,
+            archiveBytes: archive.archiveBytes,
+            initialArchiveBytes: archive.initialArchiveBytes,
+            autoPrunedArchivePaths: archive.autoPrunedPrefixes,
+            runtimeId: job.runtimeId,
+            followUpToJobId: followUp.followUpToJobId,
+          },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

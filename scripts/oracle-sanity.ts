@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +21,7 @@ import {
 import { acquireLock, getOracleStateDir, sweepStaleLocks, withGlobalReconcileLock } from "../extensions/oracle/lib/locks.ts";
 import { startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { acquireConversationLease, acquireRuntimeLease, releaseConversationLease, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
-import { resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
+import { createArchiveForTesting, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -369,6 +369,7 @@ async function testLifecycleEventCutover(): Promise<void> {
 
 async function testOraclePromptTemplateCutover(): Promise<void> {
   const commandsSource = await readFile(new URL("../extensions/oracle/lib/commands.ts", import.meta.url), "utf8");
+  const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     files?: string[];
@@ -377,6 +378,17 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
 
   assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle prompt template should contain the oracle dispatch instructions");
+  assert(promptSource.includes("include the whole repository by passing `.`"), "/oracle prompt should default to whole-repo archive selection");
+  assert(promptSource.includes("obvious credentials/private data"), "/oracle prompt should mention default exclusion of obvious credentials/private data");
+  assert(promptSource.includes("For very targeted asks like reviewing one function or explaining one stack trace"), "/oracle prompt should preserve the targeted-scope exception");
+  assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "/oracle prompt should describe whole-repo auto-pruning when archives are still too large");
+  assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "/oracle prompt should describe the source-root guard for auto-pruning");
+  assert(promptSource.includes("If a submitted oracle job later fails because upload is rejected"), "/oracle prompt should describe the post-submit upload-rejection fallback ladder");
+  assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
+  assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
+  assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
+  assert(toolsSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle tool guidance should describe whole-repo auto-pruning when archives are still too large");
+  assert(toolsSource.includes("outside obvious source roots like src/ and lib/"), "oracle tool guidance should describe the source-root guard for auto-pruning");
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
 }
@@ -388,6 +400,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
   assert(workerSource.includes("querySelectorAll('button, a')"), "worker should scan both button and link artifact controls");
   assert(workerSource.includes("ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000"), "worker should keep the longer artifact download timeout");
+  assert(workerSource.includes("POST_SEND_SETTLE_MS = 15_000"), "worker should wait 15 seconds after send before continuing");
   assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
 }
@@ -400,14 +413,22 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await mkdir(join(fixtureDir, "build"), { recursive: true });
     await mkdir(join(fixtureDir, "dist"), { recursive: true });
     await mkdir(join(fixtureDir, "node_modules", "pkg"), { recursive: true });
+    await mkdir(join(fixtureDir, "apps", "RalphMac", "target"), { recursive: true });
     await mkdir(join(fixtureDir, "packages", "app", ".yarn", "cache"), { recursive: true });
     await mkdir(join(fixtureDir, "linked"), { recursive: true });
+    await mkdir(join(fixtureDir, "secrets"), { recursive: true });
     await writeFile(join(fixtureDir, "src", "build", "keeper.ts"), "export const keeper = true;\n");
     await writeFile(join(fixtureDir, "src", "regular.ts"), "export const regular = true;\n");
     await writeFile(join(fixtureDir, "build", "root-output.js"), "console.log('build');\n");
     await writeFile(join(fixtureDir, "dist", "root-output.js"), "console.log('dist');\n");
     await writeFile(join(fixtureDir, "node_modules", "pkg", "index.js"), "module.exports = {};\n");
+    await writeFile(join(fixtureDir, "apps", "RalphMac", "target", "debug.bin"), "debug\n");
     await writeFile(join(fixtureDir, "packages", "app", ".yarn", "cache", "pkg.tgz"), "pkg\n");
+    await writeFile(join(fixtureDir, ".env"), "API_KEY=secret\n");
+    await writeFile(join(fixtureDir, ".env.example"), "API_KEY=example\n");
+    await writeFile(join(fixtureDir, ".npmrc"), "//registry.npmjs.org/:_authToken=secret\n");
+    await writeFile(join(fixtureDir, "dev.sqlite"), "sqlite\n");
+    await writeFile(join(fixtureDir, "secrets", "prod.pem"), "pem\n");
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "coverage"));
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "linked", "node_modules"));
 
@@ -417,7 +438,13 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     assert(!rootEntries.includes("build/root-output.js"), "root archive expansion should exclude top-level build output");
     assert(!rootEntries.includes("dist/root-output.js"), "root archive expansion should exclude top-level dist output");
     assert(!rootEntries.includes("node_modules/pkg/index.js"), "root archive expansion should exclude node_modules anywhere");
+    assert(!rootEntries.includes("apps/RalphMac/target/debug.bin"), "root archive expansion should exclude nested target directories anywhere");
     assert(!rootEntries.includes("packages/app/.yarn/cache/pkg.tgz"), "root archive expansion should exclude nested .yarn/cache content");
+    assert(!rootEntries.includes(".env"), "root archive expansion should exclude .env files by default");
+    assert(rootEntries.includes(".env.example"), "root archive expansion should preserve .env example files");
+    assert(!rootEntries.includes(".npmrc"), "root archive expansion should exclude credential dotfiles by default");
+    assert(!rootEntries.includes("dev.sqlite"), "root archive expansion should exclude local database files by default");
+    assert(!rootEntries.includes("secrets/prod.pem"), "root archive expansion should exclude root secrets directories by default");
     assert(!rootEntries.includes("coverage"), "root archive expansion should exclude symlinked top-level coverage directories");
     assert(!rootEntries.includes("linked/node_modules"), "root archive expansion should exclude symlinked nested node_modules directories");
 
@@ -437,6 +464,12 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     const explicitBuildFileEntries = await resolveExpandedArchiveEntries(fixtureDir, ["build/root-output.js"]);
     assert(explicitBuildFileEntries.length === 1 && explicitBuildFileEntries[0] === "build/root-output.js", "explicitly requested files should always be preserved");
 
+    const explicitEnvEntries = await resolveExpandedArchiveEntries(fixtureDir, [".env"]);
+    assert(explicitEnvEntries.length === 1 && explicitEnvEntries[0] === ".env", "explicitly requested secret-bearing files should be preserved");
+
+    const explicitSecretsDirEntries = await resolveExpandedArchiveEntries(fixtureDir, ["secrets"]);
+    assert(explicitSecretsDirEntries.includes("secrets/prod.pem"), "explicitly requested root secrets directories should be preserved");
+
     const explicitCoverageSymlinkEntries = await resolveExpandedArchiveEntries(fixtureDir, ["coverage"]);
     assert(explicitCoverageSymlinkEntries.length === 1 && explicitCoverageSymlinkEntries[0] === "coverage", "explicitly requested excluded-directory symlinks should be preserved as explicit paths");
 
@@ -450,6 +483,56 @@ async function testArchiveDefaultExclusions(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(excludedOnlyDir, { recursive: true, force: true });
+  }
+}
+
+async function testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-prune-"));
+  const archivePath = join(tmpdir(), `oracle-archive-prune-${randomUUID()}.tar.zst`);
+  try {
+    await mkdir(join(fixtureDir, "apps", "RalphMac", "build"), { recursive: true });
+    await mkdir(join(fixtureDir, "apps", "RalphMac", "src"), { recursive: true });
+    await mkdir(join(fixtureDir, "src", "build"), { recursive: true });
+    await writeFile(join(fixtureDir, "apps", "RalphMac", "src", "main.ts"), "export const main = true;\n");
+    await writeFile(join(fixtureDir, "src", "build", "keeper.ts"), "export const keeper = true;\n");
+    await writeFile(join(fixtureDir, "apps", "RalphMac", "build", "bundle.bin"), randomBytes(192 * 1024));
+
+    const result = await createArchiveForTesting(fixtureDir, ["."], archivePath, {
+      maxBytes: 96 * 1024,
+      adaptivePruneMinBytes: 0,
+    });
+
+    assert(result.autoPrunedPrefixes.some((entry) => entry.relativePath === "apps/RalphMac/build"), "whole-repo archive creation should auto-prune oversized nested build directories");
+    assert(!result.autoPrunedPrefixes.some((entry) => entry.relativePath === "src/build"), "whole-repo archive creation should not auto-prune build directories under source roots");
+    assert(result.includedEntries.includes("src/build/keeper.ts"), "whole-repo archive creation should preserve legitimate src/build content after pruning");
+    assert((result.initialArchiveBytes ?? 0) >= 96 * 1024, "whole-repo archive pruning test should begin over the size limit");
+    assert(result.archiveBytes < 96 * 1024, "whole-repo archive pruning should reduce the archive below the configured limit");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
+  }
+}
+
+async function testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-small-prune-"));
+  const archivePath = join(tmpdir(), `oracle-archive-small-prune-${randomUUID()}.tar.zst`);
+  try {
+    await mkdir(join(fixtureDir, "apps", "Tiny", "build"), { recursive: true });
+    await mkdir(join(fixtureDir, "src"), { recursive: true });
+    await writeFile(join(fixtureDir, "src", "main.ts"), "export const main = true;\n");
+    await writeFile(join(fixtureDir, "apps", "Tiny", "build", "bundle.bin"), randomBytes(12 * 1024));
+
+    const result = await createArchiveForTesting(fixtureDir, ["."], archivePath, {
+      maxBytes: 8 * 1024,
+      adaptivePruneMinBytes: 0,
+    });
+
+    assert(result.autoPrunedPrefixes.some((entry) => entry.relativePath === "apps/Tiny/build"), "whole-repo archive creation should prune matching generated dirs even when they are below 4 MiB");
+    assert((result.initialArchiveBytes ?? 0) >= 8 * 1024, "sub-threshold pruning test should begin over the size limit");
+    assert(result.archiveBytes < 8 * 1024, "sub-threshold pruning should reduce the archive below the configured limit");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
   }
 }
 
@@ -631,6 +714,8 @@ async function main() {
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
   await testArchiveDefaultExclusions();
+  await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
+  await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testSanityRunnerIsolation();
   testThinkingClosedStateVerification();
   testArtifactCandidateHeuristics();
