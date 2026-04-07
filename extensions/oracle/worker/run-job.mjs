@@ -1,9 +1,11 @@
-import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { spawn, execFileSync } from "node:child_process";
 import { FILE_LABEL_PATTERN_SOURCE, filterStructuralArtifactCandidates, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries } from "./artifact-heuristics.mjs";
+import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
 if (!jobId) {
@@ -29,10 +31,9 @@ const MODEL_FAMILY_PREFIX = {
   pro: "Pro ",
 };
 
+const WORKER_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
-const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
-const LEASES_DIR = join(ORACLE_STATE_DIR, "leases");
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
 const ARTIFACT_CANDIDATE_STABILITY_TIMEOUT_MS = 15_000;
 const ARTIFACT_CANDIDATE_STABILITY_POLL_MS = 1_500;
@@ -61,23 +62,6 @@ async function ensurePrivateDir(path) {
   await chmod(path, 0o700).catch(() => undefined);
 }
 
-function leaseKey(kind, key) {
-  return `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
-}
-
-async function readLockProcessPid(path) {
-  const metadataPath = join(path, "metadata.json");
-  if (!existsSync(metadataPath)) return undefined;
-  try {
-    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-    return typeof metadata?.processPid === "number" && Number.isInteger(metadata.processPid) && metadata.processPid > 0
-      ? metadata.processPid
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -88,52 +72,68 @@ function isProcessAlive(pid) {
   }
 }
 
-async function maybeReclaimStaleLock(path) {
-  const processPid = await readLockProcessPid(path);
-  if (!processPid || isProcessAlive(processPid)) return false;
-  await rm(path, { recursive: true, force: true }).catch(() => undefined);
-  return true;
-}
-
-async function acquireLock(kind, key, metadata, timeoutMs = 30_000) {
-  const path = join(LOCKS_DIR, leaseKey(kind, key));
-  const deadline = Date.now() + timeoutMs;
-  await ensurePrivateDir(ORACLE_STATE_DIR);
-  await ensurePrivateDir(LOCKS_DIR);
-
-  while (Date.now() < deadline) {
-    try {
-      await mkdir(path, { recursive: false, mode: 0o700 });
-      await secureWriteText(join(path, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`);
-      return path;
-    } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      if (await maybeReclaimStaleLock(path)) continue;
-    }
-    await sleep(200);
-  }
-
-  throw new Error(`Timed out waiting for oracle ${kind} lock: ${key}`);
-}
-
-async function releaseLock(path) {
-  if (!path) return;
-  await rm(path, { recursive: true, force: true }).catch(() => undefined);
-}
-
-async function withLock(kind, key, metadata, fn, timeoutMs) {
-  const handle = await acquireLock(kind, key, metadata, timeoutMs);
+function readProcessStartedAt(pid) {
+  if (!pid || pid <= 0) return undefined;
   try {
-    return await fn();
-  } finally {
-    await releaseLock(handle);
+    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return startedAt || undefined;
+  } catch {
+    return undefined;
   }
 }
 
-async function releaseLease(kind, key) {
-  if (!key) return;
-  await rm(join(LEASES_DIR, leaseKey(kind, key)), { recursive: true, force: true }).catch(() => undefined);
+async function waitForProcessStartedAt(pid, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const startedAt = readProcessStartedAt(pid);
+    if (startedAt) return startedAt;
+    await sleep(100);
+  }
+  return readProcessStartedAt(pid);
 }
+
+async function terminateWorkerPid(pid, startedAt, options = {}) {
+  if (!pid || pid <= 0) return true;
+  const currentStartedAt = readProcessStartedAt(pid);
+  if (!currentStartedAt) return true;
+  if (startedAt && currentStartedAt !== startedAt) return false;
+
+  const termGraceMs = options.termGraceMs ?? 5_000;
+  const killGraceMs = options.killGraceMs ?? 2_000;
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return !isProcessAlive(pid);
+  }
+
+  const termDeadline = Date.now() + termGraceMs;
+  while (Date.now() < termDeadline) {
+    const liveStartedAt = readProcessStartedAt(pid);
+    if (!liveStartedAt) return true;
+    if (startedAt && liveStartedAt !== startedAt) return true;
+    await sleep(250);
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return !isProcessAlive(pid);
+  }
+
+  const killDeadline = Date.now() + killGraceMs;
+  while (Date.now() < killDeadline) {
+    const liveStartedAt = readProcessStartedAt(pid);
+    if (!liveStartedAt) return true;
+    if (startedAt && liveStartedAt !== startedAt) return true;
+    await sleep(250);
+  }
+
+  const finalStartedAt = readProcessStartedAt(pid);
+  if (!finalStartedAt) return true;
+  return startedAt ? finalStartedAt !== startedAt : false;
+}
+
 
 async function secureWriteText(path, content) {
   const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -156,18 +156,79 @@ async function readJob() {
   return readJobUnlocked();
 }
 
+function getAnyJobDir(targetJobId) {
+  return join(ORACLE_JOBS_DIR, `oracle-${targetJobId}`);
+}
+
+function getAnyJobPath(targetJobId) {
+  return join(getAnyJobDir(targetJobId), "job.json");
+}
+
+function readAnyJob(targetJobId) {
+  const path = getAnyJobPath(targetJobId);
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function listQueuedJobs() {
+  if (!existsSync(ORACLE_JOBS_DIR)) return [];
+  return readdirSync(ORACLE_JOBS_DIR)
+    .filter((name) => name.startsWith("oracle-"))
+    .map((name) => readAnyJob(name.slice("oracle-".length)))
+    .filter((job) => job?.status === "queued")
+    .sort((left, right) => {
+      const leftKey = left?.queuedAt || left?.createdAt || "";
+      const rightKey = right?.queuedAt || right?.createdAt || "";
+      return leftKey.localeCompare(rightKey) || String(left?.createdAt || "").localeCompare(String(right?.createdAt || "")) || String(left?.id || "").localeCompare(String(right?.id || ""));
+    });
+}
+
+function isActiveJobStatus(status) {
+  return ["preparing", "submitted", "waiting"].includes(String(status || ""));
+}
+
+function jobBlocksAdmission(job) {
+  return isActiveJobStatus(job?.status) || job?.cleanupPending === true || (Array.isArray(job?.cleanupWarnings) && job.cleanupWarnings.length > 0);
+}
+
+function hasDurableWorkerHandoff(job) {
+  if (!job || job.status === "queued") return false;
+  if (job.workerPid) return true;
+  return false;
+}
+
+async function mutateAnyJob(targetJobId, mutator) {
+  return withLock(ORACLE_STATE_DIR, "job", targetJobId, { processPid: process.pid, action: "mutateJob", targetJobId }, async () => {
+    const path = getAnyJobPath(targetJobId);
+    const current = JSON.parse(await readFile(path, "utf8"));
+    const next = mutator(current);
+    await secureWriteText(path, `${JSON.stringify(next, null, 2)}\n`);
+    return next;
+  });
+}
+
+async function writeAnyJob(targetJobId, job) {
+  await withLock(ORACLE_STATE_DIR, "job", targetJobId, { processPid: process.pid, action: "writeJob", targetJobId }, async () => {
+    await secureWriteText(getAnyJobPath(targetJobId), `${JSON.stringify(job, null, 2)}\n`);
+  });
+}
+
 async function writeJobUnlocked(job) {
   await secureWriteText(jobPath, `${JSON.stringify(job, null, 2)}\n`);
 }
 
 async function writeJob(job) {
-  await withLock("job", jobId, { processPid: process.pid, action: "writeJob" }, async () => {
+  await withLock(ORACLE_STATE_DIR, "job", jobId, { processPid: process.pid, action: "writeJob" }, async () => {
     await writeJobUnlocked(job);
   });
 }
 
 async function mutateJob(mutator) {
-  return withLock("job", jobId, { processPid: process.pid, action: "mutateJob" }, async () => {
+  return withLock(ORACLE_STATE_DIR, "job", jobId, { processPid: process.pid, action: "mutateJob" }, async () => {
     const job = await readJobUnlocked();
     const next = mutator(job);
     await writeJobUnlocked(next);
@@ -271,7 +332,7 @@ async function cloneSeedProfileToRuntime(job) {
   const seedGenerationPath = join(seedDir, SEED_GENERATION_FILE);
   const seedGeneration = existsSync(seedGenerationPath) ? (await readFile(seedGenerationPath, "utf8")).trim() || undefined : undefined;
 
-  await withLock("auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
+  await withLock(ORACLE_STATE_DIR, "auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
     const cloneArgs = job.config.browser.cloneStrategy === "apfs-clone" ? ["-cR", seedDir, job.runtimeProfileDir] : ["-R", seedDir, job.runtimeProfileDir];
@@ -282,22 +343,12 @@ async function cloneSeedProfileToRuntime(job) {
 }
 
 async function cleanupRuntime(job) {
-  if (!job || cleaningUpRuntime) return;
+  if (!job || cleaningUpRuntime) return [];
   cleaningUpRuntime = true;
   const warnings = [];
   try {
     await closeBrowser(job).catch(async (error) => {
       const message = `Browser close warning during cleanup: ${error instanceof Error ? error.message : String(error)}`;
-      warnings.push(message);
-      await log(message).catch(() => undefined);
-    });
-    await releaseLease("conversation", job.conversationId).catch(async (error) => {
-      const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
-      warnings.push(message);
-      await log(message).catch(() => undefined);
-    });
-    await releaseLease("runtime", job.runtimeId).catch(async (error) => {
-      const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
@@ -307,13 +358,194 @@ async function cleanupRuntime(job) {
       await log(message).catch(() => undefined);
     });
     if (warnings.length === 0) {
+      await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(async (error) => {
+        const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        await log(message).catch(() => undefined);
+      });
+      await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(async (error) => {
+        const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        await log(message).catch(() => undefined);
+      });
+    }
+    if (warnings.length === 0) {
       await log(`Cleanup summary: runtime ${job.runtimeId} released with no warnings`).catch(() => undefined);
     } else {
       await log(`Cleanup summary: runtime ${job.runtimeId} released with ${warnings.length} warning(s)`).catch(() => undefined);
     }
+    return warnings;
   } finally {
     cleaningUpRuntime = false;
   }
+}
+
+async function tryAcquireRuntimeLeaseForJob(job, createdAt) {
+  const existing = listLeaseMetadata(ORACLE_STATE_DIR, "runtime");
+  const liveLeases = [];
+  for (const lease of existing) {
+    const owner = lease?.jobId ? readAnyJob(lease.jobId) : undefined;
+    if (!jobBlocksAdmission(owner)) {
+      await releaseLease(ORACLE_STATE_DIR, "runtime", lease?.runtimeId).catch(() => undefined);
+      continue;
+    }
+    liveLeases.push(lease);
+  }
+  if (liveLeases.length >= job.config.browser.maxConcurrentJobs) {
+    return false;
+  }
+  await createLease(ORACLE_STATE_DIR, "runtime", job.runtimeId, {
+    jobId: job.id,
+    runtimeId: job.runtimeId,
+    runtimeSessionName: job.runtimeSessionName,
+    runtimeProfileDir: job.runtimeProfileDir,
+    projectId: job.projectId,
+    sessionId: job.sessionId,
+    createdAt,
+  });
+  return true;
+}
+
+async function tryAcquireConversationLeaseForJob(job, createdAt) {
+  if (!job.conversationId) return true;
+  const existing = await readLeaseMetadata(ORACLE_STATE_DIR, "conversation", job.conversationId);
+  if (existing?.jobId === job.id) return true;
+  if (existing && existing.jobId !== job.id) {
+    if (!jobBlocksAdmission(readAnyJob(existing.jobId))) {
+      await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(() => undefined);
+    } else {
+      return false;
+    }
+  }
+  await createLease(ORACLE_STATE_DIR, "conversation", job.conversationId, {
+    jobId: job.id,
+    conversationId: job.conversationId,
+    projectId: job.projectId,
+    sessionId: job.sessionId,
+    createdAt,
+  });
+  return true;
+}
+
+async function spawnDetachedWorker(targetJobId) {
+  const child = spawn(process.execPath, [WORKER_SCRIPT_PATH, targetJobId], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  return {
+    pid: child.pid,
+    workerNonce: randomUUID(),
+    workerStartedAt: await waitForProcessStartedAt(child.pid),
+  };
+}
+
+async function failQueuedPromotion(targetJobId, message, at = new Date().toISOString()) {
+  await mutateAnyJob(targetJobId, (latest) => {
+    if (["complete", "failed", "cancelled"].includes(String(latest.status || ""))) return latest;
+    return {
+      ...latest,
+      ...phasePatch("failed", {
+        status: "failed",
+        completedAt: at,
+        heartbeatAt: at,
+        error: message,
+      }, at),
+    };
+  }).catch(() => undefined);
+}
+
+async function promoteQueuedJobsAfterCleanup() {
+  await withLock(ORACLE_STATE_DIR, "admission", "global", { processPid: process.pid, source: "worker_cleanup_promoter", jobId }, async () => {
+    for (const queuedJob of listQueuedJobs()) {
+      const current = readAnyJob(queuedJob.id);
+      if (!current || current.status !== "queued") continue;
+
+      let spawnedWorker;
+      const promotedAt = new Date().toISOString();
+      if (!existsSync(current.archivePath)) {
+        await failQueuedPromotion(current.id, `Queued oracle archive is missing: ${current.archivePath}`, promotedAt);
+        continue;
+      }
+      const runtimeLeaseAcquired = await tryAcquireRuntimeLeaseForJob(current, promotedAt);
+      if (!runtimeLeaseAcquired) break;
+
+      const conversationLeaseAcquired = await tryAcquireConversationLeaseForJob(current, promotedAt);
+      if (!conversationLeaseAcquired) {
+        await releaseLease(ORACLE_STATE_DIR, "runtime", current.runtimeId).catch(() => undefined);
+        continue;
+      }
+
+      try {
+        await mutateAnyJob(current.id, (latest) => {
+          if (latest.status !== "queued") throw new Error(`Queued job ${latest.id} changed state during cleanup promotion (${latest.status})`);
+          return {
+            ...latest,
+            ...phasePatch("submitted", {
+              status: "submitted",
+              submittedAt: latest.submittedAt || promotedAt,
+            }, promotedAt),
+          };
+        });
+
+        spawnedWorker = await spawnDetachedWorker(current.id);
+        await mutateAnyJob(current.id, (latest) => {
+          if (hasDurableWorkerHandoff(latest)) {
+            return {
+              ...latest,
+              workerPid: latest.workerPid || spawnedWorker.pid,
+              workerNonce: latest.workerNonce || spawnedWorker.workerNonce,
+              workerStartedAt: latest.workerStartedAt || spawnedWorker.workerStartedAt,
+            };
+          }
+          return {
+            ...latest,
+            workerPid: spawnedWorker.pid,
+            workerNonce: spawnedWorker.workerNonce,
+            workerStartedAt: spawnedWorker.workerStartedAt,
+          };
+        });
+      } catch (error) {
+        const latest = readAnyJob(current.id);
+        if (hasDurableWorkerHandoff(latest)) {
+          await log(`Queued promotion handoff already durable for ${current.id}; leaving active job intact`).catch(() => undefined);
+          continue;
+        }
+        if (spawnedWorker) {
+          await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt).catch(() => undefined);
+        }
+        const failedAt = new Date().toISOString();
+        if (latest && !["complete", "failed", "cancelled"].includes(String(latest.status || ""))) {
+          await failQueuedPromotion(current.id, error instanceof Error ? error.message : String(error), failedAt);
+        }
+        if (spawnedWorker) {
+          let cleanupWarnings = [];
+          try {
+            cleanupWarnings = await cleanupRuntime(current);
+          } catch (cleanupError) {
+            const message = `Cleanup-driven promotion teardown warning for ${current.id}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
+            cleanupWarnings = [message];
+            await log(message).catch(() => undefined);
+          }
+          if (cleanupWarnings.length > 0) {
+            await mutateAnyJob(current.id, (job) => ({
+              ...job,
+              cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupWarnings],
+              lastCleanupAt: failedAt,
+              error: [job.error, ...cleanupWarnings].filter(Boolean).join("\n"),
+            })).catch(() => undefined);
+            await log(`Stopping queued cleanup promotion after ${current.id} because teardown left ${cleanupWarnings.length} warning(s)`).catch(() => undefined);
+            break;
+          }
+        } else {
+          await releaseLease(ORACLE_STATE_DIR, "conversation", current.conversationId).catch(() => undefined);
+          await releaseLease(ORACLE_STATE_DIR, "runtime", current.runtimeId).catch(() => undefined);
+        }
+      }
+    }
+  }).catch(async (error) => {
+    await log(`Queued cleanup promotion warning: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
+  });
 }
 
 function browserBaseArgs(job, options = {}) {
@@ -1535,6 +1767,7 @@ async function run() {
         responsePath: currentJob.responsePath,
         responseFormat: "text/plain",
         artifactFailureCount,
+        cleanupPending: true,
       }),
       { force: true },
     );
@@ -1551,13 +1784,39 @@ async function run() {
           status: "failed",
           completedAt: new Date().toISOString(),
           error: message,
+          cleanupPending: true,
         }),
         { force: true },
       );
       process.exitCode = 1;
     }
   } finally {
-    await cleanupRuntime(currentJob).catch(() => undefined);
+    let cleanupWarnings = [];
+    try {
+      cleanupWarnings = await cleanupRuntime(currentJob);
+    } catch (error) {
+      cleanupWarnings = [`Runtime cleanup failed before queued promotion: ${error instanceof Error ? error.message : String(error)}`];
+      await log(cleanupWarnings[0]).catch(() => undefined);
+    }
+    if (currentJob?.id) {
+      const cleanupAt = new Date().toISOString();
+      await mutateJob((job) => ({
+        ...job,
+        cleanupPending: false,
+        ...(cleanupWarnings.length > 0
+          ? {
+              cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupWarnings],
+              lastCleanupAt: cleanupAt,
+              error: [job.error, ...cleanupWarnings].filter(Boolean).join("\n"),
+            }
+          : { lastCleanupAt: cleanupAt }),
+      })).catch(() => undefined);
+    }
+    if (cleanupWarnings.length === 0) {
+      await promoteQueuedJobsAfterCleanup().catch(() => undefined);
+    } else {
+      await log(`Skipping queued promotion because runtime cleanup left ${cleanupWarnings.length} warning(s)`).catch(() => undefined);
+    }
   }
 }
 

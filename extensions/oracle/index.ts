@@ -3,9 +3,11 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
-import { pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
+import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./lib/locks.js";
 import { refreshOracleStatus, startPoller, stopPoller } from "./lib/poller.js";
+import { promoteQueuedJobs } from "./lib/queue.js";
+import { hasPersistedSessionFile } from "./lib/runtime.js";
 import { registerOracleTools } from "./lib/tools.js";
 
 export default function oracleExtension(pi: ExtensionAPI) {
@@ -13,7 +15,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   const workerPath = join(extensionDir, "worker", "run-job.mjs");
   const authWorkerPath = join(extensionDir, "worker", "auth-bootstrap.mjs");
 
-  registerOracleCommands(pi, authWorkerPath);
+  registerOracleCommands(pi, authWorkerPath, workerPath);
   registerOracleTools(pi, workerPath);
 
   async function runStartupMaintenance(ctx: ExtensionContext): Promise<void> {
@@ -25,20 +27,29 @@ export default function oracleExtension(pi: ExtensionAPI) {
     } catch (error) {
       if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
     }
+
+    await promoteQueuedJobs({ workerPath, source: "oracle_session_start" });
   }
 
   function startPollerForContext(ctx: ExtensionContext) {
     try {
+      const sessionFile = getSessionFile(ctx);
+      if (!hasPersistedSessionFile(sessionFile)) {
+        stopPoller(ctx);
+        ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", "oracle: unavailable"));
+        return;
+      }
+
       const config = loadOracleConfig(ctx.cwd);
       void runStartupMaintenance(ctx).catch((error) => {
         console.error("Oracle startup maintenance failed:", error);
       });
-      startPoller(pi, ctx, config.poller.intervalMs);
+      startPoller(pi, ctx, config.poller.intervalMs, workerPath);
       refreshOracleStatus(ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       stopPoller(ctx);
-      ctx.ui.setStatus("oracle", ctx.ui.theme.fg("danger", "oracle: config error"));
+      ctx.ui.setStatus("oracle", ctx.ui.theme.fg("error", "oracle: config error"));
       ctx.ui.notify(message, "warning");
     }
   }

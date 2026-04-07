@@ -31,6 +31,17 @@ export interface OracleConversationLeaseMetadata {
   createdAt: string;
 }
 
+export interface OracleRuntimeLeaseAttempt {
+  acquired: boolean;
+  liveLeases: OracleRuntimeLeaseMetadata[];
+  blocker?: OracleRuntimeLeaseMetadata;
+}
+
+export interface OracleConversationLeaseAttempt {
+  acquired: boolean;
+  blocker?: OracleConversationLeaseMetadata;
+}
+
 export function getProjectId(cwd: string): string {
   try {
     return realpathSync(cwd);
@@ -39,8 +50,19 @@ export function getProjectId(cwd: string): string {
   }
 }
 
-export function getSessionId(originSessionFile: string | undefined, projectId: string): string {
-  return originSessionFile || `ephemeral:${projectId}`;
+export function hasPersistedSessionFile(originSessionFile: string | undefined): originSessionFile is string {
+  return Boolean(originSessionFile);
+}
+
+export function requirePersistedSessionFile(originSessionFile: string | undefined, action = "use oracle"): string {
+  if (!originSessionFile) {
+    throw new Error(`Oracle requires a persisted pi session to ${action}. Start or save a real session before using oracle.`);
+  }
+  return originSessionFile;
+}
+
+export function getSessionId(originSessionFile: string | undefined, _projectId: string): string {
+  return requirePersistedSessionFile(originSessionFile, "derive oracle session identity");
 }
 
 export function parseConversationId(chatUrl: string | undefined): string | undefined {
@@ -88,14 +110,14 @@ function activeJobExists(jobId: string): boolean {
   const path = join(ORACLE_JOBS_DIR, `oracle-${jobId}`, "job.json");
   if (!existsSync(path)) return false;
   try {
-    const job = JSON.parse(readFileSync(path, "utf8")) as { status?: string };
-    return ["preparing", "submitted", "waiting"].includes(job.status || "");
+    const job = JSON.parse(readFileSync(path, "utf8")) as { status?: string; cleanupWarnings?: unknown; cleanupPending?: unknown };
+    return ["preparing", "submitted", "waiting"].includes(job.status || "") || job.cleanupPending === true || (Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0);
   } catch {
     return false;
   }
 }
 
-export async function acquireRuntimeLease(config: OracleConfig, metadata: OracleRuntimeLeaseMetadata): Promise<void> {
+async function collectLiveRuntimeLeases(): Promise<OracleRuntimeLeaseMetadata[]> {
   const existing = listLeaseMetadata<OracleRuntimeLeaseMetadata>("runtime");
   const liveLeases: OracleRuntimeLeaseMetadata[] = [];
   for (const lease of existing) {
@@ -105,14 +127,33 @@ export async function acquireRuntimeLease(config: OracleConfig, metadata: Oracle
     }
     liveLeases.push(lease);
   }
+  return liveLeases;
+}
+
+export async function tryAcquireRuntimeLease(config: OracleConfig, metadata: OracleRuntimeLeaseMetadata): Promise<OracleRuntimeLeaseAttempt> {
+  const liveLeases = await collectLiveRuntimeLeases();
   if (liveLeases.length >= config.browser.maxConcurrentJobs) {
-    const blocker = liveLeases[0];
-    throw new Error(
-      `Oracle is busy (${liveLeases.length}/${config.browser.maxConcurrentJobs} active). ` +
-        `Blocking job ${blocker?.jobId ?? "unknown"} in project ${blocker?.projectId ?? "unknown"}.`,
-    );
+    return {
+      acquired: false,
+      liveLeases,
+      blocker: liveLeases[0],
+    };
   }
   await createLease("runtime", metadata.runtimeId, metadata);
+  return {
+    acquired: true,
+    liveLeases,
+  };
+}
+
+export async function acquireRuntimeLease(config: OracleConfig, metadata: OracleRuntimeLeaseMetadata): Promise<void> {
+  const attempt = await tryAcquireRuntimeLease(config, metadata);
+  if (attempt.acquired) return;
+  const blocker = attempt.blocker;
+  throw new Error(
+    `Oracle is busy (${attempt.liveLeases.length}/${config.browser.maxConcurrentJobs} active). ` +
+      `Blocking job ${blocker?.jobId ?? "unknown"} in project ${blocker?.projectId ?? "unknown"}.`,
+  );
 }
 
 export async function releaseRuntimeLease(runtimeId: string | undefined): Promise<void> {
@@ -120,19 +161,29 @@ export async function releaseRuntimeLease(runtimeId: string | undefined): Promis
   await releaseLease("runtime", runtimeId);
 }
 
-export async function acquireConversationLease(metadata: OracleConversationLeaseMetadata): Promise<void> {
+export async function tryAcquireConversationLease(metadata: OracleConversationLeaseMetadata): Promise<OracleConversationLeaseAttempt> {
   const existing = await readLeaseMetadata<OracleConversationLeaseMetadata>("conversation", metadata.conversationId);
+  if (existing?.jobId === metadata.jobId) {
+    return { acquired: true };
+  }
   if (existing && existing.jobId !== metadata.jobId) {
     if (!activeJobExists(existing.jobId)) {
       await releaseLease("conversation", metadata.conversationId).catch(() => undefined);
     } else {
-      throw new Error(
-        `Oracle conversation ${metadata.conversationId} is already in use by job ${existing.jobId}. ` +
-          `Concurrent follow-ups to the same ChatGPT thread are not allowed.`,
-      );
+      return { acquired: false, blocker: existing };
     }
   }
   await createLease("conversation", metadata.conversationId, metadata);
+  return { acquired: true };
+}
+
+export async function acquireConversationLease(metadata: OracleConversationLeaseMetadata): Promise<void> {
+  const attempt = await tryAcquireConversationLease(metadata);
+  if (attempt.acquired) return;
+  throw new Error(
+    `Oracle conversation ${metadata.conversationId} is already in use by job ${attempt.blocker?.jobId ?? "unknown"}. ` +
+      `Concurrent follow-ups to the same ChatGPT thread are not allowed.`,
+  );
 }
 
 export async function releaseConversationLease(conversationId: string | undefined): Promise<void> {
@@ -234,6 +285,9 @@ export async function cleanupRuntimeArtifacts(runtime: {
     await rm(runtime.runtimeProfileDir, { recursive: true, force: true }).catch((error: Error) => {
       report.warnings.push(`Failed to remove runtime profile ${runtime.runtimeProfileDir}: ${error.message}`);
     });
+  }
+  if (report.warnings.length > 0) {
+    return report;
   }
   if (runtime.conversationId) {
     report.attempted.push("conversationLease");

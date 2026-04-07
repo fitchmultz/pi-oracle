@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
@@ -28,7 +28,9 @@
   "files": [
     "extensions",
     "prompts",
+    "docs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
@@ -40,16 +42,23 @@
     ]
   },
   "scripts": {
-    "check:oracle-extension": "node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:@sinclair/typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "check:oracle-extension": "node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:@sinclair/typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "verify:oracle": "npm run check:oracle-extension && npm run typecheck && npm run sanity:oracle && npm run pack:check"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.49",
     "@steipete/sweet-cookie": "^0.2.0"
   },
   "devDependencies": {
+    "@mariozechner/pi-ai": "^0.65.2",
+    "@mariozechner/pi-coding-agent": "^0.65.2",
+    "@types/node": "^24.6.0",
     "esbuild": "^0.27.0",
-    "tsx": "^4.20.6"
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=20"

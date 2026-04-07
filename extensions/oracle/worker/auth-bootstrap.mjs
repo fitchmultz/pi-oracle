@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -35,7 +35,6 @@ const SCREENSHOT_PATH = "/tmp/oracle-auth.png";
 const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
-const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
@@ -49,75 +48,6 @@ function authSessionName() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function leaseKey(kind, key) {
-  return `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
-}
-
-async function readLockProcessPid(path) {
-  const metadataPath = join(path, "metadata.json");
-  if (!existsSync(metadataPath)) return undefined;
-  try {
-    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
-    return typeof metadata?.processPid === "number" && Number.isInteger(metadata.processPid) && metadata.processPid > 0
-      ? metadata.processPid
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
-    return true;
-  }
-}
-
-async function maybeReclaimStaleLock(path) {
-  const processPid = await readLockProcessPid(path);
-  if (!processPid || isProcessAlive(processPid)) return false;
-  await rm(path, { recursive: true, force: true }).catch(() => undefined);
-  return true;
-}
-
-async function acquireLock(kind, key, metadata, timeoutMs = 30_000) {
-  const path = join(LOCKS_DIR, leaseKey(kind, key));
-  const deadline = Date.now() + timeoutMs;
-  await mkdir(ORACLE_STATE_DIR, { recursive: true, mode: 0o700 });
-  await mkdir(LOCKS_DIR, { recursive: true, mode: 0o700 });
-
-  while (Date.now() < deadline) {
-    try {
-      await mkdir(path, { recursive: false, mode: 0o700 });
-      await writeFile(join(path, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-      return path;
-    } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      if (await maybeReclaimStaleLock(path)) continue;
-    }
-    await sleep(200);
-  }
-
-  throw new Error(`Timed out waiting for oracle ${kind} lock: ${key}`);
-}
-
-async function releaseLock(path) {
-  if (!path) return;
-  await rm(path, { recursive: true, force: true }).catch(() => undefined);
-}
-
-async function withLock(kind, key, metadata, fn, timeoutMs) {
-  const handle = await acquireLock(kind, key, metadata, timeoutMs);
-  try {
-    return await fn();
-  } finally {
-    await releaseLock(handle);
-  }
 }
 
 async function initLog() {
@@ -850,7 +780,7 @@ async function waitForImportedAuthReady() {
 
 async function run() {
   await initLog();
-  await withLock("auth", "global", { processPid: process.pid, action: "oracle-auth" }, async () => {
+  await withLock(ORACLE_STATE_DIR, "auth", "global", { processPid: process.pid, action: "oracle-auth" }, async () => {
     let shouldPreserveBrowser = false;
     let committedProfile = false;
     let profilePlan;

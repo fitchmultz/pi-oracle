@@ -18,7 +18,9 @@ Create a `pi` extension that lets the user or agent consult ChatGPT.com through 
 - automatic invocation by the agent in rare high-difficulty cases
 - mandatory project-context archive upload (`.tar.zst`)
 - long-running execution in the background
-- wake-the-agent behavior when the oracle response is ready
+- durable response/artifact persistence plus best-effort wake-the-agent behavior when the oracle response is ready
+- oracle requires a persisted pi session identity; in-memory/no-session contexts are rejected instead of risking cross-session wake-up misdelivery
+- legacy project-scoped jobs from the older no-session model remain inspectable by project, but are treated as manual/status-only instead of being rebound to a different persisted session for wake-up delivery
 - persisted responses and artifacts under `/tmp`
 - optional same-thread follow-up questions later
 
@@ -71,9 +73,9 @@ The extension now follows the current `pi` session lifecycle model:
 - `/oracle-status [job-id]`
   - shows job status
 - `/oracle-cancel [job-id]`
-  - cancels an active job
+  - cancels a queued or active job
 - `/oracle-clean <job-id|all>`
-  - removes temp files for non-active jobs
+  - removes temp files for terminal jobs only
 
 ### Tools
 
@@ -84,7 +86,7 @@ The extension now follows the current `pi` session lifecycle model:
 - `oracle_read`
   - reads job status and outputs
 - `oracle_cancel`
-  - cancels an active job
+  - cancels a queued or active job
 
 ## High-level flow
 
@@ -100,7 +102,7 @@ Instead it instructs the agent to:
 3. choose exact archive inputs
 4. craft the oracle prompt
 5. call `oracle_submit`
-6. stop and wait for completion wake-up
+6. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
 
 ### `/oracle-auth`
 
@@ -138,14 +140,16 @@ The authenticated seed profile remains the source of truth for future oracle run
    - `runtimeId`
    - `runtimeSessionName`
    - `runtimeProfileDir`
-5. acquire admission/lease state:
-   - runtime lease (capacity control)
-   - conversation lease for follow-up jobs
-6. create `/tmp/oracle-<job-id>/...` job state
-7. move the prepared archive into the job directory with a unique filename
-8. spawn a detached worker
-9. return immediately
-10. stop the agent turn until the completion wake-up arrives
+5. under the global admission lock, first promote any older queued jobs that can now run
+6. if runtime capacity is still available:
+   - acquire the runtime lease
+   - acquire the conversation lease for follow-up jobs
+   - create `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` job state as `submitted`
+7. otherwise create `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` job state as `queued`
+8. move the prepared archive into the job directory with a unique filename
+9. spawn a detached worker only for submitted jobs
+10. return immediately
+11. stop the agent turn until the completion wake-up arrives (best-effort; durable oracle response/artifact state is already persisted outside session history)
 
 ### Worker run flow
 
@@ -220,7 +224,7 @@ Browser/auth settings are global-only because they control local privileged brow
     "sessionPrefix": "oracle",
     "authSeedProfileDir": "<absolute path to oracle auth seed profile>",
     "runtimeProfilesDir": "<absolute path to oracle runtime profiles dir>",
-    "maxConcurrentJobs": 8,
+    "maxConcurrentJobs": 2,
     "cloneStrategy": "apfs-clone",
     "chatUrl": "https://chatgpt.com/",
     "authUrl": "https://chatgpt.com/auth/login",
@@ -258,7 +262,7 @@ Long-run hygiene is intentionally conservative:
 
 - runtime profiles, runtime leases, and conversation leases are cleaned immediately as part of worker/command cleanup paths
 - browser close is time-bounded so cleanup can continue even if `agent-browser close` wedges
-- `/oracle-clean` performs runtime cleanup before removing the persisted job directory
+- `/oracle-clean` performs runtime cleanup before removing the persisted job directory, but refuses terminal jobs whose worker is still live or whose wake-up was just sent inside a short post-send retention grace window
 - stale lock directories are swept before reconcile maintenance
 - old auth `.staging-*` profiles are swept during `/oracle-auth` startup when the auth browser session is not still active
 - terminal job directories are retained for inspection, then pruned later based on configurable retention windows
@@ -266,7 +270,7 @@ Long-run hygiene is intentionally conservative:
 Current retention policy is configurable via `cleanup.*`:
 
 - `cleanup.completeJobRetentionMs`
-  - applies to `complete` and `cancelled` jobs after they have been notified
+  - applies to `complete` and `cancelled` jobs based on terminal-job age; wake-up delivery remains best-effort only, with a short post-send grace so saved response/artifact paths survive the follow-up turn
 - `cleanup.failedJobRetentionMs`
   - applies to `failed` jobs
 
@@ -275,11 +279,14 @@ Cleanup warnings are treated as diagnostics, not silent no-ops:
 - worker cleanup warnings are appended to `logs/worker.log`
 - command-side cleanup warnings are surfaced to the user
 - cancellation/stale-job recovery persists cleanup warnings into `job.json`
+- terminal cleanup recovery will terminate stale live cleanup workers before retrying teardown so blocked capacity does not wedge indefinitely
 
-## Job layout under `/tmp`
+## Job layout under the configured jobs dir
+
+Default location: `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`
 
 ```text
-/tmp/oracle-<job-id>/
+${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/
   job.json
   prompt.md
   context-<job-id>.tar.zst
@@ -297,10 +304,11 @@ Cleanup warnings are treated as diagnostics, not silent no-ops:
 Important fields include:
 
 - `id`
-- `status`: `preparing | submitted | waiting | complete | failed | cancelled`
-- `phase`: `submitted | cloning_runtime | launching_browser | verifying_auth | configuring_model | uploading_archive | awaiting_response | extracting_response | downloading_artifacts | complete | complete_with_artifact_errors | failed | cancelled`
+- `status`: `queued | preparing | submitted | waiting | complete | failed | cancelled`
+- `phase`: `queued | submitted | cloning_runtime | launching_browser | verifying_auth | configuring_model | uploading_archive | awaiting_response | extracting_response | downloading_artifacts | complete | complete_with_artifact_errors | failed | cancelled`
 - `phaseAt`
 - `createdAt`
+- `queuedAt`
 - `submittedAt`
 - `completedAt`
 - `heartbeatAt`
@@ -323,6 +331,11 @@ Important fields include:
 - `archiveSha256`
 - `archiveDeletedAfterUpload`
 - `notifiedAt`
+- `notificationEntryId`
+- `notificationSessionKey`
+- `wakeupAttemptCount`
+- `wakeupLastRequestedAt`
+- `wakeupSettledAt`
 - `notifyClaimedAt`
 - `notifyClaimedBy`
 - `artifactFailureCount`
@@ -410,7 +423,7 @@ Use response-local candidate detection exactly as before, but replace browser-do
 - find artifact candidates only in the current assistant response region
 - for each candidate ref:
   - call `agent-browser download <ref> <dest>`
-  - write directly into `/tmp/oracle-<job-id>/artifacts`
+  - write directly into `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/artifacts`
   - compute size / sha256 / detected type
   - append manifest entry
 
@@ -442,12 +455,16 @@ Do not allow concurrent jobs to target the same `conversationId`.
 
 ## Poller / wake-up model
 
-The extension still uses the same general `pi`-native background completion pattern:
+The extension still uses the same general `pi`-native background completion pattern, but notification semantics are now explicit:
 
-- detached worker writes `/tmp/oracle-*` state
+- detached worker writes `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-*` state
 - poller scans jobs on an interval
-- when a matching job reaches `complete` or `failed`, the extension sends a message with `triggerTurn: true`
-- the agent wakes up and continues from the saved response/artifacts
+- completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
+- when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues bounded best-effort wake-up reminders to whichever matching session is currently live
+- manual `oracle_read` or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened
+- if no wake-up lands, the job remains available via `/oracle-status`, `oracle_read`, and the saved `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` response/artifact files
+- because completion delivery is best-effort, pruning uses explicit terminal-job age policy instead of pretending a durable session notification happened
+- recently sent wake-ups keep response/artifact files retained briefly so follow-up turns do not point at deleted paths if cleanup or pruning races with delivery
 
 ## What was removed by this pivot
 
@@ -472,6 +489,7 @@ Implemented in code for the pivot and concurrency redesign:
 - job state no longer stores CDP verification fields
 - workers now run with per-job runtime sessions and per-job runtime profile clones
 - runtime admission is controlled by runtime leases and `browser.maxConcurrentJobs`
+- queued jobs are workerless and do not consume runtime or conversation leases until promotion
 - follow-up jobs now acquire conversation leases
 - persisted job state now records explicit lifecycle phases instead of relying only on coarse statuses
 - poller notifications now use per-job notification claims rather than broad global scan serialization
@@ -489,7 +507,7 @@ Retained from the earlier MVP:
 - `/oracle`, `/oracle-status`, `/oracle-cancel`, `/oracle-clean`
 - `oracle_submit`, `oracle_read`, `oracle_cancel`
 - detached background worker model
-- `/tmp/oracle-<job-id>/...` state layout
+- `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` state layout
 - shell-safe archive creation using `tar` piped to `zstd`
 - private permissions and atomic writes
 - stale-worker reconciliation
@@ -517,7 +535,7 @@ Live-validated after the concurrency redesign:
 - runtime/conversation lease cleanup works on completion and cancellation
 - global browser args overrides (for example `--disable-gpu`) apply to real jobs
 - artifact-producing runs work with direct `download <ref> <dest>`
-- multi-artifact runs complete, wake the correct `pi` session, and persist both downloaded files with correct contents
+- multi-artifact runs complete, target the correct `pi` session, and persist both downloaded files with correct contents
 - the poller no longer needs the worker to stay alive just to observe completion for artifact-producing runs
 - expired/missing auth now fails as a clean auth-related error instead of generic UI/config drift
 - `/oracle-auth` repairs the seed profile and a post-repair probe succeeds again

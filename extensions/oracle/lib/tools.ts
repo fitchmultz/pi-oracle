@@ -2,35 +2,49 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
-import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import { loadOracleConfig, EFFORTS, MODEL_FAMILIES, type OracleEffort, type OracleModelFamily } from "./config.js";
 import {
+  appendCleanupWarnings,
   cancelOracleJob,
   createJob,
+  getJobDir,
   getSessionFile,
-  isActiveOracleJob,
+  hasDurableWorkerHandoff,
+  isOpenOracleJob,
+  isTerminalOracleJob,
+  listOracleJobDirs,
+  markWakeupSettled,
   readJob,
   pruneTerminalOracleJobs,
   reconcileStaleOracleJobs,
   resolveArchiveInputs,
   sha256File,
+  shouldAdvanceQueueAfterCancellation,
   spawnWorker,
+  terminateWorkerPid,
   updateJob,
   withJobPhase,
+  type OracleJob,
 } from "./jobs.js";
+import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "./queue.js";
 import { refreshOracleStatus } from "./poller.js";
 import {
-  acquireConversationLease,
-  acquireRuntimeLease,
   allocateRuntime,
   cleanupRuntimeArtifacts,
   getProjectId,
   getSessionId,
   parseConversationId,
+  requirePersistedSessionFile,
+  tryAcquireConversationLease,
+  tryAcquireRuntimeLease,
 } from "./runtime.js";
+
+function stringEnum(values: readonly string[], description: string) {
+  return Type.Union(values.map((value) => Type.Literal(value)), { description });
+}
 
 const ORACLE_SUBMIT_PARAMS = Type.Object({
   prompt: Type.String({ description: "Prompt text to send to ChatGPT web." }),
@@ -38,8 +52,8 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
   }),
-  modelFamily: Type.Optional(StringEnum(MODEL_FAMILIES, { description: "ChatGPT model family: instant, thinking, or pro." })),
-  effort: Type.Optional(StringEnum(EFFORTS, { description: "Reasoning effort. Use only values supported by the chosen model family." })),
+  modelFamily: Type.Optional(stringEnum(MODEL_FAMILIES, "ChatGPT model family: instant, thinking, or pro.")),
+  effort: Type.Optional(stringEnum(EFFORTS, "Reasoning effort. Use only values supported by the chosen model family.")),
   autoSwitchToThinking: Type.Optional(
     Type.Boolean({ description: "Only valid when modelFamily is instant. Omit for thinking and pro." }),
   ),
@@ -61,6 +75,8 @@ const VALID_EFFORTS: Record<OracleModelFamily, readonly OracleEffort[]> = {
 };
 
 const MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
+const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
+const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = MAX_ARCHIVE_BYTES;
 
 const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".git",
@@ -420,6 +436,27 @@ async function createArchive(cwd: string, files: string[], archivePath: string):
   return createArchiveForTesting(cwd, files, archivePath);
 }
 
+async function getQueuedArchivePressure(): Promise<{ queuedJobs: number; queuedArchiveBytes: number }> {
+  const queuedJobs = listOracleJobDirs()
+    .map((dir) => readJob(dir))
+    .filter((job): job is NonNullable<typeof job> => Boolean(job && job.status === "queued"));
+
+  const queuedArchiveBytes = (await Promise.all(
+    queuedJobs.map(async (job) => {
+      try {
+        return (await stat(job.archivePath)).size;
+      } catch {
+        return 0;
+      }
+    }),
+  )).reduce((sum, bytes) => sum + bytes, 0);
+
+  return {
+    queuedJobs: queuedJobs.length,
+    queuedArchiveBytes,
+  };
+}
+
 function validateSubmissionOptions(
   params: { effort?: OracleEffort; autoSwitchToThinking?: boolean },
   modelFamily: OracleModelFamily,
@@ -477,6 +514,7 @@ function redactJobDetails(job: NonNullable<ReturnType<typeof readJob>>) {
     projectId: job.projectId,
     sessionId: job.sessionId,
     createdAt: job.createdAt,
+    queuedAt: job.queuedAt,
     submittedAt: job.submittedAt,
     completedAt: job.completedAt,
     followUpToJobId: job.followUpToJobId,
@@ -495,6 +533,35 @@ function redactJobDetails(job: NonNullable<ReturnType<typeof readJob>>) {
   };
 }
 
+function formatAutoPrunedArchiveMessage(autoPrunedPrefixes: ArchiveCreationResult["autoPrunedPrefixes"]): string | undefined {
+  if (autoPrunedPrefixes.length === 0) return undefined;
+  return `Archive auto-pruned generic generated-output-name dirs to fit size limit: ${autoPrunedPrefixes.map((entry) => `${entry.relativePath}/ (${formatBytes(entry.bytes)})`).join(", ")}`;
+}
+
+function formatSubmitResponse(
+  job: NonNullable<ReturnType<typeof readJob>>,
+  options: {
+    autoPrunedPrefixes: ArchiveCreationResult["autoPrunedPrefixes"];
+    queued: boolean;
+    queuePosition?: number;
+    queueDepth?: number;
+  },
+): string {
+  return [
+    `${options.queued ? "Oracle job queued" : "Oracle job dispatched"}: ${job.id}`,
+    options.queued && options.queuePosition && options.queueDepth ? `Queue position: ${options.queuePosition} of ${options.queueDepth}` : undefined,
+    job.followUpToJobId ? `Follow-up to: ${job.followUpToJobId}` : undefined,
+    `Prompt: ${job.promptPath}`,
+    `Archive: ${job.archivePath}`,
+    formatAutoPrunedArchiveMessage(options.autoPrunedPrefixes),
+    `Response will be written to: ${job.responsePath}`,
+    options.queued ? "The job will start automatically when capacity is available." : undefined,
+    "Stop now and wait for the oracle completion wake-up.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void {
   pi.registerTool({
     name: "oracle_submit",
@@ -510,23 +577,26 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       "When files='.' and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like build/, dist/, out/, coverage/, and tmp/ outside obvious source roots like src/ and lib/ until the archive fits or no candidate remains; successful submissions report what was pruned.",
       "If a submitted oracle job later fails because upload is rejected, retry smaller: remove the largest obviously irrelevant/generated content first, then narrow to modified files plus adjacent files plus directly relevant subtrees, then explain the cut or ask the user if still needed.",
       "If oracle_submit itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error instead of retrying automatically.",
+      "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
       "Stop after dispatching oracle_submit; do not continue the task while the oracle job is running.",
       "Only use autoSwitchToThinking with modelFamily=instant.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const config = loadOracleConfig(ctx.cwd);
-      const originSessionFile = getSessionFile(ctx);
+      const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
       const projectId = getProjectId(ctx.cwd);
       const sessionId = getSessionId(originSessionFile, projectId);
-      const modelFamily = params.modelFamily ?? config.defaults.modelFamily;
-      const requestedEffort = params.effort ?? config.defaults.effort;
-      const effort = modelFamily === "instant" ? undefined : requestedEffort;
+      const submittedModelFamily = params.modelFamily as OracleModelFamily | undefined;
+      const submittedEffort = params.effort as OracleEffort | undefined;
+      const modelFamily: OracleModelFamily = submittedModelFamily ?? config.defaults.modelFamily;
+      const requestedEffort: OracleEffort = submittedEffort ?? config.defaults.effort;
+      const effort: OracleEffort | undefined = modelFamily === "instant" ? undefined : requestedEffort;
       const rawAutoSwitchToThinking = params.autoSwitchToThinking ?? config.defaults.autoSwitchToThinking;
       const autoSwitchToThinking = modelFamily === "instant" ? rawAutoSwitchToThinking : false;
       const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
 
-      validateSubmissionOptions(params, modelFamily, effort, autoSwitchToThinking);
+      validateSubmissionOptions({ effort: submittedEffort, autoSwitchToThinking: params.autoSwitchToThinking }, modelFamily, effort, autoSwitchToThinking);
       try {
         await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
           await reconcileStaleOracleJobs();
@@ -539,29 +609,95 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       const jobId = randomUUID();
       const tempArchivePath = join(tmpdir(), `oracle-archive-${jobId}.tar.zst`);
       const runtime = allocateRuntime(config);
-      let job;
+      let job: OracleJob | undefined;
+      let archive: ArchiveCreationResult | undefined;
+      let queued = false;
+      let queuedSubmissionDurable = false;
+      let runtimeLeaseAcquired = false;
+      let conversationLeaseAcquired = false;
+      let workerSpawned = false;
+      let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
 
       try {
-        const archive = await createArchive(ctx.cwd, params.files, tempArchivePath);
+        archive = await createArchive(ctx.cwd, params.files, tempArchivePath);
+        const currentArchive = archive;
         await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
-          await acquireRuntimeLease(config, {
+          await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
+
+          const admittedAt = new Date().toISOString();
+          const runtimeAttempt = await tryAcquireRuntimeLease(config, {
             jobId,
             runtimeId: runtime.runtimeId,
             runtimeSessionName: runtime.runtimeSessionName,
             runtimeProfileDir: runtime.runtimeProfileDir,
             projectId,
             sessionId,
-            createdAt: new Date().toISOString(),
+            createdAt: admittedAt,
           });
+
+          if (!runtimeAttempt.acquired) {
+            const queuePressure = await getQueuedArchivePressure();
+            const maxQueuedJobs = config.browser.maxConcurrentJobs * MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME;
+            if (queuePressure.queuedJobs >= maxQueuedJobs) {
+              throw new Error(
+                `Oracle is busy (${runtimeAttempt.liveLeases.length}/${config.browser.maxConcurrentJobs} active, ${queuePressure.queuedJobs}/${maxQueuedJobs} queued). ` +
+                  "Retry later instead of enqueuing more archive state.",
+              );
+            }
+            const maxQueuedArchiveBytes = config.browser.maxConcurrentJobs * MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME;
+            if (queuePressure.queuedArchiveBytes + currentArchive.archiveBytes > maxQueuedArchiveBytes) {
+              throw new Error(
+                `Oracle queued archive storage is full (${queuePressure.queuedArchiveBytes + currentArchive.archiveBytes} bytes > ${maxQueuedArchiveBytes} bytes across queued jobs). ` +
+                  "Retry later or narrow the archive inputs.",
+              );
+            }
+
+            queued = true;
+            job = await createJob(
+              jobId,
+              {
+                prompt: params.prompt,
+                files: params.files,
+                modelFamily,
+                effort,
+                autoSwitchToThinking,
+                followUpToJobId: followUp.followUpToJobId,
+                chatUrl: followUp.chatUrl,
+                requestSource: "tool",
+              },
+              ctx.cwd,
+              originSessionFile,
+              config,
+              runtime,
+              { initialState: "queued", createdAt: admittedAt },
+            );
+            await rename(tempArchivePath, job.archivePath);
+            job = await updateJob(job.id, (current) => ({
+              ...current,
+              archiveSha256: currentArchive.sha256,
+            }));
+            queuedSubmissionDurable = true;
+            return;
+          }
+
+          runtimeLeaseAcquired = true;
           if (followUp.conversationId) {
-            await acquireConversationLease({
+            const conversationAttempt = await tryAcquireConversationLease({
               jobId,
               conversationId: followUp.conversationId,
               projectId,
               sessionId,
-              createdAt: new Date().toISOString(),
+              createdAt: admittedAt,
             });
+            if (!conversationAttempt.acquired) {
+              throw new Error(
+                `Oracle conversation ${followUp.conversationId} is already in use by job ${conversationAttempt.blocker?.jobId ?? "unknown"}. ` +
+                  "Concurrent follow-ups to the same ChatGPT thread are not allowed.",
+              );
+            }
+            conversationLeaseAcquired = true;
           }
+
           job = await createJob(
             jobId,
             {
@@ -578,51 +714,109 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
             originSessionFile,
             config,
             runtime,
+            { initialState: "submitted", createdAt: admittedAt },
           );
+          await rename(tempArchivePath, job.archivePath);
+          spawnedWorker = await spawnWorker(workerPath, job.id);
+          workerSpawned = true;
+          const worker = spawnedWorker;
+          job = await updateJob(job.id, (current) => ({
+            ...current,
+            archiveSha256: currentArchive.sha256,
+            workerPid: worker.pid,
+            workerNonce: worker.nonce,
+            workerStartedAt: worker.startedAt,
+          }));
         });
-        await rename(tempArchivePath, job.archivePath);
-        const worker = await spawnWorker(workerPath, job.id);
-        await updateJob(job.id, (current) => ({
-          ...current,
-          archiveSha256: archive.sha256,
-          workerPid: worker.pid,
-          workerNonce: worker.nonce,
-          workerStartedAt: worker.startedAt,
-        }));
+        if (!job || !archive) throw new Error(`Oracle submission ${jobId} did not persist job metadata durably`);
         if (ctx.hasUI) refreshOracleStatus(ctx);
 
+        const queuePosition = queued ? getQueuePosition(job.id) : undefined;
         return {
           content: [
             {
               type: "text",
-              text: [
-                `Oracle job dispatched: ${job.id}`,
-                followUp.followUpToJobId ? `Follow-up to: ${followUp.followUpToJobId}` : undefined,
-                `Prompt: ${job.promptPath}`,
-                `Archive: ${job.archivePath}`,
-                archive.autoPrunedPrefixes.length > 0
-                  ? `Archive auto-pruned generic generated-output-name dirs to fit size limit: ${archive.autoPrunedPrefixes.map((entry) => `${entry.relativePath}/ (${formatBytes(entry.bytes)})`).join(", ")}`
-                  : undefined,
-                `Response will be written to: ${job.responsePath}`,
-                "Stop now and wait for the oracle completion wake-up.",
-              ]
-                .filter(Boolean)
-                .join("\n"),
+              text: formatSubmitResponse(job, {
+                autoPrunedPrefixes: currentArchive.autoPrunedPrefixes,
+                queued,
+                queuePosition: queuePosition?.position,
+                queueDepth: queuePosition?.depth,
+              }),
             },
           ],
           details: {
             jobId: job.id,
-            archiveSha256: archive.sha256,
-            archiveBytes: archive.archiveBytes,
-            initialArchiveBytes: archive.initialArchiveBytes,
-            autoPrunedArchivePaths: archive.autoPrunedPrefixes,
+            queued,
+            queuePosition: queuePosition?.position,
+            queueDepth: queuePosition?.depth,
+            archiveSha256: currentArchive.sha256,
+            archiveBytes: currentArchive.archiveBytes,
+            initialArchiveBytes: currentArchive.initialArchiveBytes,
+            autoPrunedArchivePaths: currentArchive.autoPrunedPrefixes,
             runtimeId: job.runtimeId,
             followUpToJobId: followUp.followUpToJobId,
           },
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (job) {
+        const latest = job ? readJob(job.id) : undefined;
+        if (latest?.status === "queued" && queuedSubmissionDurable) {
+          if (ctx.hasUI) refreshOracleStatus(ctx);
+          const queuePosition = getQueuePosition(latest.id);
+          return {
+            content: [
+              {
+                type: "text",
+                text: formatSubmitResponse(latest, {
+                  autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
+                  queued: true,
+                  queuePosition: queuePosition?.position,
+                  queueDepth: queuePosition?.depth,
+                }),
+              },
+            ],
+            details: {
+              jobId: latest.id,
+              queued: true,
+              queuePosition: queuePosition?.position,
+              queueDepth: queuePosition?.depth,
+              archiveSha256: latest.archiveSha256,
+              archiveBytes: archive?.archiveBytes,
+              initialArchiveBytes: archive?.initialArchiveBytes,
+              autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
+              runtimeId: latest.runtimeId,
+              followUpToJobId: latest.followUpToJobId,
+            },
+          };
+        }
+        if (workerSpawned && latest && hasDurableWorkerHandoff(latest)) {
+          if (ctx.hasUI) refreshOracleStatus(ctx);
+          return {
+            content: [
+              {
+                type: "text",
+                text: formatSubmitResponse(latest, {
+                  autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
+                  queued: false,
+                }),
+              },
+            ],
+            details: {
+              jobId: latest.id,
+              queued: false,
+              archiveSha256: latest.archiveSha256,
+              archiveBytes: archive?.archiveBytes,
+              initialArchiveBytes: archive?.initialArchiveBytes,
+              autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
+              runtimeId: latest.runtimeId,
+              followUpToJobId: latest.followUpToJobId,
+            },
+          };
+        }
+        if (spawnedWorker) {
+          await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt).catch(() => undefined);
+        }
+        if (job && (!latest || !isTerminalOracleJob(latest))) {
           const failedAt = new Date().toISOString();
           await updateJob(job.id, (current) => ({
             ...current,
@@ -633,12 +827,15 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
             }, failedAt),
           })).catch(() => undefined);
         }
-        await cleanupRuntimeArtifacts({
-          runtimeId: runtime.runtimeId,
-          runtimeProfileDir: runtime.runtimeProfileDir,
-          runtimeSessionName: runtime.runtimeSessionName,
-          conversationId: followUp.conversationId,
-        }).catch(() => undefined);
+        const cleanupReport = await cleanupRuntimeArtifacts({
+          runtimeId: runtimeLeaseAcquired ? runtime.runtimeId : undefined,
+          runtimeProfileDir: runtimeLeaseAcquired ? runtime.runtimeProfileDir : undefined,
+          runtimeSessionName: workerSpawned ? runtime.runtimeSessionName : undefined,
+          conversationId: conversationLeaseAcquired ? followUp.conversationId : undefined,
+        }).catch(() => ({ attempted: [], warnings: [] }));
+        if (job && cleanupReport.warnings.length > 0) {
+          await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);
+        }
         if (ctx.hasUI) refreshOracleStatus(ctx);
         throw error;
       } finally {
@@ -657,10 +854,12 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       if (!job || job.projectId !== getProjectId(ctx.cwd)) {
         throw new Error(`Oracle job not found in this project: ${params.jobId}`);
       }
+      const latest = isTerminalOracleJob(job) ? await markWakeupSettled(job.id) : job;
+      const current = latest ?? readJob(job.id) ?? job;
 
       let responsePreview = "";
       try {
-        const response = await import("node:fs/promises").then((fs) => fs.readFile(job.responsePath || "", "utf8"));
+        const response = await import("node:fs/promises").then((fs) => fs.readFile(current.responsePath || "", "utf8"));
         responsePreview = response.slice(0, 4000);
       } catch {
         responsePreview = "(response not available yet)";
@@ -671,14 +870,22 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
           {
             type: "text",
             text: [
-              `job: ${job.id}`,
-              `status: ${job.status}`,
-              job.followUpToJobId ? `follow-up-to: ${job.followUpToJobId}` : undefined,
-              job.chatUrl ? `chat: ${job.chatUrl}` : undefined,
-              job.responsePath ? `response: ${job.responsePath}` : undefined,
-              job.responseFormat ? `response-format: ${job.responseFormat}` : undefined,
-              `artifacts: /tmp/oracle-${job.id}/artifacts`,
-              job.error ? `error: ${job.error}` : undefined,
+              `job: ${current.id}`,
+              `status: ${current.status}`,
+              current.queuedAt ? `queued: ${current.queuedAt}` : undefined,
+              current.submittedAt ? `submitted: ${current.submittedAt}` : undefined,
+              ...(current.status === "queued"
+                ? (() => {
+                  const queuePosition = getQueuePosition(current.id);
+                  return queuePosition ? [`queue-position: ${queuePosition.position} of ${queuePosition.depth}`] : [];
+                })()
+                : []),
+              current.followUpToJobId ? `follow-up-to: ${current.followUpToJobId}` : undefined,
+              current.chatUrl ? `chat: ${current.chatUrl}` : undefined,
+              current.responsePath ? `response: ${current.responsePath}` : undefined,
+              current.responseFormat ? `response-format: ${current.responseFormat}` : undefined,
+              `artifacts: ${getJobDir(current.id)}/artifacts`,
+              current.error ? `error: ${current.error}` : undefined,
               "",
               responsePreview,
             ]
@@ -686,7 +893,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
               .join("\n"),
           },
         ],
-        details: { job: redactJobDetails(job) },
+        details: { job: redactJobDetails(current) },
       };
     },
   });
@@ -694,24 +901,27 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
   pi.registerTool({
     name: "oracle_cancel",
     label: "Oracle Cancel",
-    description: "Cancel an active oracle job.",
+    description: "Cancel a queued or active oracle job.",
     parameters: ORACLE_CANCEL_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const job = readJob(params.jobId);
       if (!job || job.projectId !== getProjectId(ctx.cwd)) {
         throw new Error(`Oracle job not found in this project: ${params.jobId}`);
       }
-      if (!isActiveOracleJob(job)) {
+      if (!isOpenOracleJob(job)) {
         return {
-          content: [{ type: "text", text: `Oracle job ${job.id} is not active (${job.status}).` }],
+          content: [{ type: "text", text: `Oracle job ${job.id} is not cancellable (${job.status}).` }],
           details: { job: redactJobDetails(job) },
         };
       }
 
       const cancelled = await cancelOracleJob(params.jobId);
+      if (shouldAdvanceQueueAfterCancellation(cancelled)) {
+        await promoteQueuedJobs({ workerPath, source: "oracle_cancel_tool" });
+      }
       if (ctx.hasUI) refreshOracleStatus(ctx);
       return {
-        content: [{ type: "text", text: `Cancelled oracle job ${cancelled.id}.` }],
+        content: [{ type: "text", text: cancelled.status === "cancelled" || cancelled.status === "failed" ? `Cancelled oracle job ${cancelled.id}.` : `Oracle job ${cancelled.id} was already ${cancelled.status}.` }],
         details: { job: redactJobDetails(cancelled) },
       };
     },

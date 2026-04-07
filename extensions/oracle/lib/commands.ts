@@ -3,13 +3,17 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { loadOracleConfig } from "./config.js";
 import {
   cancelOracleJob,
-  isActiveOracleJob,
+  isOpenOracleJob,
+  isTerminalOracleJob,
   listJobsForCwd,
+  markWakeupSettled,
   pruneTerminalOracleJobs,
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
+  shouldAdvanceQueueAfterCancellation,
 } from "./jobs.js";
+import { getQueuePosition, promoteQueuedJobs } from "./queue.js";
 import { refreshOracleStatus } from "./poller.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
@@ -18,11 +22,15 @@ function summarizeJob(jobId: string): string {
   const job = readJob(jobId);
   if (!job) return `Oracle job ${jobId} not found.`;
 
+  const queuePosition = job.status === "queued" ? getQueuePosition(job.id) : undefined;
   return [
     `job: ${job.id}`,
     `status: ${job.status}`,
     `phase: ${job.phase}`,
     `created: ${job.createdAt}`,
+    job.queuedAt ? `queued: ${job.queuedAt}` : undefined,
+    job.submittedAt ? `submitted: ${job.submittedAt}` : undefined,
+    queuePosition ? `queue-position: ${queuePosition.position} of ${queuePosition.depth} global` : undefined,
     `project: ${job.projectId}`,
     `session: ${job.sessionId}`,
     job.completedAt ? `completed: ${job.completedAt}` : undefined,
@@ -84,7 +92,7 @@ async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<st
   });
 }
 
-export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string): void {
+export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT cookies from real Chrome into the oracle auth seed profile",
     handler: async (_args, ctx) => {
@@ -107,16 +115,20 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string)
         ctx.ui.notify("No oracle jobs found for this project", "info");
         return;
       }
-      if (explicitJobId && !readScopedJob(jobId, ctx.cwd)) {
+      const job = readScopedJob(jobId, ctx.cwd);
+      if (!job) {
         ctx.ui.notify(`Oracle job ${jobId} was not found in this project`, "warning");
         return;
       }
-      ctx.ui.notify(summarizeJob(jobId), "info");
+      if (isTerminalOracleJob(job)) {
+        await markWakeupSettled(job.id);
+      }
+      ctx.ui.notify(summarizeJob(job.id), "info");
     },
   });
 
   pi.registerCommand("oracle-cancel", {
-    description: "Cancel an active oracle job",
+    description: "Cancel a queued or active oracle job",
     handler: async (args, ctx) => {
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
@@ -130,14 +142,20 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string)
         ctx.ui.notify(`Oracle job ${jobId} not found in this project`, "warning");
         return;
       }
-      if (!isActiveOracleJob(job)) {
-        ctx.ui.notify(`Oracle job ${jobId} is not active (${job.status})`, "info");
+      if (!isOpenOracleJob(job)) {
+        ctx.ui.notify(`Oracle job ${jobId} is not cancellable (${job.status})`, "info");
         return;
       }
 
       const cancelled = await cancelOracleJob(jobId);
+      if (shouldAdvanceQueueAfterCancellation(cancelled)) {
+        await promoteQueuedJobs({ workerPath, source: "oracle_cancel_command" });
+      }
       refreshOracleStatus(ctx);
-      ctx.ui.notify(`Cancelled oracle job ${cancelled.id}`, "info");
+      const message = cancelled.status === "cancelled" || cancelled.status === "failed"
+        ? `Cancelled oracle job ${cancelled.id}`
+        : `Oracle job ${cancelled.id} was already ${cancelled.status}`;
+      ctx.ui.notify(message, "info");
     },
   });
 
@@ -156,20 +174,22 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string)
         return;
       }
 
-      const activeJobs = jobs.filter((job): job is NonNullable<typeof job> => Boolean(job && isActiveOracleJob(job)));
-      if (activeJobs.length > 0) {
+      const nonTerminalJobs = jobs.filter((job): job is NonNullable<typeof job> => Boolean(job && !isTerminalOracleJob(job)));
+      if (nonTerminalJobs.length > 0) {
         ctx.ui.notify(
-          `Refusing to remove active oracle job${activeJobs.length === 1 ? "" : "s"}: ${activeJobs.map((job) => job.id).join(", ")}`,
+          `Refusing to remove non-terminal oracle job${nonTerminalJobs.length === 1 ? "" : "s"}: ${nonTerminalJobs.map((job) => job.id).join(", ")}`,
           "warning",
         );
         return;
       }
 
       const cleanupWarnings: string[] = [];
+      let removedCount = 0;
       const removeJobs = async () => {
         for (const job of jobs) {
           if (!job) continue;
           const result = await removeTerminalOracleJob(job);
+          if (result.removed) removedCount += 1;
           cleanupWarnings.push(...result.cleanupReport.warnings.map((warning) => `${job.id}: ${warning}`));
         }
       };
@@ -186,7 +206,10 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string)
 
       refreshOracleStatus(ctx);
       const warningSuffix = cleanupWarnings.length > 0 ? ` Cleanup warnings:\n${cleanupWarnings.join("\n")}` : "";
-      ctx.ui.notify(`Removed ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}.${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
+      const removalSummary = removedCount === jobs.length
+        ? `Removed ${removedCount} oracle job director${removedCount === 1 ? "y" : "ies"}.`
+        : `Removed ${removedCount} of ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}; retained ${jobs.length - removedCount} with cleanup warnings.`;
+      ctx.ui.notify(`${removalSummary}${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
     },
   });
 }

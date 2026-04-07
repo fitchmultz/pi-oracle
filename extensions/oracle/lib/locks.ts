@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 export const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 export const ORACLE_STATE_DIR_ENV = "PI_ORACLE_STATE_DIR";
@@ -11,6 +11,7 @@ const LOCKS_DIR = join(ORACLE_STATE_DIR, "locks");
 const LEASES_DIR = join(ORACLE_STATE_DIR, "leases");
 const DEFAULT_WAIT_MS = 30_000;
 const POLL_MS = 200;
+export const ORACLE_METADATA_WRITE_GRACE_MS = 1_000;
 
 export interface OracleLockHandle {
   path: string;
@@ -52,11 +53,51 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function writeMetadata(path: string, metadata: unknown): Promise<void> {
-  await writeFile(join(path, "metadata.json"), `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  const targetPath = join(path, "metadata.json");
+  const tempPath = join(path, `metadata.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+  await writeFile(tempPath, `${JSON.stringify(metadata, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(tempPath, targetPath);
+}
+
+async function createStateDirAtomically(parentDir: string, finalPath: string, metadata: unknown): Promise<void> {
+  const tempPath = join(parentDir, `.tmp-${basename(finalPath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`);
+  await mkdir(tempPath, { recursive: false, mode: 0o700 });
+  try {
+    await writeMetadata(tempPath, metadata);
+    await rename(tempPath, finalPath);
+  } catch (error) {
+    await rm(tempPath, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+function getMetadataPath(path: string): string {
+  return join(path, "metadata.json");
+}
+
+function getMetadataState(path: string): "present" | "missing" | "invalid" {
+  const metadataPath = getMetadataPath(path);
+  if (!existsSync(metadataPath)) return "missing";
+  try {
+    JSON.parse(readFileSync(metadataPath, "utf8"));
+    return "present";
+  } catch {
+    return "invalid";
+  }
+}
+
+function isIncompleteStateDirStale(path: string, now = Date.now()): boolean {
+  try {
+    const stats = statSync(path);
+    const baselineMs = Math.max(stats.mtimeMs, stats.ctimeMs);
+    return now - baselineMs >= ORACLE_METADATA_WRITE_GRACE_MS;
+  } catch {
+    return false;
+  }
 }
 
 function readLockProcessPid(path: string): number | undefined {
-  const metadataPath = join(path, "metadata.json");
+  const metadataPath = getMetadataPath(path);
   if (!existsSync(metadataPath)) return undefined;
   try {
     const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as { processPid?: unknown };
@@ -78,7 +119,19 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function maybeReclaimStaleLock(path: string): Promise<boolean> {
+function isStateDirExistsError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error.code === "EEXIST" || error.code === "ENOTEMPTY"));
+}
+
+async function maybeReclaimIncompleteStateDir(path: string, now = Date.now()): Promise<boolean> {
+  if (getMetadataState(path) === "present") return false;
+  if (!isIncompleteStateDirStale(path, now)) return false;
+  await rm(path, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
+
+async function maybeReclaimStaleLock(path: string, now = Date.now()): Promise<boolean> {
+  if (await maybeReclaimIncompleteStateDir(path, now)) return true;
   const processPid = readLockProcessPid(path);
   if (!processPid || isProcessAlive(processPid)) return false;
   await rm(path, { recursive: true, force: true }).catch(() => undefined);
@@ -105,17 +158,17 @@ export async function acquireLock(
   metadata: unknown,
   options?: { timeoutMs?: number },
 ): Promise<OracleLockHandle> {
-  const path = lockPath(kind, key);
+  const parentDir = getLocksDir();
+  const path = join(parentDir, leaseKey(kind, key));
   const timeoutMs = options?.timeoutMs ?? DEFAULT_WAIT_MS;
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     try {
-      await mkdir(path, { recursive: false, mode: 0o700 });
-      await writeMetadata(path, metadata);
+      await createStateDirAtomically(parentDir, path, metadata);
       return { path };
     } catch (error) {
-      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+      if (!isStateDirExistsError(error)) throw error;
       if (await maybeReclaimStaleLock(path)) continue;
     }
     await sleep(POLL_MS);
@@ -176,9 +229,42 @@ export async function withJobLock<T>(jobId: string, metadata: unknown, fn: () =>
 }
 
 export async function createLease(kind: string, key: string, metadata: unknown): Promise<string> {
-  const path = leasePath(kind, key);
-  await mkdir(path, { recursive: false, mode: 0o700 });
-  await writeMetadata(path, metadata);
+  const parentDir = getLeasesDir();
+  const path = join(parentDir, leaseKey(kind, key));
+  const deadline = Date.now() + DEFAULT_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    try {
+      await createStateDirAtomically(parentDir, path, metadata);
+      return path;
+    } catch (error) {
+      if (!isStateDirExistsError(error)) throw error;
+      if (await maybeReclaimIncompleteStateDir(path)) continue;
+      if (getMetadataState(path) === "present") throw error;
+    }
+    await sleep(POLL_MS);
+  }
+
+  throw new Error(`Timed out waiting for oracle ${kind} lease: ${key}`);
+}
+
+export async function writeLeaseMetadata(kind: string, key: string, metadata: unknown): Promise<string> {
+  const parentDir = getLeasesDir();
+  const path = join(parentDir, leaseKey(kind, key));
+  if (existsSync(path)) {
+    await writeMetadata(path, metadata);
+    return path;
+  }
+  try {
+    await createStateDirAtomically(parentDir, path, metadata);
+  } catch (error) {
+    if (!isStateDirExistsError(error)) throw error;
+    if (await maybeReclaimIncompleteStateDir(path)) {
+      await createStateDirAtomically(parentDir, path, metadata);
+    } else {
+      await writeMetadata(path, metadata);
+    }
+  }
   return path;
 }
 

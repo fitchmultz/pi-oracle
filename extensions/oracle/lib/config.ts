@@ -106,7 +106,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     sessionPrefix: "oracle",
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
     runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
-    maxConcurrentJobs: 8,
+    maxConcurrentJobs: 2,
     cloneStrategy: "apfs-clone",
     chatUrl: "https://chatgpt.com/",
     authUrl: "https://chatgpt.com/auth/login",
@@ -299,7 +299,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const modelFamily = expectEnum(defaults.modelFamily, "defaults.modelFamily", MODEL_FAMILIES);
   const effort = expectEnum(defaults.effort, "defaults.effort", EFFORTS);
   const autoSwitchToThinking = expectBoolean(defaults.autoSwitchToThinking, "defaults.autoSwitchToThinking");
-  if (modelFamily === "pro" && !PRO_EFFORTS.includes(effort)) {
+  if (modelFamily === "pro" && effort !== "standard" && effort !== "extended") {
     throw new Error(`Invalid oracle config: defaults.effort must be one of ${PRO_EFFORTS.join(", ")} for pro`);
   }
   if (modelFamily !== "instant" && autoSwitchToThinking) {
