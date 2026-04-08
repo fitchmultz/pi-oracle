@@ -133,7 +133,9 @@ The authenticated seed profile remains the source of truth for future oracle run
 
 ### `oracle_submit`
 
-1. validate config and model options
+Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields.
+
+1. resolve the preset (submit-time or config default) into an execution snapshot
 2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`
 3. build the archive first into a temporary path
 4. allocate a unique runtime:
@@ -216,9 +218,7 @@ Browser/auth settings are global-only because they control local privileged brow
 ```json
 {
   "defaults": {
-    "modelFamily": "pro",
-    "effort": "extended",
-    "autoSwitchToThinking": false
+    "preset": "<preset id from ORACLE_SUBMIT_PRESETS>"
   },
   "browser": {
     "sessionPrefix": "oracle",
@@ -317,9 +317,7 @@ Important fields include:
 - `sessionId`
 - `originSessionFile`
 - `requestSource`
-- `chatModelFamily`
-- `effort`
-- `autoSwitchToThinking`
+- `selection`: resolved execution snapshot with `{ preset, modelFamily, effort?, autoSwitchToThinking }`
 - `followUpToJobId`
 - `chatUrl`
 - `conversationId`

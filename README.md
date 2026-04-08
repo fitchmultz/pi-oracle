@@ -111,6 +111,7 @@ Config files:
 - project: `.pi/extensions/oracle.json`
 
 Common settings:
+- `defaults.preset`
 - `browser.args`
 - `browser.executablePath`
 - `browser.authSeedProfileDir`

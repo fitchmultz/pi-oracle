@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { DEFAULT_CONFIG, type OracleConfig } from "../extensions/oracle/lib/config.ts";
+import {
+  DEFAULT_CONFIG,
+  ORACLE_SUBMIT_PRESETS,
+  resolveOracleSubmitPreset,
+  type OracleConfig,
+  type OracleSubmitPresetId,
+} from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
 import { extractArtifactLabels, filterStructuralArtifactCandidates, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
@@ -55,6 +61,45 @@ import oracleExtension from "../extensions/oracle/index.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+function assertThrows(block: () => void, failureMessage: string, expectedSubstring: string): void {
+  try {
+    block();
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error);
+    if (!text.includes(expectedSubstring)) {
+      throw new Error(
+        `${failureMessage}: expected error message to include ${JSON.stringify(expectedSubstring)}, got ${JSON.stringify(text)}`,
+      );
+    }
+    return;
+  }
+  throw new Error(`${failureMessage}: expected throw`);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function findPresetId(
+  predicate: (preset: (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]) => boolean,
+  failureMessage: string,
+): OracleSubmitPresetId {
+  const match = (Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][])
+    .find(([, preset]) => predicate(preset));
+  if (!match) throw new Error(failureMessage);
+  return match[0];
+}
+
+function getLiteralEnumValues(schema: unknown): string[] {
+  const anyOf = asRecord(schema)?.anyOf;
+  if (!Array.isArray(anyOf)) return [];
+  return anyOf
+    .map((option) => asRecord(option)?.const)
+    .filter((value): value is string => typeof value === "string");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -193,6 +238,7 @@ async function createJobForTest(
     initialState?: "queued" | "submitted";
     followUpToJobId?: string;
     chatUrl?: string;
+    preset?: OracleSubmitPresetId;
   },
 ) {
   const jobId = `sanity-job-${randomUUID()}`;
@@ -202,13 +248,13 @@ async function createJobForTest(
     runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
     seedGeneration: new Date().toISOString(),
   };
+  const preset = options?.preset ?? config.defaults.preset;
   await createJob(
     jobId,
     {
       prompt: "sanity",
       files: ["docs/ORACLE_DESIGN.md"],
-      modelFamily: "pro",
-      effort: "standard",
+      selection: resolveOracleSubmitPreset(preset),
       requestSource: options?.requestSource ?? "tool",
       followUpToJobId: options?.followUpToJobId,
       chatUrl: options?.chatUrl,
@@ -441,9 +487,21 @@ async function testCleanupPendingBlocksAdmission(config: OracleConfig): Promise<
   await cleanupJob(ownerId);
 }
 
-async function testJobCreationNormalizesEffort(config: OracleConfig): Promise<void> {
+async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): Promise<void> {
   const cwd = process.cwd();
-  const sessionId = "/tmp/oracle-sanity-session-normalize.jsonl";
+  const sessionId = "/tmp/oracle-sanity-session-selection.jsonl";
+  const thinkingPreset = findPresetId(
+    (preset) => preset.modelFamily === "thinking" && preset.effort === "standard",
+    "expected a thinking preset with standard effort",
+  );
+  const instantPreset = findPresetId(
+    (preset) => preset.modelFamily === "instant" && preset.autoSwitchToThinking === false,
+    "expected an instant preset without auto-switch",
+  );
+  const instantAutoSwitchPreset = findPresetId(
+    (preset) => preset.modelFamily === "instant" && preset.autoSwitchToThinking === true,
+    "expected an instant preset with auto-switch enabled",
+  );
 
   const thinkingJobId = `sanity-job-${randomUUID()}`;
   const thinkingRuntime = {
@@ -457,7 +515,7 @@ async function testJobCreationNormalizesEffort(config: OracleConfig): Promise<vo
     {
       prompt: "sanity",
       files: ["docs/ORACLE_DESIGN.md"],
-      modelFamily: "thinking",
+      selection: resolveOracleSubmitPreset(thinkingPreset),
       requestSource: "tool",
     },
     cwd,
@@ -466,8 +524,10 @@ async function testJobCreationNormalizesEffort(config: OracleConfig): Promise<vo
     thinkingRuntime,
   );
   const thinkingJob = readJob(thinkingJobId);
-  assert(thinkingJob?.effort === config.defaults.effort, "thinking jobs should inherit default effort when omitted");
-  assert(thinkingJob?.autoSwitchToThinking === false, "thinking jobs should not enable autoSwitchToThinking");
+  assert(thinkingJob?.selection?.preset === thinkingPreset, "thinking jobs should persist the selected preset id");
+  assert(thinkingJob?.selection?.modelFamily === "thinking", "thinking jobs should persist modelFamily in selection");
+  assert(thinkingJob?.selection?.effort === "standard", "thinking jobs should persist effort in selection");
+  assert(thinkingJob?.selection?.autoSwitchToThinking === false, "thinking jobs should not enable autoSwitchToThinking");
   await cleanupJob(thinkingJobId);
 
   const instantJobId = `sanity-job-${randomUUID()}`;
@@ -482,7 +542,7 @@ async function testJobCreationNormalizesEffort(config: OracleConfig): Promise<vo
     {
       prompt: "sanity",
       files: ["docs/ORACLE_DESIGN.md"],
-      modelFamily: "instant",
+      selection: resolveOracleSubmitPreset(instantPreset),
       requestSource: "tool",
     },
     cwd,
@@ -491,8 +551,59 @@ async function testJobCreationNormalizesEffort(config: OracleConfig): Promise<vo
     instantRuntime,
   );
   const instantJob = readJob(instantJobId);
-  assert(instantJob?.effort === undefined, "instant jobs should never persist an effort");
+  assert(instantJob?.selection?.preset === instantPreset, "instant jobs should persist the selected preset id");
+  assert(instantJob?.selection?.effort === undefined, "instant jobs should never persist an effort");
+  assert(instantJob?.selection?.autoSwitchToThinking === false, "instant presets without auto-switch should keep it disabled");
   await cleanupJob(instantJobId);
+
+  const instantAutoSwitchJobId = `sanity-job-${randomUUID()}`;
+  const instantAutoSwitchRuntime = {
+    runtimeId: `runtime-${randomUUID()}`,
+    runtimeSessionName: `oracle-runtime-${randomUUID()}`,
+    runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
+    seedGeneration: new Date().toISOString(),
+  };
+  await createJob(
+    instantAutoSwitchJobId,
+    {
+      prompt: "sanity",
+      files: ["docs/ORACLE_DESIGN.md"],
+      selection: resolveOracleSubmitPreset(instantAutoSwitchPreset),
+      requestSource: "tool",
+    },
+    cwd,
+    sessionId,
+    config,
+    instantAutoSwitchRuntime,
+  );
+  const instantAutoSwitchJob = readJob(instantAutoSwitchJobId);
+  assert(instantAutoSwitchJob?.selection?.preset === instantAutoSwitchPreset, "instant auto-switch jobs should persist the selected preset id");
+  assert(instantAutoSwitchJob?.selection?.autoSwitchToThinking === true, "instant auto-switch presets should enable autoSwitchToThinking");
+  assert(instantAutoSwitchJob?.selection?.effort === undefined, "instant auto-switch jobs should not persist effort");
+  await cleanupJob(instantAutoSwitchJobId);
+}
+
+async function testOracleSubmitPresetGuardrails(): Promise<void> {
+  for (const [id, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
+    const resolved = resolveOracleSubmitPreset(id);
+    assert(resolved.preset === id, `preset ${id} should carry its id in the resolved selection`);
+    assert(resolved.modelFamily === preset.modelFamily, `preset ${id} should map to modelFamily ${preset.modelFamily}`);
+    if (preset.modelFamily === "instant") {
+      assert(resolved.effort === undefined, `preset ${id} should not set effort`);
+      assert(
+        resolved.autoSwitchToThinking === preset.autoSwitchToThinking,
+        `preset ${id} autoSwitchToThinking should match definition`,
+      );
+    } else {
+      assert(resolved.effort === preset.effort, `preset ${id} should set effort ${preset.effort}`);
+      assert(resolved.autoSwitchToThinking === false, `preset ${id} should not enable auto-switch`);
+    }
+  }
+  assertThrows(
+    () => resolveOracleSubmitPreset("__not_a_real_preset__" as OracleSubmitPresetId),
+    "unknown oracle_submit preset ids should be rejected",
+    "Unknown oracle_submit preset",
+  );
 }
 
 async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: OracleConfig): Promise<void> {
@@ -2918,13 +3029,36 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const locksSource = await readFile(new URL("../extensions/oracle/lib/locks.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
+  const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     files?: string[];
     pi?: { prompts?: string[] };
   };
+  const pi: any = {
+    tools: new Map<string, any>(),
+    registerTool(definition: any) {
+      this.tools.set(definition.name, definition);
+    },
+    registerCommand: () => {},
+    sendMessage: () => {},
+  };
+  registerOracleTools(pi, "/tmp/fake-oracle-worker.mjs");
+  const submitTool = pi.tools.get("oracle_submit");
+  assert(submitTool, "oracle submit tool should register for schema inspection");
+  const submitProperties = asRecord(asRecord(submitTool.parameters)?.properties);
+  assert(submitProperties, "oracle submit tool should expose an object schema");
+  const expectedPresetIds = Object.keys(ORACLE_SUBMIT_PRESETS).sort();
+  const presetIdsInSchema = getLiteralEnumValues(submitProperties.preset).sort();
 
   assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle prompt template should contain the oracle dispatch instructions");
+  assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
+  assert(promptSource.includes("is the only model-selection parameter"), "/oracle prompt should state preset is the only selector");
+  assert(promptSource.includes("tool schema enum / canonical preset registry"), "/oracle prompt should point callers to the schema/registry instead of a hard-coded preset list");
+  assert(promptSource.includes("Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`"), "/oracle prompt should tell callers not to pass legacy fields");
+  for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
+    assert(!promptSource.includes(presetId), `/oracle prompt should not hard-code preset id ${presetId}`);
+  }
   assert(promptSource.includes("include the whole repository by passing `.`"), "/oracle prompt should default to whole-repo archive selection");
   assert(promptSource.includes("obvious credentials/private data"), "/oracle prompt should mention default exclusion of obvious credentials/private data");
   assert(promptSource.includes("For very targeted asks like reviewing one function or explaining one stack trace"), "/oracle prompt should preserve the targeted-scope exception");
@@ -2934,7 +3068,20 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("If a submitted oracle job later fails because upload is rejected"), "/oracle prompt should describe the post-submit upload-rejection fallback ladder");
   assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
+  assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
+  assert(designSource.includes("`preset` is the only model-selection parameter"), "design doc should state preset is the only selector");
+  for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
+    assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
+  }
   assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
+  assert(toolsSource.includes("resolveOracleSubmitPreset"), "oracle submit should resolve preset via config helper");
+  assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS"), "oracle submit tool schema should reference the canonical preset registry");
+  assert(toolsSource.includes("Use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only selector");
+  assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
+  assert(JSON.stringify(presetIdsInSchema) === JSON.stringify(expectedPresetIds), "oracle submit preset schema should expose exactly the canonical preset ids");
+  assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
+  assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");
+  assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
   assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
@@ -3450,7 +3597,8 @@ async function main() {
   await testCleanupPendingRecoveryUnblocksAdmission(config);
   await testCleanupPendingRecoveryTerminatesStaleLiveWorker(config);
   await testCleanupPendingBlocksAdmission(config);
-  await testJobCreationNormalizesEffort(config);
+  await testJobCreationPersistsSelectionSnapshot(config);
+  await testOracleSubmitPresetGuardrails();
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
   await testActiveCancellationDoesNotOverwriteCompletion(config);

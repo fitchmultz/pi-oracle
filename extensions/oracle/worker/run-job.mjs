@@ -807,7 +807,7 @@ function matchesModelFamilyButton(candidate, family) {
 }
 
 function requestedEffortLabel(job) {
-  return job.effort ? titleCase(job.effort) : undefined;
+  return job.selection?.effort ? titleCase(job.selection.effort) : undefined;
 }
 
 function effortSelectionVisible(snapshot, effortLabel) {
@@ -852,12 +852,12 @@ function snapshotHasModelConfigurationUi(snapshot) {
 
 function snapshotStronglyMatchesRequestedModel(snapshot, job) {
   const entries = parseSnapshotEntries(snapshot);
-  const familyMatched = entries.some((entry) => matchesModelFamilyButton(entry, job.chatModelFamily));
+  const familyMatched = entries.some((entry) => matchesModelFamilyButton(entry, job.selection.modelFamily));
   const effortLabel = requestedEffortLabel(job);
-  if (job.chatModelFamily === "thinking") {
+  if (job.selection.modelFamily === "thinking") {
     return familyMatched || effortSelectionVisible(snapshot, effortLabel);
   }
-  if (job.chatModelFamily === "pro") {
+  if (job.selection.modelFamily === "pro") {
     return effortLabel ? familyMatched && effortSelectionVisible(snapshot, effortLabel) : familyMatched;
   }
   return familyMatched;
@@ -880,13 +880,13 @@ function composerControlsVisible(snapshot) {
 }
 
 function snapshotWeaklyMatchesRequestedModel(snapshot, job) {
-  if (job.chatModelFamily === "thinking") {
+  if (job.selection.modelFamily === "thinking") {
     return effortSelectionVisible(snapshot, requestedEffortLabel(job)) || thinkingSelectionVisible(snapshot);
   }
-  if (job.chatModelFamily === "pro") {
+  if (job.selection.modelFamily === "pro") {
     return !thinkingChipVisible(snapshot);
   }
-  if (job.chatModelFamily === "instant") {
+  if (job.selection.modelFamily === "instant") {
     return !thinkingChipVisible(snapshot);
   }
   return false;
@@ -1214,7 +1214,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
       if (options.stronglyVerified) {
         if (!fallbackLogged) {
           fallbackLogged = true;
-          await log(`Model configuration closed after strong in-dialog verification for family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+          await log(`Model configuration closed after strong in-dialog verification for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
         }
         return;
       }
@@ -1223,7 +1223,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
     if (!configurationUiVisible && composerControlsVisible(snapshot) && options.stronglyVerified) {
       if (!fallbackLogged) {
         fallbackLogged = true;
-        await log(`Composer became usable after strong in-dialog verification for family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+        await log(`Composer became usable after strong in-dialog verification for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
       }
       return;
     }
@@ -1239,30 +1239,30 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
   }
 
   if (options.stronglyVerified && lastSnapshot && !snapshotHasModelConfigurationUi(lastSnapshot)) {
-    await log(`Model configuration closed only after settle-timeout for family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+    await log(`Model configuration closed only after settle-timeout for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
     return;
   }
 
-  throw new Error(`Could not verify requested model settings after configuration for ${job.chatModelFamily}`);
+  throw new Error(`Could not verify requested model settings after configuration for ${job.selection.modelFamily}`);
 }
 
 async function configureModel(job) {
   const initialSnapshot = await snapshotText(job);
   if (snapshotStronglyMatchesRequestedModel(initialSnapshot, job)) {
-    await log(`Model already appears configured for family=${job.chatModelFamily} effort=${job.effort || "(none)"}; skipping reconfiguration`);
+    await log(`Model already appears configured for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}; skipping reconfiguration`);
     return;
   }
 
-  await log(`Configuring model family=${job.chatModelFamily} effort=${job.effort || "(none)"}`);
+  await log(`Configuring model family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
   let familySnapshot = await openModelConfiguration(job);
   let verificationSnapshot = familySnapshot;
 
-  let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.chatModelFamily));
+  let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.selection.modelFamily));
   if (!familyEntry && snapshotStronglyMatchesRequestedModel(familySnapshot, job)) {
     await log("Model configuration UI opened with requested settings already selected");
   }
   if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job)) {
-    throw new Error(`Could not find model family button for ${job.chatModelFamily}`);
+    throw new Error(`Could not find model family button for ${job.selection.modelFamily}`);
   }
 
   if (familyEntry) {
@@ -1272,7 +1272,7 @@ async function configureModel(job) {
     verificationSnapshot = familySnapshot;
   }
 
-  if (job.chatModelFamily === "thinking" || job.chatModelFamily === "pro") {
+  if (job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro") {
     const effortLabel = requestedEffortLabel(job);
     if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel)) {
       const opened = await openEffortDropdown(job);
@@ -1294,14 +1294,14 @@ async function configureModel(job) {
     }
   }
 
-  if (job.chatModelFamily === "instant" && job.autoSwitchToThinking) {
+  if (job.selection.modelFamily === "instant" && job.selection.autoSwitchToThinking) {
     await maybeClickLabeledEntry(job, CHATGPT_LABELS.autoSwitchToThinking);
     verificationSnapshot = await snapshotText(job);
   }
 
   const stronglyVerified = snapshotStronglyMatchesRequestedModel(verificationSnapshot, job);
   if (!stronglyVerified) {
-    throw new Error(`Could not verify requested model settings in configuration UI for ${job.chatModelFamily}`);
+    throw new Error(`Could not verify requested model settings in configuration UI for ${job.selection.modelFamily}`);
   }
 
   if (!(await maybeClickLabeledEntry(job, CHATGPT_LABELS.close, { kind: "button" }))) {

@@ -10,13 +10,61 @@ export type OracleModelFamily = (typeof MODEL_FAMILIES)[number];
 export const EFFORTS = ["light", "standard", "extended", "heavy"] as const;
 export type OracleEffort = (typeof EFFORTS)[number];
 
+/**
+ * Canonical preset registry for `oracle_submit` preset selection.
+ * This is the single authored source of truth — all derived lists come from `Object.keys(...)`.
+ */
+export const ORACLE_SUBMIT_PRESETS = {
+  pro_standard: { label: "Pro - Standard", modelFamily: "pro" as const, effort: "standard" as const, autoSwitchToThinking: false },
+  pro_extended: { label: "Pro - Extended", modelFamily: "pro" as const, effort: "extended" as const, autoSwitchToThinking: false },
+  thinking_light: { label: "Thinking - Light", modelFamily: "thinking" as const, effort: "light" as const, autoSwitchToThinking: false },
+  thinking_standard: { label: "Thinking - Standard", modelFamily: "thinking" as const, effort: "standard" as const, autoSwitchToThinking: false },
+  thinking_extended: { label: "Thinking - Extended", modelFamily: "thinking" as const, effort: "extended" as const, autoSwitchToThinking: false },
+  thinking_heavy: { label: "Thinking - Heavy", modelFamily: "thinking" as const, effort: "heavy" as const, autoSwitchToThinking: false },
+  instant: { label: "Instant", modelFamily: "instant" as const, autoSwitchToThinking: false },
+  instant_auto_switch: { label: "Instant - Auto-switch to Thinking Enabled", modelFamily: "instant" as const, autoSwitchToThinking: true },
+} as const;
+
+export type OracleSubmitPresetId = keyof typeof ORACLE_SUBMIT_PRESETS;
+
+export type OracleSubmitPreset = typeof ORACLE_SUBMIT_PRESETS[OracleSubmitPresetId];
+
+export function getOracleSubmitPresetById(id: OracleSubmitPresetId): OracleSubmitPreset {
+  const found = ORACLE_SUBMIT_PRESETS[id];
+  if (!found) {
+    throw new Error(`Unknown oracle_submit preset: ${id}`);
+  }
+  return found;
+}
+
+/** Resolved execution snapshot generated from a preset at submit time. */
+export type OracleResolvedSelection = {
+  preset: OracleSubmitPresetId;
+  modelFamily: OracleModelFamily;
+  effort?: OracleEffort;
+  autoSwitchToThinking: boolean;
+};
+
+/**
+ * Resolve a preset id into the execution snapshot that gets persisted on the job.
+ * @throws if the preset id is unknown.
+ */
+export function resolveOracleSubmitPreset(presetId: OracleSubmitPresetId): OracleResolvedSelection {
+  const def = getOracleSubmitPresetById(presetId);
+  return {
+    preset: presetId,
+    modelFamily: def.modelFamily,
+    effort: def.modelFamily === "instant" ? undefined : def.effort,
+    autoSwitchToThinking: def.modelFamily === "instant" ? def.autoSwitchToThinking : false,
+  };
+}
+
 export const BROWSER_RUN_MODES = ["headless", "headed"] as const;
 export type OracleBrowserRunMode = (typeof BROWSER_RUN_MODES)[number];
 
 export const CLONE_STRATEGIES = ["apfs-clone", "copy"] as const;
 export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
-const PRO_EFFORTS = ["standard", "extended"] as const satisfies readonly OracleEffort[];
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -24,9 +72,7 @@ const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application
 
 export interface OracleConfig {
   defaults: {
-    modelFamily: OracleModelFamily;
-    effort: OracleEffort;
-    autoSwitchToThinking: boolean;
+    preset: OracleSubmitPresetId;
   };
   browser: {
     sessionPrefix: string;
@@ -98,9 +144,7 @@ const detectedChromeProfileName = detectDefaultChromeProfileName();
 
 export const DEFAULT_CONFIG: OracleConfig = {
   defaults: {
-    modelFamily: "pro",
-    effort: "extended",
-    autoSwitchToThinking: false,
+    preset: "pro_extended",
   },
   browser: {
     sessionPrefix: "oracle",
@@ -292,19 +336,13 @@ function normalizeLegacyBrowserConfig(root: Record<string, unknown>): Record<str
   return root;
 }
 
+const PRESET_IDS = Object.keys(ORACLE_SUBMIT_PRESETS) as unknown as readonly OracleSubmitPresetId[];
+
 function validateOracleConfig(value: unknown): OracleConfig {
   const root = normalizeLegacyBrowserConfig(expectObject(value, "root"));
 
   const defaults = expectObject(root.defaults, "defaults");
-  const modelFamily = expectEnum(defaults.modelFamily, "defaults.modelFamily", MODEL_FAMILIES);
-  const effort = expectEnum(defaults.effort, "defaults.effort", EFFORTS);
-  const autoSwitchToThinking = expectBoolean(defaults.autoSwitchToThinking, "defaults.autoSwitchToThinking");
-  if (modelFamily === "pro" && effort !== "standard" && effort !== "extended") {
-    throw new Error(`Invalid oracle config: defaults.effort must be one of ${PRO_EFFORTS.join(", ")} for pro`);
-  }
-  if (modelFamily !== "instant" && autoSwitchToThinking) {
-    throw new Error("Invalid oracle config: defaults.autoSwitchToThinking is only valid for instant");
-  }
+  const preset = expectEnum(defaults.preset, "defaults.preset", PRESET_IDS);
 
   const browser = expectObject(root.browser, "browser");
   const auth = expectObject(root.auth, "auth");
@@ -321,9 +359,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
 
   return {
     defaults: {
-      modelFamily,
-      effort,
-      autoSwitchToThinking,
+      preset,
     },
     browser: {
       sessionPrefix: expectString(browser.sessionPrefix, "browser.sessionPrefix"),

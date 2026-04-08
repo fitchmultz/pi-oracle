@@ -5,7 +5,12 @@ import { basename, join, posix } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
-import { loadOracleConfig, EFFORTS, MODEL_FAMILIES, type OracleEffort, type OracleModelFamily } from "./config.js";
+import {
+  loadOracleConfig,
+  ORACLE_SUBMIT_PRESETS,
+  resolveOracleSubmitPreset,
+  type OracleSubmitPresetId,
+} from "./config.js";
 import {
   appendCleanupWarnings,
   cancelOracleJob,
@@ -53,10 +58,11 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
   }),
-  modelFamily: Type.Optional(stringEnum(MODEL_FAMILIES, "ChatGPT model family: instant, thinking, or pro.")),
-  effort: Type.Optional(stringEnum(EFFORTS, "Reasoning effort. Use only values supported by the chosen model family.")),
-  autoSwitchToThinking: Type.Optional(
-    Type.Boolean({ description: "Only valid when modelFamily is instant. Omit for thinking and pro." }),
+  preset: Type.Optional(
+    stringEnum(
+      [...Object.keys(ORACLE_SUBMIT_PRESETS)] as const,
+      "ChatGPT model preset. Omit to use the configured default preset.",
+    ),
   ),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
 });
@@ -68,12 +74,6 @@ const ORACLE_READ_PARAMS = Type.Object({
 const ORACLE_CANCEL_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
 });
-
-const VALID_EFFORTS: Record<OracleModelFamily, readonly OracleEffort[]> = {
-  instant: [],
-  thinking: ["light", "standard", "extended", "heavy"],
-  pro: ["standard", "extended"],
-};
 
 const MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
@@ -491,29 +491,6 @@ export function getQueueAdmissionFailure(args: {
   return undefined;
 }
 
-function validateSubmissionOptions(
-  params: { effort?: OracleEffort; autoSwitchToThinking?: boolean },
-  modelFamily: OracleModelFamily,
-  effort: OracleEffort | undefined,
-  autoSwitchToThinking: boolean,
-): void {
-  if (modelFamily === "instant" && params.effort !== undefined) {
-    throw new Error("Instant model family does not support effort selection");
-  }
-
-  if (effort && !VALID_EFFORTS[modelFamily].includes(effort)) {
-    throw new Error(`Invalid effort for ${modelFamily}: ${effort}`);
-  }
-
-  if (modelFamily !== "instant" && params.autoSwitchToThinking === true) {
-    throw new Error("autoSwitchToThinking is only valid for the instant model family");
-  }
-
-  if (modelFamily !== "instant" && autoSwitchToThinking) {
-    throw new Error(`autoSwitchToThinking cannot be enabled for ${modelFamily}`);
-  }
-}
-
 function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
   followUpToJobId?: string;
   chatUrl?: string;
@@ -601,7 +578,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     name: "oracle_submit",
     label: "Oracle Submit",
     description:
-      "Dispatch a background ChatGPT web oracle job after gathering context. Always pass a prompt and exact project-relative archive inputs.",
+      "Dispatch a background ChatGPT web oracle job after gathering context. Always pass a prompt and exact project-relative archive inputs. " +
+      "Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults (see `preset` field for allowed ids).",
     promptSnippet: "Dispatch a background ChatGPT web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
@@ -613,7 +591,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       "If oracle_submit itself fails because the local archive still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning, or for any other submit-time error, stop and report the error instead of retrying automatically.",
       "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
       "Stop after dispatching oracle_submit; do not continue the task while the oracle job is running.",
-      "Only use autoSwitchToThinking with modelFamily=instant.",
+      "Use `preset` as the only model-selection parameter on oracle_submit. Allowed values come from the tool schema enum. Omit preset to use the configured default.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -621,16 +599,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
       const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
       const projectId = getProjectId(ctx.cwd);
       const sessionId = getSessionId(originSessionFile, projectId);
-      const submittedModelFamily = params.modelFamily as OracleModelFamily | undefined;
-      const submittedEffort = params.effort as OracleEffort | undefined;
-      const modelFamily: OracleModelFamily = submittedModelFamily ?? config.defaults.modelFamily;
-      const requestedEffort: OracleEffort = submittedEffort ?? config.defaults.effort;
-      const effort: OracleEffort | undefined = modelFamily === "instant" ? undefined : requestedEffort;
-      const rawAutoSwitchToThinking = params.autoSwitchToThinking ?? config.defaults.autoSwitchToThinking;
-      const autoSwitchToThinking = modelFamily === "instant" ? rawAutoSwitchToThinking : false;
+      const presetId = (params.preset as OracleSubmitPresetId | undefined) ?? config.defaults.preset;
+      const selection = resolveOracleSubmitPreset(presetId);
       const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
-
-      validateSubmissionOptions({ effort: submittedEffort, autoSwitchToThinking: params.autoSwitchToThinking }, modelFamily, effort, autoSwitchToThinking);
       try {
         await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
           await reconcileStaleOracleJobs();
@@ -691,9 +662,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
               {
                 prompt: params.prompt,
                 files: params.files,
-                modelFamily,
-                effort,
-                autoSwitchToThinking,
+                selection,
                 followUpToJobId: followUp.followUpToJobId,
                 chatUrl: followUp.chatUrl,
                 requestSource: "tool",
@@ -736,9 +705,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
             {
               prompt: params.prompt,
               files: params.files,
-              modelFamily,
-              effort,
-              autoSwitchToThinking,
+              selection,
               followUpToJobId: followUp.followUpToJobId,
               chatUrl: followUp.chatUrl,
               requestSource: "tool",

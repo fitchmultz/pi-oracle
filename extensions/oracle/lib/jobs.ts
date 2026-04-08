@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { OracleConfig, OracleEffort, OracleModelFamily } from "./config.js";
+import type { OracleConfig, OracleResolvedSelection } from "./config.js";
 import { withJobLock, withLock } from "./locks.js";
 import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
 
@@ -133,9 +133,7 @@ export interface OracleJob {
   sessionId: string;
   originSessionFile?: string;
   requestSource: "command" | "tool";
-  chatModelFamily: OracleModelFamily;
-  effort?: OracleEffort;
-  autoSwitchToThinking?: boolean;
+  selection: OracleResolvedSelection;
   followUpToJobId?: string;
   chatUrl?: string;
   conversationId?: string;
@@ -185,9 +183,7 @@ export interface OracleJob {
 export interface OracleSubmitInput {
   prompt: string;
   files: string[];
-  modelFamily: OracleModelFamily;
-  effort?: OracleEffort;
-  autoSwitchToThinking?: boolean;
+  selection: OracleResolvedSelection;
   followUpToJobId?: string;
   chatUrl?: string;
   requestSource: "command" | "tool";
@@ -971,10 +967,6 @@ export async function createJob(
 
   const createdAt = options?.createdAt ?? new Date().toISOString();
   const initialState = options?.initialState ?? "submitted";
-  const normalizedEffort = input.modelFamily === "instant" ? undefined : (input.effort ?? config.defaults.effort);
-  const normalizedAutoSwitchToThinking = input.modelFamily === "instant"
-    ? (input.autoSwitchToThinking ?? config.defaults.autoSwitchToThinking)
-    : false;
   const job: OracleJob = {
     id,
     status: initialState,
@@ -988,9 +980,7 @@ export async function createJob(
     sessionId,
     originSessionFile: sessionFile,
     requestSource: input.requestSource,
-    chatModelFamily: input.modelFamily,
-    effort: normalizedEffort,
-    autoSwitchToThinking: normalizedAutoSwitchToThinking,
+    selection: input.selection,
     followUpToJobId: input.followUpToJobId,
     chatUrl: input.followUpToJobId ? input.chatUrl : undefined,
     conversationId,

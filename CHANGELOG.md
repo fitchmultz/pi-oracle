@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 - 2026-04-08
+
+### Changed
+- breaking: `oracle_submit` and oracle config defaults now use preset-only model selection; legacy `modelFamily` / `effort` / `autoSwitchToThinking` submit inputs and default config fields were removed in favor of canonical preset ids
+- oracle jobs now persist a resolved `selection` snapshot and the worker configures ChatGPT from that persisted selection instead of re-deriving model settings from legacy job fields
+- oracle model preset definitions now come from a single canonical registry in `extensions/oracle/lib/config.ts`
+
+### Fixed
+- removed duplicate hand-maintained preset-id examples from agent-facing prompt and design docs so callers are directed to the tool schema / canonical registry instead of stale inline lists
+- oracle sanity coverage now validates the preset-only contract from the registered tool schema and canonical registry instead of brittle prose-only assertions
+- worker model configuration now consistently uses the explicit `configureModel(job)` parameter instead of hidden coupling through the module-global current job
+
 ## 0.2.2 - 2026-04-07
 
 ### Fixed
