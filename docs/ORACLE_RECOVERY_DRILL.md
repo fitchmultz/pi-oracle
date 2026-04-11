@@ -105,10 +105,11 @@ For the failed run:
 - any failure diagnostics under that job dir
 
 For the repair:
-- `/tmp/oracle-auth.log`
-- `/tmp/oracle-auth.url.txt`
-- `/tmp/oracle-auth.snapshot.txt`
-- `/tmp/oracle-auth.body.txt`
+- the per-run `/tmp/pi-oracle-auth-*/` diagnostics directory printed by `/oracle-auth`
+- `oracle-auth.log`
+- `oracle-auth.url.txt`
+- `oracle-auth.snapshot.txt`
+- `oracle-auth.body.txt`
 
 For the successful rerun:
 - `/tmp/oracle-<job-id>/job.json`

@@ -1,11 +1,12 @@
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
+import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
 
 const rawConfig = process.argv[2];
 if (!rawConfig) {
@@ -27,11 +28,12 @@ const CHATGPT_COOKIE_ORIGINS = [
   "https://sentinel.openai.com",
   "https://ws.chatgpt.com",
 ];
-const LOG_PATH = "/tmp/oracle-auth.log";
-const URL_PATH = "/tmp/oracle-auth.url.txt";
-const SNAPSHOT_PATH = "/tmp/oracle-auth.snapshot.txt";
-const BODY_PATH = "/tmp/oracle-auth.body.txt";
-const SCREENSHOT_PATH = "/tmp/oracle-auth.png";
+let DIAGNOSTICS_DIR;
+let LOG_PATH = "(oracle-auth log path unavailable)";
+let URL_PATH = "(oracle-auth url path unavailable)";
+let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
+let BODY_PATH = "(oracle-auth body path unavailable)";
+let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
 const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
@@ -50,12 +52,25 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function initDiagnosticsBundle() {
+  if (DIAGNOSTICS_DIR) return;
+  DIAGNOSTICS_DIR = await mkdtemp(join(tmpdir(), "pi-oracle-auth-"));
+  await chmod(DIAGNOSTICS_DIR, 0o700).catch(() => undefined);
+  LOG_PATH = join(DIAGNOSTICS_DIR, "oracle-auth.log");
+  URL_PATH = join(DIAGNOSTICS_DIR, "oracle-auth.url.txt");
+  SNAPSHOT_PATH = join(DIAGNOSTICS_DIR, "oracle-auth.snapshot.txt");
+  BODY_PATH = join(DIAGNOSTICS_DIR, "oracle-auth.body.txt");
+  SCREENSHOT_PATH = join(DIAGNOSTICS_DIR, "oracle-auth.png");
+}
+
 async function initLog() {
+  await initDiagnosticsBundle();
   await writeFile(LOG_PATH, "", { mode: 0o600 });
   await chmod(LOG_PATH, 0o600).catch(() => undefined);
 }
 
 async function log(message) {
+  await initDiagnosticsBundle();
   const line = `[${new Date().toISOString()}] ${message}\n`;
   await appendFile(LOG_PATH, line, { encoding: "utf8", mode: 0o600 });
   await chmod(LOG_PATH, 0o600).catch(() => undefined);
@@ -566,7 +581,7 @@ async function captureDiagnostics(reason) {
 
 function classifyChatPage({ url, snapshot, body, probe }) {
   const text = `${snapshot}\n${body}`;
-  const allowedOrigins = [new URL(config.browser.chatUrl).origin, new URL(config.browser.authUrl).origin, "https://auth.openai.com"];
+  const allowedOrigins = buildAllowedChatGptOrigins(config.browser.chatUrl, config.browser.authUrl);
 
   const challengePatterns = [
     /just a moment/i,
@@ -804,7 +819,7 @@ async function run() {
       await writeFile(join(profilePlan.targetDir, ".oracle-seed-generation"), `${generation}\n`, { encoding: "utf8", mode: 0o600 });
       committedProfile = true;
       process.stdout.write(
-        `${classification.message} Synced ${appliedCount} cookies into ${profilePlan.targetDir}`,
+        `${classification.message} Synced ${appliedCount} cookies into ${profilePlan.targetDir}. Diagnostics: ${DIAGNOSTICS_DIR}`,
       );
     } catch (error) {
       shouldPreserveBrowser = Boolean(error && typeof error === "object" && error.preserveBrowser === true);
@@ -822,7 +837,7 @@ async function run() {
 
 run().catch((error) => {
   process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in /tmp/oracle-auth.*\nIf needed, ensure the configured real Chrome profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
+    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\nIf needed, ensure the configured real Chrome profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
   );
   process.exit(1);
 });

@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
@@ -42,15 +42,20 @@
     ]
   },
   "scripts": {
-    "check:oracle-extension": "node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:@sinclair/typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "check:oracle-extension": "node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@mariozechner/pi-coding-agent --external:@mariozechner/pi-ai --external:@sinclair/typebox --outfile=/tmp/pi-oracle-extension-check.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
     "pack:check": "npm pack --dry-run",
-    "verify:oracle": "npm run check:oracle-extension && npm run typecheck && npm run sanity:oracle && npm run pack:check"
+    "verify:oracle": "npm run check:oracle-extension && npm run typecheck && npm run sanity:oracle && npm run pack:check",
+    "test": "npm run verify:oracle",
+    "prepublishOnly": "npm run verify:oracle"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.49",
     "@steipete/sweet-cookie": "^0.2.0"
+  },
+  "overrides": {
+    "basic-ftp": "^5.2.2"
   },
   "devDependencies": {
     "@mariozechner/pi-ai": "^0.65.2",
@@ -61,6 +66,9 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=20"
-  }
+    "node": ">=22"
+  },
+  "os": [
+    "darwin"
+  ]
 }

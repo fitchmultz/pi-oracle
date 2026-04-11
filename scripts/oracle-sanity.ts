@@ -22,6 +22,14 @@ import {
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
 import { extractArtifactLabels, filterStructuralArtifactCandidates, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
+  buildAllowedChatGptOrigins,
+  buildAssistantCompletionSignature,
+  deriveAssistantCompletionSignature,
+  snapshotCanSafelySkipModelConfiguration,
+  snapshotStronglyMatchesRequestedModel,
+  snapshotWeaklyMatchesRequestedModel,
+} from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
+import {
   acquireLock as acquireWorkerStateLock,
   createLease as createWorkerStateLease,
   ORACLE_METADATA_WRITE_GRACE_MS as WORKER_METADATA_WRITE_GRACE_MS,
@@ -3151,10 +3159,15 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
+  const recoveryDrillSource = await readFile(new URL("../docs/ORACLE_RECOVERY_DRILL.md", import.meta.url), "utf8");
   const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
     files?: string[];
     pi?: { prompts?: string[] };
+    engines?: { node?: string };
+    os?: string[];
+    scripts?: { test?: string; prepublishOnly?: string };
+    overrides?: { "basic-ftp"?: string };
   };
   const pi: any = {
     tools: new Map<string, any>(),
@@ -3188,6 +3201,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   }
   assert(promptSource.includes("include the whole repository by passing `.`"), "/oracle prompt should default to whole-repo archive selection");
   assert(promptSource.includes("obvious credentials/private data"), "/oracle prompt should mention default exclusion of obvious credentials/private data");
+  assert(promptSource.includes("nested `secrets/` directories anywhere in the repo"), "/oracle prompt should exclude nested secrets directories by default");
   assert(promptSource.includes("For very targeted asks like reviewing one function or explaining one stack trace"), "/oracle prompt should preserve the targeted-scope exception");
   assert(promptSource.includes("the `.git` directory is not included in oracle exports"), "/oracle prompt should tell review/ship-readiness requests to create and include a git diff bundle file");
   assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "/oracle prompt should describe whole-repo auto-pruning when archives are still too large");
@@ -3196,6 +3210,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
+  assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
+  assert(recoveryDrillSource.includes("/tmp/pi-oracle-auth-*/"), "recovery drill should reference the per-run oracle-auth diagnostics bundle");
+  assert(!recoveryDrillSource.includes("/tmp/oracle-auth.log"), "recovery drill should not reference the old fixed oracle-auth log path");
   assert(designSource.includes("`preset` is the only model-selection parameter"), "design doc should state preset is the only selector");
   assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
@@ -3316,6 +3333,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
+  assert(pkg.engines?.node === ">=22", "package.json should advertise the actual Node.js support floor");
+  assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
+  assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
+  assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
+  assert(pkg.overrides?.["basic-ftp"] === "^5.2.2", "package.json should override basic-ftp to a patched version");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
   assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
@@ -3348,7 +3370,12 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(current);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
+  assert(workerSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "worker should use the shared ChatGPT UI helper module for model/origin/completion logic");
+  assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
+  assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
+  assert(!authBootstrapSource.includes('"/tmp/oracle-auth'), "auth bootstrap should not write diagnostics to fixed /tmp/oracle-auth.* paths");
+  assert(authBootstrapSource.includes('mkdtemp(join(tmpdir(), "pi-oracle-auth-"))'), "auth bootstrap should isolate diagnostics in a unique private temp directory per run");
   assert(stateLocksSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
   assert(stateLocksSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
   assert(stateLocksSource.includes("createStateDirAtomically"), "shared worker state-lock helper should publish new state dirs atomically so first creation never exposes a final dir without metadata");
@@ -3381,6 +3408,8 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await mkdir(join(fixtureDir, "packages", "app", ".yarn", "cache"), { recursive: true });
     await mkdir(join(fixtureDir, "linked"), { recursive: true });
     await mkdir(join(fixtureDir, "secrets"), { recursive: true });
+    await mkdir(join(fixtureDir, "apps", "api", "secrets"), { recursive: true });
+    await mkdir(join(fixtureDir, "apps", "api", ".secrets"), { recursive: true });
     await writeFile(join(fixtureDir, "src", "build", "keeper.ts"), "export const keeper = true;\n");
     await writeFile(join(fixtureDir, "src", "regular.ts"), "export const regular = true;\n");
     await writeFile(join(fixtureDir, "build", "root-output.js"), "console.log('build');\n");
@@ -3393,6 +3422,8 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await writeFile(join(fixtureDir, ".npmrc"), "//registry.npmjs.org/:_authToken=secret\n");
     await writeFile(join(fixtureDir, "dev.sqlite"), "sqlite\n");
     await writeFile(join(fixtureDir, "secrets", "prod.pem"), "pem\n");
+    await writeFile(join(fixtureDir, "apps", "api", "secrets", "service.pem"), "pem\n");
+    await writeFile(join(fixtureDir, "apps", "api", ".secrets", "token.txt"), "token\n");
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "coverage"));
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "linked", "node_modules"));
 
@@ -3409,6 +3440,8 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     assert(!rootEntries.includes(".npmrc"), "root archive expansion should exclude credential dotfiles by default");
     assert(!rootEntries.includes("dev.sqlite"), "root archive expansion should exclude local database files by default");
     assert(!rootEntries.includes("secrets/prod.pem"), "root archive expansion should exclude root secrets directories by default");
+    assert(!rootEntries.includes("apps/api/secrets/service.pem"), "root archive expansion should exclude nested secrets directories anywhere in the repo by default");
+    assert(!rootEntries.includes("apps/api/.secrets/token.txt"), "root archive expansion should exclude nested dot-secrets directories anywhere in the repo by default");
     assert(!rootEntries.includes("coverage"), "root archive expansion should exclude symlinked top-level coverage directories");
     assert(!rootEntries.includes("linked/node_modules"), "root archive expansion should exclude symlinked nested node_modules directories");
 
@@ -3433,6 +3466,12 @@ async function testArchiveDefaultExclusions(): Promise<void> {
 
     const explicitSecretsDirEntries = await resolveExpandedArchiveEntries(fixtureDir, ["secrets"]);
     assert(explicitSecretsDirEntries.includes("secrets/prod.pem"), "explicitly requested root secrets directories should be preserved");
+
+    const explicitNestedSecretsEntries = await resolveExpandedArchiveEntries(fixtureDir, ["apps/api/secrets"]);
+    assert(explicitNestedSecretsEntries.includes("apps/api/secrets/service.pem"), "explicitly requested nested secrets directories should be preserved");
+
+    const explicitNestedDotSecretsEntries = await resolveExpandedArchiveEntries(fixtureDir, ["apps/api/.secrets"]);
+    assert(explicitNestedDotSecretsEntries.includes("apps/api/.secrets/token.txt"), "explicitly requested nested dot-secrets directories should be preserved");
 
     const explicitCoverageSymlinkEntries = await resolveExpandedArchiveEntries(fixtureDir, ["coverage"]);
     assert(explicitCoverageSymlinkEntries.length === 1 && explicitCoverageSymlinkEntries[0] === "coverage", "explicitly requested excluded-directory symlinks should be preserved as explicit paths");
@@ -3507,18 +3546,88 @@ function testDurableWorkerHandoff(): void {
   assert(!hasDurableWorkerHandoff({ status: "waiting", phase: "launching_browser", workerPid: undefined, workerStartedAt: undefined, heartbeatAt: undefined }), "worker-advanced state without a persisted pid should not count as durable worker handoff");
 }
 
-function testThinkingClosedStateVerification(): void {
+function testChatGptUiHelpers(): void {
   const closedThinkingSnapshot = [
     '- button "Thinking, click to remove" [ref=e110]',
     '- button "Thinking" [expanded=false, ref=e111]',
   ].join("\n");
-  const entries = parseSnapshotEntries(closedThinkingSnapshot);
-  const thinkingVisible = entries.some((entry) => {
-    if (entry.disabled || entry.kind !== "button") return false;
-    const label = String(entry.label || "").toLowerCase();
-    return label === "thinking" || label === "thinking, click to remove" || label.startsWith("thinking ");
-  });
-  assert(thinkingVisible, "closed thinking snapshots should still verify model selection even when effort is hidden");
+  assert(
+    snapshotStronglyMatchesRequestedModel(closedThinkingSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed thinking snapshots should still verify the thinking family when effort is hidden after configuration closes",
+  );
+  assert(
+    !snapshotCanSafelySkipModelConfiguration(closedThinkingSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed thinking snapshots should not skip reopening model configuration when the requested effort is hidden",
+  );
+
+  const proWithStandardSnapshot = [
+    '- button "Pro" [ref=e210]',
+    '- combobox [ref=e211]: Standard',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(proWithStandardSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "thinking presets should not verify on effort alone when the selected family is Pro",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(proWithStandardSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "pro presets should still verify when the matching family and effort are visible",
+  );
+
+  const instantAutoSwitchOnSnapshot = [
+    '- button "Instant, click to remove" [ref=e310]',
+    '- button "Auto-switch to Thinking, checked" [ref=e311]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(instantAutoSwitchOnSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
+    "instant auto-switch presets should verify only when the toggle is visibly enabled",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(instantAutoSwitchOnSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "plain instant presets should not verify when auto-switch is visibly enabled",
+  );
+
+  const closedProSnapshot = '- button "Model selector" [ref=e410]';
+  assert(
+    !snapshotWeaklyMatchesRequestedModel(closedProSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "closed snapshots without an explicit selected family should not weakly verify Pro",
+  );
+
+  const allowedOrigins = buildAllowedChatGptOrigins("https://chatgpt.com/", "https://chatgpt.com/auth/login");
+  assert(allowedOrigins.includes("https://chatgpt.com"), "allowed ChatGPT origins should include chatgpt.com");
+  assert(allowedOrigins.includes("https://chat.openai.com"), "allowed ChatGPT origins should include chat.openai.com even when config uses chatgpt.com");
+  assert(allowedOrigins.includes("https://auth.openai.com"), "allowed ChatGPT origins should include auth.openai.com");
+
+  assert(
+    buildAssistantCompletionSignature({ responseText: "Answer body" }) === "text:Answer body",
+    "text responses should complete from the normalized response body",
+  );
+  assert(
+    deriveAssistantCompletionSignature({
+      hasStopStreaming: false,
+      hasTargetCopyResponse: true,
+      responseText: "Answer body",
+    }) === "text:Answer body",
+    "text completion should require a completed turn with copy-response evidence",
+  );
+  assert(
+    deriveAssistantCompletionSignature({
+      hasStopStreaming: false,
+      hasTargetCopyResponse: false,
+      responseText: "",
+      artifactLabels: ["report.csv"],
+      suspiciousArtifactLabels: ["report.csv", "chart.png"],
+    }) === "artifacts:chart.png|report.csv",
+    "artifact-only responses should complete from stable artifact labels when no text body is present",
+  );
+  assert(
+    deriveAssistantCompletionSignature({
+      hasStopStreaming: true,
+      hasTargetCopyResponse: false,
+      responseText: "",
+      artifactLabels: ["report.csv"],
+    }) === undefined,
+    "artifact-only completion should wait for streaming to stop before declaring the turn complete",
+  );
 }
 
 async function testSanityRunnerIsolation(): Promise<void> {
@@ -3817,7 +3926,7 @@ async function main() {
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testSanityRunnerIsolation();
   testDurableWorkerHandoff();
-  testThinkingClosedStateVerification();
+  testChatGptUiHelpers();
   testArtifactCandidateHeuristics();
   await testPollerHostSafety();
   await rm(getOracleStateDir(), { recursive: true, force: true }).catch(() => undefined);

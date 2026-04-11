@@ -147,6 +147,7 @@ Project config should only override safe, non-privileged settings.
 ## Requirements
 
 - macOS
+- Node.js 22 or newer
 - Google Chrome installed
 - ChatGPT already signed into a local Chrome profile
 - `pi` 0.65.0 or newer
@@ -211,9 +212,13 @@ npm run check:oracle-extension
 npm run typecheck
 npm run sanity:oracle
 npm run pack:check
+# conventional local gate
+npm test
 # or all at once
 npm run verify:oracle
 ```
+
+`npm publish` is also guarded locally via `prepublishOnly` and will run `npm run verify:oracle` before publishing.
 
 ## Beta caveats
 

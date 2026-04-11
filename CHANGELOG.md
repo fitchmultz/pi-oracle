@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.4 - 2026-04-11
+
+### Changed
+- oracle archive defaults now exclude nested `secrets/` and `.secrets/` directories anywhere in the repo unless they are explicitly requested
+- package metadata now reflects the current runtime floor and platform support (`node >=22`, `darwin`) and local release automation runs `verify:oracle` through `npm test` / `prepublishOnly`
+
+### Fixed
+- model verification now distinguishes `thinking`, `pro`, `instant`, and `instant_auto_switch` more conservatively instead of accepting mismatched presets on partial UI evidence
+- artifact-only assistant responses can now complete without timing out on missing plain-text bodies
+- `/oracle-auth` diagnostics now write into a unique private temp directory per run instead of fixed `/tmp/oracle-auth.*` paths
+- sanity coverage now exercises shared ChatGPT UI helpers directly, verifies nested secret exclusion, and guards the new auth diagnostics path handling
+
 ## 0.3.3 - 2026-04-11
 
 ### Added

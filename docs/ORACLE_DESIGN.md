@@ -585,7 +585,7 @@ Remaining non-blocking hardening work:
 
 Recent proof points:
 - expired-auth drill fail path: `a2460bc1-7d89-4041-b67d-39680d310325`
-- `/oracle-auth` repair evidence: `/tmp/oracle-auth.log`
+- `/oracle-auth` repair evidence: the per-run `/tmp/pi-oracle-auth-*/oracle-auth.log` bundle path printed by `/oracle-auth`
 - expired-auth drill post-repair success: `fa26a2a7-0057-4a21-b3e0-71c1d020facf`
 - successful multi-artifact completion: `b6b3599c-6b91-4315-adfa-8a83aa5eda9b`
 - repo-owned sanity harness: `npm run sanity:oracle`

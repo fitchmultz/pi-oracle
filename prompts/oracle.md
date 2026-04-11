@@ -22,7 +22,7 @@ Oracle model (`oracle_submit`):
 
 Rules:
 - Always include an archive. Do not submit without context files.
-- By default, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and root `secrets/` directories.
+- By default, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
 - Only limit file selection if the user explicitly requests it, if the task is clearly scoped to a smaller area, or if privacy/sensitivity requires it.
 - For very targeted asks like reviewing one function or explaining one stack trace, a smaller archive is preferable.
 - If the request depends on git state or pending changes (for example code review, ship readiness, or release approval), create a tracked diff bundle file inside the repo (for example under `.pi/`) containing `git status` plus `git diff` output, include that file in the archive, and tell the oracle to use it because the `.git` directory is not included in oracle exports.

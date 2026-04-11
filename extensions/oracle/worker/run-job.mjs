@@ -5,6 +5,18 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
+import {
+  buildAllowedChatGptOrigins,
+  deriveAssistantCompletionSignature,
+  matchesModelFamilyLabel,
+  requestedEffortLabel,
+  effortSelectionVisible,
+  snapshotCanSafelySkipModelConfiguration,
+  snapshotHasModelConfigurationUi,
+  snapshotStronglyMatchesRequestedModel,
+  snapshotWeaklyMatchesRequestedModel,
+  autoSwitchToThinkingSelectionVisible,
+} from "./chatgpt-ui-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -25,12 +37,6 @@ const CHATGPT_LABELS = {
   autoSwitchToThinking: "Auto-switch to Thinking",
   configure: "Configure...",
 };
-const MODEL_FAMILY_PREFIX = {
-  instant: "Instant ",
-  thinking: "Thinking ",
-  pro: "Pro ",
-};
-
 const WORKER_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
@@ -791,81 +797,8 @@ function findLastEntry(snapshot, predicate) {
   return undefined;
 }
 
-function titleCase(value) {
-  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
-}
-
-function matchesModelFamilyLabel(label, family) {
-  const normalized = String(label || "");
-  const prefix = MODEL_FAMILY_PREFIX[family];
-  const exact = prefix.trim();
-  return normalized === exact || normalized.startsWith(prefix) || normalized.startsWith(`${exact},`);
-}
-
 function matchesModelFamilyButton(candidate, family) {
   return candidate.kind === "button" && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
-}
-
-function requestedEffortLabel(job) {
-  return job.selection?.effort ? titleCase(job.selection.effort) : undefined;
-}
-
-function effortSelectionVisible(snapshot, effortLabel) {
-  if (!effortLabel) return true;
-  const entries = parseSnapshotEntries(snapshot);
-  return entries.some((entry) => {
-    if (entry.disabled) return false;
-    if (entry.kind === "combobox" && entry.value === effortLabel) return true;
-    if (entry.kind !== "button") return false;
-    const label = String(entry.label || "").toLowerCase();
-    const normalizedEffort = effortLabel.toLowerCase();
-    return (
-      label === normalizedEffort ||
-      label === `${normalizedEffort} thinking` ||
-      label === `${normalizedEffort}, click to remove` ||
-      label === `${normalizedEffort} thinking, click to remove`
-    );
-  });
-}
-
-function thinkingChipVisible(snapshot) {
-  return /button "(?:Light|Standard|Extended|Heavy)(?: thinking)?(?:, click to remove)?"/i.test(snapshot);
-}
-
-function snapshotHasModelConfigurationUi(snapshot) {
-  const entries = parseSnapshotEntries(snapshot);
-  const visibleFamilies = new Set(
-    entries
-      .filter((entry) => entry.kind === "button" && typeof entry.label === "string")
-      .flatMap((entry) =>
-        Object.keys(MODEL_FAMILY_PREFIX)
-          .filter((family) => matchesModelFamilyLabel(entry.label, family))
-          .map((family) => family),
-      ),
-  );
-  const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === CHATGPT_LABELS.close && !entry.disabled);
-  const hasEffortCombobox = entries.some(
-    (entry) => entry.kind === "combobox" && ["Light", "Standard", "Extended", "Heavy"].includes(entry.value || "") && !entry.disabled,
-  );
-  return visibleFamilies.size >= 2 || hasCloseButton || hasEffortCombobox;
-}
-
-function snapshotStronglyMatchesRequestedModel(snapshot, job) {
-  const entries = parseSnapshotEntries(snapshot);
-  const familyMatched = entries.some((entry) => matchesModelFamilyButton(entry, job.selection.modelFamily));
-  const effortLabel = requestedEffortLabel(job);
-  if (job.selection.modelFamily === "thinking") {
-    return familyMatched || effortSelectionVisible(snapshot, effortLabel);
-  }
-  if (job.selection.modelFamily === "pro") {
-    return effortLabel ? familyMatched && effortSelectionVisible(snapshot, effortLabel) : familyMatched;
-  }
-  return familyMatched;
-}
-
-function thinkingSelectionVisible(snapshot) {
-  const entries = parseSnapshotEntries(snapshot);
-  return entries.some((entry) => !entry.disabled && entry.kind === "button" && matchesModelFamilyLabel(entry.label, "thinking"));
 }
 
 function composerControlsVisible(snapshot) {
@@ -879,17 +812,15 @@ function composerControlsVisible(snapshot) {
   return hasComposer && hasAddFiles;
 }
 
-function snapshotWeaklyMatchesRequestedModel(snapshot, job) {
-  if (job.selection.modelFamily === "thinking") {
-    return effortSelectionVisible(snapshot, requestedEffortLabel(job)) || thinkingSelectionVisible(snapshot);
-  }
-  if (job.selection.modelFamily === "pro") {
-    return !thinkingChipVisible(snapshot);
-  }
-  if (job.selection.modelFamily === "instant") {
-    return !thinkingChipVisible(snapshot);
-  }
-  return false;
+async function clickAutoSwitchToThinkingControl(job) {
+  const snapshot = await snapshotText(job);
+  const entry = findEntry(
+    snapshot,
+    (candidate) => candidate.kind === "button" && typeof candidate.label === "string" && candidate.label.startsWith(CHATGPT_LABELS.autoSwitchToThinking) && !candidate.disabled,
+  );
+  if (!entry) throw new Error(`Could not find ${CHATGPT_LABELS.autoSwitchToThinking} control`);
+  await clickRef(job, entry.ref);
+  return entry;
 }
 
 async function clickRef(job, ref) {
@@ -962,7 +893,7 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
     return { state: "transient_outage_error", message: "ChatGPT is showing a transient outage/error page" };
   }
 
-  const allowedOrigins = [new URL(job.config.browser.chatUrl).origin, "https://auth.openai.com"];
+  const allowedOrigins = buildAllowedChatGptOrigins(job.config.browser.chatUrl, job.config.browser.authUrl);
   const onAllowedOrigin = typeof url === "string" && allowedOrigins.some((origin) => url.startsWith(origin));
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
   const hasComposer = snapshot.includes(`textbox "${CHATGPT_LABELS.composer}"`);
@@ -1210,7 +1141,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
     const configurationUiVisible = snapshotHasModelConfigurationUi(snapshot);
 
     if (!configurationUiVisible) {
-      if (snapshotWeaklyMatchesRequestedModel(snapshot, job)) return;
+      if (snapshotWeaklyMatchesRequestedModel(snapshot, job.selection)) return;
       if (options.stronglyVerified) {
         if (!fallbackLogged) {
           fallbackLogged = true;
@@ -1248,7 +1179,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
 
 async function configureModel(job) {
   const initialSnapshot = await snapshotText(job);
-  if (snapshotStronglyMatchesRequestedModel(initialSnapshot, job)) {
+  if (snapshotCanSafelySkipModelConfiguration(initialSnapshot, job.selection)) {
     await log(`Model already appears configured for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}; skipping reconfiguration`);
     return;
   }
@@ -1257,23 +1188,27 @@ async function configureModel(job) {
   let familySnapshot = await openModelConfiguration(job);
   let verificationSnapshot = familySnapshot;
 
+  const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
   let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.selection.modelFamily));
-  if (!familyEntry && snapshotStronglyMatchesRequestedModel(familySnapshot, job)) {
+  if (alreadyConfiguredInUi) {
     await log("Model configuration UI opened with requested settings already selected");
-  }
-  if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job)) {
+  } else if (!familyEntry) {
     throw new Error(`Could not find model family button for ${job.selection.modelFamily}`);
   }
 
-  if (familyEntry) {
+  if (!alreadyConfiguredInUi && familyEntry) {
     await clickRef(job, familyEntry.ref);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
     verificationSnapshot = familySnapshot;
+    familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.selection.modelFamily));
+    if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
+      throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
+    }
   }
 
   if (job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro") {
-    const effortLabel = requestedEffortLabel(job);
+    const effortLabel = requestedEffortLabel(job.selection);
     if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel)) {
       const opened = await openEffortDropdown(job);
       if (!opened) {
@@ -1291,15 +1226,22 @@ async function configureModel(job) {
       if (!selectedEffort && !effortSelectionVisible(effortSnapshot, effortLabel)) {
         throw new Error(`Requested effort did not remain selected: ${effortLabel}`);
       }
+      familySnapshot = effortSnapshot;
     }
   }
 
-  if (job.selection.modelFamily === "instant" && job.selection.autoSwitchToThinking) {
-    await maybeClickLabeledEntry(job, CHATGPT_LABELS.autoSwitchToThinking);
-    verificationSnapshot = await snapshotText(job);
+  if (job.selection.modelFamily === "instant") {
+    const desiredAutoSwitchState = job.selection.autoSwitchToThinking === true;
+    const currentAutoSwitchState = autoSwitchToThinkingSelectionVisible(familySnapshot);
+    if (currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
+      await clickAutoSwitchToThinkingControl(job);
+      await agentBrowser(job, "wait", "400");
+      verificationSnapshot = await snapshotText(job);
+      familySnapshot = verificationSnapshot;
+    }
   }
 
-  const stronglyVerified = snapshotStronglyMatchesRequestedModel(verificationSnapshot, job);
+  const stronglyVerified = snapshotStronglyMatchesRequestedModel(verificationSnapshot, job.selection);
   if (!stronglyVerified) {
     throw new Error(`Could not verify requested model settings in configuration UI for ${job.selection.modelFamily}`);
   }
@@ -1427,7 +1369,7 @@ async function waitForStableChatUrl(job, previousChatUrl) {
 
 async function waitForChatCompletion(job, baselineAssistantCount) {
   const timeoutAt = Date.now() + job.config.worker.completionTimeoutMs;
-  let lastText = "";
+  let lastCompletionSignature = "";
   let stableCount = 0;
   let retriedAfterFailure = false;
 
@@ -1451,7 +1393,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
         );
         if (retryEntry) {
           retriedAfterFailure = true;
-          lastText = "";
+          lastCompletionSignature = "";
           stableCount = 0;
           await log(`Response delivery failed (${responseFailureText}); clicking Retry once`);
           await clickRef(job, retryEntry.ref);
@@ -1462,13 +1404,34 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
       throw new Error(`ChatGPT response failed: ${responseFailureText}`);
     }
 
+    let completionSignature;
     if (!hasStopStreaming && hasTargetCopyResponse && targetText) {
-      if (targetText === lastText) stableCount += 1;
+      completionSignature = deriveAssistantCompletionSignature({
+        hasStopStreaming,
+        hasTargetCopyResponse,
+        responseText: targetText,
+      });
+    } else if (!hasStopStreaming && !targetText) {
+      const artifactSignals = await collectArtifactCandidates(job, baselineAssistantCount, targetText).catch(() => ({ candidates: [], suspiciousLabels: [] }));
+      completionSignature = deriveAssistantCompletionSignature({
+        hasStopStreaming,
+        hasTargetCopyResponse,
+        responseText: targetText,
+        artifactLabels: artifactSignals.candidates.map((candidate) => candidate.label),
+        suspiciousArtifactLabels: artifactSignals.suspiciousLabels,
+      });
+    }
+
+    if (completionSignature) {
+      if (completionSignature === lastCompletionSignature) stableCount += 1;
       else stableCount = 1;
-      lastText = targetText;
+      lastCompletionSignature = completionSignature;
       if (stableCount >= 2) {
         return { responseIndex: baselineAssistantCount, responseText: targetText };
       }
+    } else {
+      lastCompletionSignature = "";
+      stableCount = 0;
     }
 
     await sleep(job.config.worker.pollMs);
