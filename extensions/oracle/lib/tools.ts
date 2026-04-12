@@ -7,14 +7,15 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
-import { transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
+import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
   coerceOracleSubmitPresetId,
   loadOracleConfig,
+  ORACLE_SUBMIT_PRESET_IDS,
   resolveOracleSubmitPreset,
 } from "./config.js";
 import {
@@ -44,9 +45,11 @@ import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLo
 import { refreshOracleStatus } from "./poller.js";
 import {
   allocateRuntime,
+  assertOracleSubmitPrerequisites,
   cleanupRuntimeArtifacts,
   getProjectId,
   getSessionId,
+  hasPersistedSessionFile,
   parseConversationId,
   requirePersistedSessionFile,
   tryAcquireConversationLease,
@@ -565,7 +568,54 @@ function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
   };
 }
 
-function redactJobDetails(job: NonNullable<ReturnType<typeof readJob>>) {
+type OracleToolName = "oracle_submit" | "oracle_read" | "oracle_cancel";
+type OracleToolErrorSource = OracleToolName | "oracle_preflight";
+type OracleQueueSnapshot = { queued: boolean; position?: number; depth?: number };
+type OracleToolErrorDetails = {
+  code: string;
+  message: string;
+  rejectedValue?: string;
+  allowedValues?: string[];
+  suggestedNextStep?: string;
+};
+type OracleToolJobDetailsOptions = {
+  queue?: OracleQueueSnapshot;
+  archiveBytes?: number;
+  initialArchiveBytes?: number;
+  autoPrunedArchivePaths?: ArchiveSizeBreakdownRow[];
+  responsePreview?: string;
+  responseAvailable?: boolean;
+};
+
+const ORACLE_TOOL_NAMES = new Set<OracleToolName>(["oracle_submit", "oracle_read", "oracle_cancel"]);
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function buildOracleQueueSnapshot(
+  job: NonNullable<ReturnType<typeof readJob>>,
+  queuePosition?: { position: number; depth: number },
+): OracleQueueSnapshot {
+  return {
+    queued: job.status === "queued",
+    position: queuePosition?.position,
+    depth: queuePosition?.depth,
+  };
+}
+
+function redactJobDetails(
+  job: NonNullable<ReturnType<typeof readJob>>,
+  options: OracleToolJobDetailsOptions = {},
+) {
+  const lastEvent = getLatestOracleJobLifecycleEvent(job);
+  const terminalEvent = getLatestOracleTerminalLifecycleEvent(job);
   return {
     id: job.id,
     status: job.status,
@@ -576,24 +626,319 @@ function redactJobDetails(job: NonNullable<ReturnType<typeof readJob>>) {
     queuedAt: job.queuedAt,
     submittedAt: job.submittedAt,
     completedAt: job.completedAt,
+    promptPath: job.promptPath,
+    archivePath: job.archivePath,
+    archiveSha256: job.archiveSha256,
+    archiveBytes: options.archiveBytes,
+    initialArchiveBytes: options.initialArchiveBytes,
+    autoPrunedArchivePaths: options.autoPrunedArchivePaths ?? [],
+    queue: options.queue ?? buildOracleQueueSnapshot(job),
     followUpToJobId: job.followUpToJobId,
     chatUrl: job.chatUrl,
     conversationId: job.conversationId,
     responsePath: job.responsePath,
     responseFormat: job.responseFormat,
+    responseAvailable: options.responseAvailable ?? false,
+    responsePreview: options.responsePreview,
+    artifactsPath: `${getJobDir(job.id)}/artifacts`,
     artifactPaths: job.artifactPaths,
     artifactFailureCount: job.artifactFailureCount,
     artifactsManifestPath: job.artifactsManifestPath,
+    workerLogPath: job.workerLogPath,
     archiveDeletedAfterUpload: job.archiveDeletedAfterUpload,
     runtimeId: job.runtimeId,
     cleanupWarnings: job.cleanupWarnings,
     lastCleanupAt: job.lastCleanupAt,
+    terminalEvent: terminalEvent ? { ...terminalEvent } : undefined,
+    lastEvent: lastEvent ? { ...lastEvent } : undefined,
     error: job.error,
     lifecycleEvents: job.lifecycleEvents,
   };
 }
 
+function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unknown, params: Record<string, unknown>): OracleToolErrorDetails {
+  const message = getErrorMessage(error);
+
+  if (toolName === "oracle_submit" && typeof params.preset === "string" && message.startsWith("Unknown oracle_submit preset:")) {
+    return {
+      code: "invalid_preset",
+      message,
+      rejectedValue: params.preset,
+      allowedValues: [...ORACLE_SUBMIT_PRESET_IDS],
+      suggestedNextStep: "Retry with one of the canonical preset ids, or omit preset to use the configured default.",
+    };
+  }
+
+  if (message.startsWith("Oracle requires a persisted pi session")) {
+    return {
+      code: "persisted_session_required",
+      message,
+      suggestedNextStep: "Start or save a persisted pi session, then retry oracle_submit.",
+    };
+  }
+
+  if (message.startsWith("Oracle auth seed profile not found: ")) {
+    return {
+      code: "auth_seed_profile_missing",
+      message,
+      rejectedValue: message.replace(/^Oracle auth seed profile not found: /, "").replace(/\. Run \/oracle-auth first\.$/, ""),
+      suggestedNextStep: "Run /oracle-auth first, then retry the oracle tool call.",
+    };
+  }
+
+  if (message.startsWith("Oracle auth seed profile is not readable: ")) {
+    return {
+      code: "auth_seed_profile_unreadable",
+      message,
+      rejectedValue: message.replace(/^Oracle auth seed profile is not readable: /, "").replace(/\. Fix its permissions or rerun \/oracle-auth\.$/, ""),
+      suggestedNextStep: "Fix the auth seed profile permissions or rerun /oracle-auth, then retry.",
+    };
+  }
+
+  if (message.startsWith("Oracle auth seed profile is not a directory: ")) {
+    return {
+      code: "auth_seed_profile_invalid_type",
+      message,
+      rejectedValue: message.replace(/^Oracle auth seed profile is not a directory: /, "").replace(/\. Remove the invalid path or rerun \/oracle-auth\.$/, ""),
+      suggestedNextStep: "Remove the invalid auth seed path or rerun /oracle-auth to recreate it.",
+    };
+  }
+
+  if (message.startsWith("Failed to parse oracle config ") || message.startsWith("Invalid oracle config:") || message.startsWith("Invalid oracle project config:")) {
+    return {
+      code: "oracle_config_invalid",
+      message,
+      suggestedNextStep: "Fix the oracle config and retry once the configured paths and values are valid.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message === "oracle_submit requires at least one file or directory to archive") {
+    return {
+      code: "archive_input_required",
+      message,
+      suggestedNextStep: "Pass at least one project-relative file or directory in files.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.startsWith("Archive input does not exist: ")) {
+    return {
+      code: "archive_input_missing",
+      message,
+      rejectedValue: message.replace(/^Archive input does not exist: /, ""),
+      suggestedNextStep: "Retry with an existing project-relative file or directory.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.startsWith("Archive input must be inside the project cwd: ")) {
+    return {
+      code: "archive_input_outside_project",
+      message,
+      rejectedValue: message.replace(/^Archive input must be inside the project cwd: /, ""),
+      suggestedNextStep: "Retry with a path inside the current project cwd.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.startsWith("Archive input must resolve inside the project cwd without symlink escapes: ")) {
+    return {
+      code: "archive_input_symlink_escape",
+      message,
+      rejectedValue: message.replace(/^Archive input must resolve inside the project cwd without symlink escapes: /, ""),
+      suggestedNextStep: "Retry with a real project-relative path that does not escape the repo through symlinks.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.startsWith("Follow-up oracle job not found: ")) {
+    return {
+      code: "follow_up_job_not_found",
+      message,
+      rejectedValue: typeof params.followUpJobId === "string" ? params.followUpJobId : undefined,
+      suggestedNextStep: "Retry with a completed oracle job id from this project that has a persisted chat URL.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.includes("belongs to a different project")) {
+    return {
+      code: "follow_up_job_wrong_project",
+      message,
+      rejectedValue: typeof params.followUpJobId === "string" ? params.followUpJobId : undefined,
+      suggestedNextStep: "Retry with a follow-up job id from the current project.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.includes("is not complete")) {
+    return {
+      code: "follow_up_job_not_complete",
+      message,
+      rejectedValue: typeof params.followUpJobId === "string" ? params.followUpJobId : undefined,
+      suggestedNextStep: "Wait for the earlier oracle job to finish, then retry the follow-up.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.includes("has no persisted chat URL")) {
+    return {
+      code: "follow_up_job_missing_chat_url",
+      message,
+      rejectedValue: typeof params.followUpJobId === "string" ? params.followUpJobId : undefined,
+      suggestedNextStep: "Retry with an earlier completed oracle job that recorded a chat URL.",
+    };
+  }
+
+  if ((toolName === "oracle_read" || toolName === "oracle_cancel") && typeof params.jobId === "string" && message.startsWith("Oracle job not found in this project:")) {
+    return {
+      code: "job_not_found",
+      message,
+      rejectedValue: params.jobId,
+      suggestedNextStep: "Use /oracle-status to discover a valid job id for this project, then retry.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message.startsWith("Oracle archive exceeds ChatGPT upload limit")) {
+    return {
+      code: "archive_too_large",
+      message,
+      suggestedNextStep: "Retry with a narrower archive, starting with modified files plus adjacent files plus directly relevant subtrees.",
+    };
+  }
+
+  return {
+    code: `${toolName}_failed`,
+    message,
+    suggestedNextStep: "Inspect the error message, correct the inputs or environment, and retry.",
+  };
+}
+
+function buildOracleToolErrorResult(
+  toolName: OracleToolName,
+  error: unknown,
+  params: Record<string, unknown>,
+  options?: { job?: NonNullable<ReturnType<typeof readJob>>; jobDetails?: OracleToolJobDetailsOptions },
+) {
+  const errorDetails = buildOracleToolErrorDetails(toolName, error, params);
+  return {
+    content: [{ type: "text" as const, text: errorDetails.message }],
+    details: {
+      job: options?.job ? redactJobDetails(options.job, options.jobDetails) : undefined,
+      error: errorDetails,
+    },
+  };
+}
+
+type OraclePreflightDetails = {
+  ready: boolean;
+  session: {
+    persisted: boolean;
+    sessionFile?: string;
+  };
+  config: {
+    ready: boolean;
+  };
+  auth: {
+    ready: boolean;
+    seedProfileDir?: string;
+  };
+  error?: OracleToolErrorDetails;
+};
+
+function formatOraclePreflightResponse(details: OraclePreflightDetails): string {
+  if (details.ready) {
+    return [
+      "Oracle preflight ready.",
+      details.session.sessionFile ? `Persisted session: ${details.session.sessionFile}` : undefined,
+      details.auth.seedProfileDir ? `Auth seed profile: ${details.auth.seedProfileDir}` : undefined,
+      "You can continue with oracle context gathering and submission.",
+    ].filter(Boolean).join("\n");
+  }
+
+  return [
+    `Oracle preflight blocked: ${details.error?.message ?? "unknown blocker"}`,
+    details.error?.suggestedNextStep ? `Suggested next step: ${details.error.suggestedNextStep}` : undefined,
+  ].filter(Boolean).join("\n");
+}
+
+async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePreflightDetails> {
+  const sessionFile = getSessionFile(ctx);
+  if (!hasPersistedSessionFile(sessionFile)) {
+    return {
+      ready: false,
+      session: { persisted: false },
+      config: { ready: false },
+      auth: { ready: false },
+      error: buildOracleToolErrorDetails(
+        "oracle_preflight",
+        new Error("Oracle requires a persisted pi session to submit oracle jobs. Start or save a real session before using oracle."),
+        {},
+      ),
+    };
+  }
+
+  let config;
+  try {
+    config = loadOracleConfig(ctx.cwd);
+  } catch (error) {
+    return {
+      ready: false,
+      session: { persisted: true, sessionFile },
+      config: { ready: false },
+      auth: { ready: false },
+      error: buildOracleToolErrorDetails("oracle_preflight", error, {}),
+    };
+  }
+
+  try {
+    await assertOracleSubmitPrerequisites(config);
+  } catch (error) {
+    return {
+      ready: false,
+      session: { persisted: true, sessionFile },
+      config: { ready: true },
+      auth: {
+        ready: false,
+        seedProfileDir: config.browser.authSeedProfileDir,
+      },
+      error: buildOracleToolErrorDetails("oracle_preflight", error, {}),
+    };
+  }
+
+  return {
+    ready: true,
+    session: { persisted: true, sessionFile },
+    config: { ready: true },
+    auth: {
+      ready: true,
+      seedProfileDir: config.browser.authSeedProfileDir,
+    },
+  };
+}
+
 export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void {
+  pi.on("tool_result", async (event) => {
+    if (!ORACLE_TOOL_NAMES.has(event.toolName as OracleToolName)) return;
+    if (event.isError) return;
+    const details = asRecord(event.details);
+    const errorDetails = asRecord(details?.error);
+    if (typeof errorDetails?.code === "string" && typeof errorDetails?.message === "string") {
+      return { isError: true };
+    }
+  });
+
+  pi.registerTool({
+    name: "oracle_preflight",
+    label: "Oracle Preflight",
+    description: "Check whether oracle is ready in this session before spending time gathering context or preparing a submission.",
+    promptSnippet: "Check oracle readiness before expensive /oracle preparation.",
+    promptGuidelines: [
+      "Call oracle_preflight before doing expensive /oracle preparation. If ready is false, stop immediately and report the suggested next step instead of reading files or crafting archive inputs.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      const details = await runOraclePreflight(ctx);
+      return {
+        content: [{ type: "text" as const, text: formatOraclePreflightResponse(details) }],
+        details,
+      };
+    },
+  });
+
   pi.registerTool({
     name: "oracle_submit",
     label: "Oracle Submit",
@@ -615,68 +960,115 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const config = loadOracleConfig(ctx.cwd);
-      const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
-      const projectId = getProjectId(ctx.cwd);
-      const sessionId = getSessionId(originSessionFile, projectId);
-      const presetId = typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : config.defaults.preset;
-      const selection = resolveOracleSubmitPreset(presetId);
-      const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
       try {
-        await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
-          await reconcileStaleOracleJobs();
-          await pruneTerminalOracleJobs();
-        });
-      } catch (error) {
-        if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
-      }
-
-      const jobId = randomUUID();
-      const tempArchivePath = join(tmpdir(), `oracle-archive-${jobId}.tar.zst`);
-      const runtime = allocateRuntime(config);
-      let job: OracleJob | undefined;
-      let archive: ArchiveCreationResult | undefined;
-      let queued = false;
-      let queuedSubmissionDurable = false;
-      let runtimeLeaseAcquired = false;
-      let conversationLeaseAcquired = false;
-      let workerSpawned = false;
-      let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
-
-      try {
-        archive = await createArchive(ctx.cwd, params.files, tempArchivePath);
-        const currentArchive = archive;
-        await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
-          await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
-
-          const admittedAt = new Date().toISOString();
-          const runtimeAttempt = await tryAcquireRuntimeLease(config, {
-            jobId,
-            runtimeId: runtime.runtimeId,
-            runtimeSessionName: runtime.runtimeSessionName,
-            runtimeProfileDir: runtime.runtimeProfileDir,
-            projectId,
-            sessionId,
-            createdAt: admittedAt,
+        const config = loadOracleConfig(ctx.cwd);
+        const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
+        const projectId = getProjectId(ctx.cwd);
+        const sessionId = getSessionId(originSessionFile, projectId);
+        const presetId = typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : config.defaults.preset;
+        const selection = resolveOracleSubmitPreset(presetId);
+        const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
+        // Validate caller-specified archive paths before surfacing unrelated local setup failures such as a missing auth seed profile.
+        resolveArchiveInputs(ctx.cwd, params.files);
+        await assertOracleSubmitPrerequisites(config);
+        try {
+          await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
+            await reconcileStaleOracleJobs();
+            await pruneTerminalOracleJobs();
           });
+        } catch (error) {
+          if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
+        }
 
-          if (!runtimeAttempt.acquired) {
-            const queuePressure = await getQueuedArchivePressure();
-            const maxQueuedJobs = config.browser.maxConcurrentJobs * MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME;
-            const maxQueuedArchiveBytes = config.browser.maxConcurrentJobs * MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME;
-            const queueAdmissionFailure = getQueueAdmissionFailure({
-              queuePressure,
-              archiveBytes: currentArchive.archiveBytes,
-              activeJobs: runtimeAttempt.liveLeases.length,
-              maxActiveJobs: config.browser.maxConcurrentJobs,
-              maxQueuedJobs,
-              maxQueuedArchiveBytes,
+        const jobId = randomUUID();
+        const tempArchivePath = join(tmpdir(), `oracle-archive-${jobId}.tar.zst`);
+        const runtime = allocateRuntime(config);
+        let job: OracleJob | undefined;
+        let archive: ArchiveCreationResult | undefined;
+        let queued = false;
+        let queuedSubmissionDurable = false;
+        let runtimeLeaseAcquired = false;
+        let conversationLeaseAcquired = false;
+        let workerSpawned = false;
+        let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
+
+        try {
+          archive = await createArchive(ctx.cwd, params.files, tempArchivePath);
+          const currentArchive = archive;
+          await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
+            await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
+
+            const admittedAt = new Date().toISOString();
+            const runtimeAttempt = await tryAcquireRuntimeLease(config, {
+              jobId,
+              runtimeId: runtime.runtimeId,
+              runtimeSessionName: runtime.runtimeSessionName,
+              runtimeProfileDir: runtime.runtimeProfileDir,
+              projectId,
+              sessionId,
+              createdAt: admittedAt,
             });
-            if (queueAdmissionFailure) {
-              throw new Error(queueAdmissionFailure);
+
+            if (!runtimeAttempt.acquired) {
+              const queuePressure = await getQueuedArchivePressure();
+              const maxQueuedJobs = config.browser.maxConcurrentJobs * MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME;
+              const maxQueuedArchiveBytes = config.browser.maxConcurrentJobs * MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME;
+              const queueAdmissionFailure = getQueueAdmissionFailure({
+                queuePressure,
+                archiveBytes: currentArchive.archiveBytes,
+                activeJobs: runtimeAttempt.liveLeases.length,
+                maxActiveJobs: config.browser.maxConcurrentJobs,
+                maxQueuedJobs,
+                maxQueuedArchiveBytes,
+              });
+              if (queueAdmissionFailure) {
+                throw new Error(queueAdmissionFailure);
+              }
+
+              queued = true;
+              job = await createJob(
+                jobId,
+                {
+                  prompt: params.prompt,
+                  files: params.files,
+                  selection,
+                  followUpToJobId: followUp.followUpToJobId,
+                  chatUrl: followUp.chatUrl,
+                  requestSource: "tool",
+                },
+                ctx.cwd,
+                originSessionFile,
+                config,
+                runtime,
+                { initialState: "queued", createdAt: admittedAt },
+              );
+              await rename(tempArchivePath, job.archivePath);
+              job = await updateJob(job.id, (current) => ({
+                ...current,
+                archiveSha256: currentArchive.sha256,
+              }));
+              queuedSubmissionDurable = true;
+              return;
             }
 
-            queued = true;
+            runtimeLeaseAcquired = true;
+            if (followUp.conversationId) {
+              const conversationAttempt = await tryAcquireConversationLease({
+                jobId,
+                conversationId: followUp.conversationId,
+                projectId,
+                sessionId,
+                createdAt: admittedAt,
+              });
+              if (!conversationAttempt.acquired) {
+                throw new Error(
+                  `Oracle conversation ${followUp.conversationId} is already in use by job ${conversationAttempt.blocker?.jobId ?? "unknown"}. ` +
+                    "Concurrent follow-ups to the same ChatGPT thread are not allowed.",
+                );
+              }
+              conversationLeaseAcquired = true;
+            }
+
             job = await createJob(
               jobId,
               {
@@ -691,175 +1083,133 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
               originSessionFile,
               config,
               runtime,
-              { initialState: "queued", createdAt: admittedAt },
+              { initialState: "submitted", createdAt: admittedAt },
             );
             await rename(tempArchivePath, job.archivePath);
+            spawnedWorker = await spawnWorker(workerPath, job.id);
+            workerSpawned = true;
+            const worker = spawnedWorker;
             job = await updateJob(job.id, (current) => ({
               ...current,
               archiveSha256: currentArchive.sha256,
+              workerPid: worker.pid,
+              workerNonce: worker.nonce,
+              workerStartedAt: worker.startedAt,
             }));
-            queuedSubmissionDurable = true;
-            return;
-          }
-
-          runtimeLeaseAcquired = true;
-          if (followUp.conversationId) {
-            const conversationAttempt = await tryAcquireConversationLease({
-              jobId,
-              conversationId: followUp.conversationId,
-              projectId,
-              sessionId,
-              createdAt: admittedAt,
-            });
-            if (!conversationAttempt.acquired) {
-              throw new Error(
-                `Oracle conversation ${followUp.conversationId} is already in use by job ${conversationAttempt.blocker?.jobId ?? "unknown"}. ` +
-                  "Concurrent follow-ups to the same ChatGPT thread are not allowed.",
-              );
-            }
-            conversationLeaseAcquired = true;
-          }
-
-          job = await createJob(
-            jobId,
-            {
-              prompt: params.prompt,
-              files: params.files,
-              selection,
-              followUpToJobId: followUp.followUpToJobId,
-              chatUrl: followUp.chatUrl,
-              requestSource: "tool",
-            },
-            ctx.cwd,
-            originSessionFile,
-            config,
-            runtime,
-            { initialState: "submitted", createdAt: admittedAt },
-          );
-          await rename(tempArchivePath, job.archivePath);
-          spawnedWorker = await spawnWorker(workerPath, job.id);
-          workerSpawned = true;
-          const worker = spawnedWorker;
-          job = await updateJob(job.id, (current) => ({
-            ...current,
-            archiveSha256: currentArchive.sha256,
-            workerPid: worker.pid,
-            workerNonce: worker.nonce,
-            workerStartedAt: worker.startedAt,
-          }));
-        });
-        if (!job || !archive) throw new Error(`Oracle submission ${jobId} did not persist job metadata durably`);
-        if (ctx.hasUI) refreshOracleStatus(ctx);
-
-        const queuePosition = queued ? getQueuePosition(job.id) : undefined;
-        return {
-          content: [
-            {
-              type: "text",
-              text: formatOracleSubmitResponse(job, {
-                autoPrunedPrefixes: currentArchive.autoPrunedPrefixes,
-                queued,
-                queuePosition: queuePosition?.position,
-                queueDepth: queuePosition?.depth,
-              }),
-            },
-          ],
-          details: {
-            jobId: job.id,
-            queued,
-            queuePosition: queuePosition?.position,
-            queueDepth: queuePosition?.depth,
-            archiveSha256: currentArchive.sha256,
-            archiveBytes: currentArchive.archiveBytes,
-            initialArchiveBytes: currentArchive.initialArchiveBytes,
-            autoPrunedArchivePaths: currentArchive.autoPrunedPrefixes,
-            runtimeId: job.runtimeId,
-            followUpToJobId: followUp.followUpToJobId,
-          },
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const latest = job ? readJob(job.id) : undefined;
-        if (latest?.status === "queued" && queuedSubmissionDurable) {
+          });
+          if (!job || !archive) throw new Error(`Oracle submission ${jobId} did not persist job metadata durably`);
           if (ctx.hasUI) refreshOracleStatus(ctx);
-          const queuePosition = getQueuePosition(latest.id);
+
+          const queuePosition = queued ? getQueuePosition(job.id) : undefined;
           return {
             content: [
               {
                 type: "text",
-                text: formatOracleSubmitResponse(latest, {
-                  autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
-                  queued: true,
+                text: formatOracleSubmitResponse(job, {
+                  autoPrunedPrefixes: archive.autoPrunedPrefixes,
+                  queued,
                   queuePosition: queuePosition?.position,
                   queueDepth: queuePosition?.depth,
                 }),
               },
             ],
             details: {
-              jobId: latest.id,
-              queued: true,
-              queuePosition: queuePosition?.position,
-              queueDepth: queuePosition?.depth,
-              archiveSha256: latest.archiveSha256,
-              archiveBytes: archive?.archiveBytes,
-              initialArchiveBytes: archive?.initialArchiveBytes,
-              autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
-              runtimeId: latest.runtimeId,
-              followUpToJobId: latest.followUpToJobId,
+              job: redactJobDetails(job, {
+                queue: buildOracleQueueSnapshot(job, queuePosition),
+                archiveBytes: archive.archiveBytes,
+                initialArchiveBytes: archive.initialArchiveBytes,
+                autoPrunedArchivePaths: archive.autoPrunedPrefixes,
+              }),
             },
           };
-        }
-        if (workerSpawned && latest && hasDurableWorkerHandoff(latest)) {
-          if (ctx.hasUI) refreshOracleStatus(ctx);
-          return {
-            content: [
-              {
-                type: "text",
-                text: formatOracleSubmitResponse(latest, {
-                  autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
-                  queued: false,
+        } catch (error) {
+          const message = getErrorMessage(error);
+          const latest = job ? readJob(job.id) : undefined;
+          if (latest?.status === "queued" && queuedSubmissionDurable) {
+            if (ctx.hasUI) refreshOracleStatus(ctx);
+            const queuePosition = getQueuePosition(latest.id);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: formatOracleSubmitResponse(latest, {
+                    autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
+                    queued: true,
+                    queuePosition: queuePosition?.position,
+                    queueDepth: queuePosition?.depth,
+                  }),
+                },
+              ],
+              details: {
+                job: redactJobDetails(latest, {
+                  queue: buildOracleQueueSnapshot(latest, queuePosition),
+                  archiveBytes: archive?.archiveBytes,
+                  initialArchiveBytes: archive?.initialArchiveBytes,
+                  autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
                 }),
               },
-            ],
-            details: {
-              jobId: latest.id,
-              queued: false,
-              archiveSha256: latest.archiveSha256,
+            };
+          }
+          if (workerSpawned && latest && hasDurableWorkerHandoff(latest)) {
+            if (ctx.hasUI) refreshOracleStatus(ctx);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: formatOracleSubmitResponse(latest, {
+                    autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
+                    queued: false,
+                  }),
+                },
+              ],
+              details: {
+                job: redactJobDetails(latest, {
+                  queue: buildOracleQueueSnapshot(latest),
+                  archiveBytes: archive?.archiveBytes,
+                  initialArchiveBytes: archive?.initialArchiveBytes,
+                  autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
+                }),
+              },
+            };
+          }
+          if (spawnedWorker) {
+            await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt).catch(() => undefined);
+          }
+          if (job && (!latest || !isTerminalOracleJob(latest))) {
+            const failedAt = new Date().toISOString();
+            await updateJob(job.id, (current) => transitionOracleJobPhase(current, "failed", {
+              at: failedAt,
+              source: "oracle:submit",
+              message: `Submission failed before durable worker handoff: ${message}`,
+              patch: {
+                error: message,
+              },
+            })).catch(() => undefined);
+          }
+          const cleanupReport = await cleanupRuntimeArtifacts({
+            runtimeId: runtimeLeaseAcquired ? runtime.runtimeId : undefined,
+            runtimeProfileDir: runtimeLeaseAcquired ? runtime.runtimeProfileDir : undefined,
+            runtimeSessionName: workerSpawned ? runtime.runtimeSessionName : undefined,
+            conversationId: conversationLeaseAcquired ? followUp.conversationId : undefined,
+          }).catch(() => ({ attempted: [], warnings: [] }));
+          if (job && cleanupReport.warnings.length > 0) {
+            await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);
+          }
+          if (ctx.hasUI) refreshOracleStatus(ctx);
+          return buildOracleToolErrorResult("oracle_submit", error, params as unknown as Record<string, unknown>, {
+            job: latest ?? job,
+            jobDetails: {
+              queue: latest ? buildOracleQueueSnapshot(latest, latest.status === "queued" ? getQueuePosition(latest.id) : undefined) : undefined,
               archiveBytes: archive?.archiveBytes,
               initialArchiveBytes: archive?.initialArchiveBytes,
               autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
-              runtimeId: latest.runtimeId,
-              followUpToJobId: latest.followUpToJobId,
             },
-          };
+          });
+        } finally {
+          await rm(tempArchivePath, { force: true }).catch(() => undefined);
         }
-        if (spawnedWorker) {
-          await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt).catch(() => undefined);
-        }
-        if (job && (!latest || !isTerminalOracleJob(latest))) {
-          const failedAt = new Date().toISOString();
-          await updateJob(job.id, (current) => transitionOracleJobPhase(current, "failed", {
-            at: failedAt,
-            source: "oracle:submit",
-            message: `Submission failed before durable worker handoff: ${message}`,
-            patch: {
-              error: message,
-            },
-          })).catch(() => undefined);
-        }
-        const cleanupReport = await cleanupRuntimeArtifacts({
-          runtimeId: runtimeLeaseAcquired ? runtime.runtimeId : undefined,
-          runtimeProfileDir: runtimeLeaseAcquired ? runtime.runtimeProfileDir : undefined,
-          runtimeSessionName: workerSpawned ? runtime.runtimeSessionName : undefined,
-          conversationId: conversationLeaseAcquired ? followUp.conversationId : undefined,
-        }).catch(() => ({ attempted: [], warnings: [] }));
-        if (job && cleanupReport.warnings.length > 0) {
-          await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);
-        }
-        if (ctx.hasUI) refreshOracleStatus(ctx);
-        throw error;
-      } finally {
-        await rm(tempArchivePath, { force: true }).catch(() => undefined);
+      } catch (error) {
+        return buildOracleToolErrorResult("oracle_submit", error, params as unknown as Record<string, unknown>);
       }
     },
   });
@@ -870,40 +1220,54 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     description: "Read the status and outputs of a previously dispatched oracle job.",
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const job = readJob(params.jobId);
-      if (!job || job.projectId !== getProjectId(ctx.cwd)) {
-        throw new Error(`Oracle job not found in this project: ${params.jobId}`);
-      }
-      const latest = isTerminalOracleJob(job)
-        ? await markWakeupSettled(job.id, {
-          source: "oracle_read",
-          sessionFile: getSessionFile(ctx),
-          cwd: ctx.cwd,
-        })
-        : job;
-      const current = latest ?? readJob(job.id) ?? job;
-
-      let responsePreview = "";
       try {
-        const response = await import("node:fs/promises").then((fs) => fs.readFile(current.responsePath || "", "utf8"));
-        responsePreview = response.slice(0, 4000);
-      } catch {
-        responsePreview = "(response not available yet)";
-      }
+        const job = readJob(params.jobId);
+        if (!job || job.projectId !== getProjectId(ctx.cwd)) {
+          throw new Error(`Oracle job not found in this project: ${params.jobId}`);
+        }
+        const latest = isTerminalOracleJob(job)
+          ? await markWakeupSettled(job.id, {
+            source: "oracle_read",
+            sessionFile: getSessionFile(ctx),
+            cwd: ctx.cwd,
+          })
+          : job;
+        const current = latest ?? readJob(job.id) ?? job;
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatOracleJobSummary(current, {
-              queuePosition: current.status === "queued" ? getQueuePosition(current.id) : undefined,
-              artifactsPath: `${getJobDir(current.id)}/artifacts`,
+        let responsePreview: string | undefined;
+        let responseAvailable = false;
+        try {
+          const response = await import("node:fs/promises").then((fs) => fs.readFile(current.responsePath || "", "utf8"));
+          responsePreview = response.slice(0, 4000);
+          responseAvailable = true;
+        } catch {
+          responsePreview = undefined;
+        }
+
+        const queuePosition = current.status === "queued" ? getQueuePosition(current.id) : undefined;
+        return {
+          content: [
+            {
+              type: "text",
+              text: formatOracleJobSummary(current, {
+                queuePosition,
+                artifactsPath: `${getJobDir(current.id)}/artifacts`,
+                responsePreview,
+                responseAvailable,
+              }),
+            },
+          ],
+          details: {
+            job: redactJobDetails(current, {
+              queue: buildOracleQueueSnapshot(current, queuePosition),
               responsePreview,
+              responseAvailable,
             }),
           },
-        ],
-        details: { job: redactJobDetails(current) },
-      };
+        };
+      } catch (error) {
+        return buildOracleToolErrorResult("oracle_read", error, params as unknown as Record<string, unknown>);
+      }
     },
   });
 
@@ -913,26 +1277,30 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     description: "Cancel a queued or active oracle job.",
     parameters: ORACLE_CANCEL_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const job = readJob(params.jobId);
-      if (!job || job.projectId !== getProjectId(ctx.cwd)) {
-        throw new Error(`Oracle job not found in this project: ${params.jobId}`);
-      }
-      if (!isOpenOracleJob(job)) {
-        return {
-          content: [{ type: "text", text: `Oracle job ${job.id} is not cancellable (${job.status}).` }],
-          details: { job: redactJobDetails(job) },
-        };
-      }
+      try {
+        const job = readJob(params.jobId);
+        if (!job || job.projectId !== getProjectId(ctx.cwd)) {
+          throw new Error(`Oracle job not found in this project: ${params.jobId}`);
+        }
+        if (!isOpenOracleJob(job)) {
+          return {
+            content: [{ type: "text", text: `Oracle job ${job.id} is not cancellable (${job.status}).` }],
+            details: { job: redactJobDetails(job, { queue: buildOracleQueueSnapshot(job, job.status === "queued" ? getQueuePosition(job.id) : undefined) }) },
+          };
+        }
 
-      const cancelled = await cancelOracleJob(params.jobId);
-      if (shouldAdvanceQueueAfterCancellation(cancelled)) {
-        await promoteQueuedJobs({ workerPath, source: "oracle_cancel_tool" });
+        const cancelled = await cancelOracleJob(params.jobId);
+        if (shouldAdvanceQueueAfterCancellation(cancelled)) {
+          await promoteQueuedJobs({ workerPath, source: "oracle_cancel_tool" });
+        }
+        if (ctx.hasUI) refreshOracleStatus(ctx);
+        return {
+          content: [{ type: "text", text: cancelled.status === "cancelled" || cancelled.status === "failed" ? `Cancelled oracle job ${cancelled.id}.` : `Oracle job ${cancelled.id} was already ${cancelled.status}.` }],
+          details: { job: redactJobDetails(cancelled, { queue: buildOracleQueueSnapshot(cancelled, cancelled.status === "queued" ? getQueuePosition(cancelled.id) : undefined) }) },
+        };
+      } catch (error) {
+        return buildOracleToolErrorResult("oracle_cancel", error, params as unknown as Record<string, unknown>);
       }
-      if (ctx.hasUI) refreshOracleStatus(ctx);
-      return {
-        content: [{ type: "text", text: cancelled.status === "cancelled" || cancelled.status === "failed" ? `Cancelled oracle job ${cancelled.id}.` : `Oracle job ${cancelled.id} was already ${cancelled.status}.` }],
-        details: { job: redactJobDetails(cancelled) },
-      };
     },
   });
 }

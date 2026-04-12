@@ -104,6 +104,7 @@ export declare function appendOracleJobLifecycleEvent<TJob extends OracleLifecyc
   event: Omit<OracleJobLifecycleEvent, "status" | "phase"> & { status?: OracleJobStatus; phase?: OracleJobPhase },
 ): TJob;
 export declare function getLatestOracleJobLifecycleEvent(job: Pick<OracleLifecycleTrackedJobLike, "lifecycleEvents">): OracleJobLifecycleEvent | undefined;
+export declare function getLatestOracleTerminalLifecycleEvent(job: Pick<OracleLifecycleTrackedJobLike, "lifecycleEvents">): OracleJobLifecycleEvent | undefined;
 export declare function markOracleJobCreated<TJob extends OracleLifecycleTrackedJobLike>(job: TJob, options?: { at?: string; source?: string; message?: string }): TJob;
 export declare function transitionOracleJobPhase<TJob extends OracleLifecycleTrackedJobLike>(
   job: TJob,

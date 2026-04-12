@@ -3,6 +3,7 @@
 // Scope: Poller/orchestration only; durable lifecycle mutations live in jobs.ts and shared observability formatting lives in extensions/oracle/shared.
 // Usage: Imported by the oracle extension entrypoint to start or stop per-session oracle polling.
 // Invariants/Assumptions: Poller scans are serialized per session key, wake-up delivery is best-effort, and terminal-job notifications always re-read durable job state before send.
+import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { buildOracleStatusText, buildOracleWakeupNotificationContent } from "../shared/job-observability-helpers.mjs";
 import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
@@ -154,7 +155,8 @@ function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
       customType: ORACLE_WAKEUP_REMINDER_CUSTOM_TYPE,
       display: false,
       content: buildOracleWakeupNotificationContent(job, {
-        responsePath: job.responsePath || `${getJobDir(job.id)}/response.md`,
+        responsePath: job.responsePath,
+        responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath)),
         artifactsPath: `${getJobDir(job.id)}/artifacts`,
       }),
       details: { jobId: job.id, status: job.status },

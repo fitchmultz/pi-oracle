@@ -79,6 +79,9 @@ The extension now follows the current `pi` session lifecycle model:
 
 ### Tools
 
+- `oracle_preflight`
+  - lightweight agent-facing readiness check for persisted-session and local oracle prerequisites
+  - intended to run before expensive `/oracle` context gathering
 - `oracle_submit`
   - low-level agent-facing dispatch tool
   - creates archive and launches a detached worker
@@ -97,12 +100,14 @@ It expands through the prompt-template path so pi can apply its native queueing 
 
 Instead it instructs the agent to:
 
-1. understand the task
-2. gather repo context
-3. choose exact archive inputs
-4. craft the oracle prompt
-5. call `oracle_submit`
-6. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
+1. call `oracle_preflight` immediately
+2. stop right away if preflight reports the session or local oracle setup is not ready
+3. understand the task
+4. gather repo context
+5. choose exact archive inputs
+6. craft the oracle prompt
+7. call `oracle_submit`
+8. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
 
 ### `/oracle-auth`
 

@@ -939,6 +939,336 @@ async function testOracleSubmitPresetGuardrails(): Promise<void> {
   );
 }
 
+async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-oracle-preflight-${randomUUID()}-`));
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  const preflightTool = pi.tools.get("oracle_preflight");
+  assert(preflightTool?.execute, "oracle preflight tool should register for readiness testing");
+
+  const sessionFile = `/tmp/oracle-sanity-session-oracle-preflight-${randomUUID()}.jsonl`;
+  const persistedCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const noSessionCtx = createExtensionCtx({ getSessionFile: () => undefined } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const defaultSeedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
+  const configPath = join(agentExtensionsDir, "oracle.json");
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    const noSessionResult = await preflightTool.execute!("oracle-preflight-no-session", {}, undefined, () => { }, noSessionCtx) as { details?: unknown };
+    const noSessionDetails = asRecord(noSessionResult.details);
+    const noSessionError = asRecord(noSessionDetails?.error);
+    assert(noSessionDetails?.ready === false, "oracle preflight should report ready=false when the session is not persisted");
+    assert(noSessionError?.code === "persisted_session_required", "oracle preflight should surface persisted_session_required for no-session contexts");
+
+    const missingSeedResult = await preflightTool.execute!("oracle-preflight-missing-seed", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const missingSeedDetails = asRecord(missingSeedResult.details);
+    const missingSeedError = asRecord(missingSeedDetails?.error);
+    const missingSeedAuth = asRecord(missingSeedDetails?.auth);
+    assert(missingSeedDetails?.ready === false, "oracle preflight should report ready=false when the auth seed is missing");
+    assert(missingSeedError?.code === "auth_seed_profile_missing", "oracle preflight should surface auth_seed_profile_missing when the seed dir is absent");
+    assert(missingSeedAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the configured auth seed path");
+
+    await mkdir(defaultSeedDir, { recursive: true, mode: 0o700 });
+    const readyResult = await preflightTool.execute!("oracle-preflight-ready", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const readyDetails = asRecord(readyResult.details);
+    const readyAuth = asRecord(readyDetails?.auth);
+    assert(readyDetails?.ready === true, "oracle preflight should report ready=true once persisted session and auth seed prerequisites are satisfied");
+    assert(readyAuth?.ready === true && readyAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the ready auth seed path");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testOracleSubmitPreflightRejectsKnownAuthSeedFailures(): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-submit-preflight-${randomUUID()}-`));
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  const submitTool = pi.tools.get("oracle_submit");
+  assert(submitTool?.execute, "oracle submit tool should register for preflight testing");
+
+  const sessionFile = `/tmp/oracle-sanity-session-submit-preflight-${randomUUID()}.jsonl`;
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const configPath = join(agentExtensionsDir, "oracle.json");
+  const jobDirCountBefore = listOracleJobDirs().length;
+
+  const writeOracleConfig = async (authSeedProfileDir: string): Promise<void> => {
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  };
+
+  const submit = async () => submitTool.execute!(
+    "oracle-submit-preflight-test",
+    { prompt: "sanity", files: ["README.md"], preset: "instant" },
+    undefined,
+    () => { },
+    ctx,
+  );
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const missingSeedDir = join(fixtureDir, "missing-seed");
+    await writeOracleConfig(missingSeedDir);
+    const missingResult = await submit() as { details?: unknown };
+    const missingError = asRecord(asRecord(missingResult.details)?.error);
+    assert(missingError?.code === "auth_seed_profile_missing", "oracle submit should return a structured missing-auth-seed error code");
+    assert(missingError?.rejectedValue === missingSeedDir, "missing auth seed errors should report the missing seed path");
+    assert(listOracleJobDirs().length === jobDirCountBefore, "missing auth seed preflight should not create oracle job dirs");
+
+    const unreadableSeedDir = join(fixtureDir, "unreadable-seed");
+    await mkdir(unreadableSeedDir, { recursive: true, mode: 0o700 });
+    await chmod(unreadableSeedDir, 0o000);
+    try {
+      await writeOracleConfig(unreadableSeedDir);
+      const unreadableResult = await submit() as { details?: unknown };
+      const unreadableError = asRecord(asRecord(unreadableResult.details)?.error);
+      assert(unreadableError?.code === "auth_seed_profile_unreadable", "oracle submit should return a structured unreadable-auth-seed error code");
+      assert(unreadableError?.rejectedValue === unreadableSeedDir, "unreadable auth seed errors should report the blocked seed path");
+    } finally {
+      await chmod(unreadableSeedDir, 0o700).catch(() => undefined);
+    }
+    assert(listOracleJobDirs().length === jobDirCountBefore, "unreadable auth seed preflight should not create oracle job dirs");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testOracleToolResultsExposeStructuredJobDetails(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-tool-details-${randomUUID()}-`));
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const seedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await mkdir(seedDir, { recursive: true, mode: 0o700 });
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const configured = {
+    ...config,
+    browser: {
+      ...config.browser,
+      authSeedProfileDir: seedDir,
+      maxConcurrentJobs: 1,
+    },
+  } satisfies OracleConfig;
+  await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({ browser: { authSeedProfileDir: seedDir, maxConcurrentJobs: 1 } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  const submitTool = pi.tools.get("oracle_submit");
+  const readTool = pi.tools.get("oracle_read");
+  const cancelTool = pi.tools.get("oracle_cancel");
+  assert(submitTool?.execute, "oracle submit tool should register for details-shape testing");
+  assert(readTool?.execute, "oracle read tool should register for details-shape testing");
+  assert(cancelTool?.execute, "oracle cancel tool should register for details-shape testing");
+
+  const cwd = process.cwd();
+  const sessionFile = `/tmp/oracle-sanity-session-tool-details-${randomUUID()}.jsonl`;
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  let blockingId: string | undefined;
+  let queuedId: string | undefined;
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    blockingId = await createJobForTest(configured, cwd, sessionFile);
+    const blockingJob = readJob(blockingId);
+    assert(blockingJob, "blocking oracle job should exist for queued submit testing");
+    await acquireRuntimeLease(configured, {
+      jobId: blockingJob.id,
+      runtimeId: blockingJob.runtimeId,
+      runtimeSessionName: blockingJob.runtimeSessionName,
+      runtimeProfileDir: blockingJob.runtimeProfileDir,
+      projectId: blockingJob.projectId,
+      sessionId: blockingJob.sessionId,
+      createdAt: new Date().toISOString(),
+    });
+
+    const submitResult = await (submitTool.execute!(
+      "oracle-submit-details-test",
+      { prompt: "sanity", files: ["README.md"], preset: "instant" },
+      undefined,
+      () => { },
+      ctx,
+    )) as { details?: unknown };
+    const submitDetails = asRecord(submitResult.details);
+    const submittedJob = asRecord(submitDetails?.job);
+    const submitQueue = asRecord(submittedJob?.queue);
+    const submitLastEvent = asRecord(submittedJob?.lastEvent);
+    assert(submitDetails && !("jobId" in submitDetails), "oracle submit should expose structured details under details.job instead of top-level submit fields");
+    assert(typeof submittedJob?.id === "string", "oracle submit should include job.id in structured details");
+    assert(typeof submittedJob?.promptPath === "string", "oracle submit should include promptPath in structured details");
+    assert(typeof submittedJob?.archivePath === "string", "oracle submit should include archivePath in structured details");
+    assert(typeof submittedJob?.responsePath === "string", "oracle submit should include responsePath in structured details");
+    assert(Array.isArray(submittedJob?.autoPrunedArchivePaths), "oracle submit should include autoPrunedArchivePaths in structured details");
+    assert(submitQueue?.queued === true, "oracle submit queued details should expose queue.queued=true");
+    assert(typeof submitQueue?.position === "number" && typeof submitQueue?.depth === "number", "oracle submit queued details should expose queue position and depth");
+    assert(typeof submitLastEvent?.message === "string" && typeof submitLastEvent?.source === "string", "oracle submit should expose a structured lastEvent object");
+    queuedId = String(submittedJob.id);
+
+    const readResult = await readTool.execute!("oracle-read-details-test", { jobId: queuedId }, undefined, () => { }, ctx) as { details?: unknown };
+    const readJobDetails = asRecord(asRecord(readResult.details)?.job);
+    const readQueue = asRecord(readJobDetails?.queue);
+    assert(readJobDetails?.id === queuedId, "oracle read should preserve the same job.id in structured details");
+    assert(typeof readJobDetails?.artifactsPath === "string", "oracle read should include artifactsPath in structured details");
+    assert(readQueue?.queued === true, "oracle read should preserve structured queue metadata");
+    assert(typeof readJobDetails?.responseAvailable === "boolean", "oracle read should report responseAvailable in structured details");
+
+    const cancelResult = await cancelTool.execute!("oracle-cancel-details-test", { jobId: queuedId }, undefined, () => { }, ctx) as { details?: unknown };
+    const cancelledJobDetails = asRecord(asRecord(cancelResult.details)?.job);
+    const cancelQueue = asRecord(cancelledJobDetails?.queue);
+    assert(cancelledJobDetails?.id === queuedId, "oracle cancel should return structured job details for the cancelled job");
+    assert(cancelledJobDetails?.status === "cancelled", "oracle cancel should expose the cancelled job status in structured details");
+    assert(cancelQueue?.queued === false, "oracle cancel should update queue.queued once the job is cancelled");
+  } finally {
+    if (blockingId) {
+      const blockingJob = readJob(blockingId);
+      await releaseRuntimeLease(blockingJob?.runtimeId);
+      await cleanupJob(blockingId);
+    }
+    if (queuedId) await cleanupJob(queuedId);
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-terminal-summary-worker-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  const readTool = pi.tools.get("oracle_read");
+  const statusCommand = pi.commands.get("oracle-status");
+  assert(readTool?.execute, "oracle read tool should register for terminal summary testing");
+  assert(statusCommand, "oracle status command should register for terminal summary testing");
+
+  const cwd = process.cwd();
+  const sessionFile = `/tmp/oracle-sanity-session-terminal-summary-${randomUUID()}.jsonl`;
+  const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const statusUi = createUiStub();
+  const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
+  const jobId = await createJobForTest(config, cwd, sessionFile);
+
+  try {
+    const failedAt = "2026-01-01T00:00:20.000Z";
+    const wakeupRequestedAt = "2026-01-01T00:00:25.000Z";
+    await updateJob(jobId, (job) => noteOracleJobWakeupRequested(transitionOracleJobPhase(job, "failed", {
+      at: failedAt,
+      source: "oracle:worker",
+      message: "Job failed: missing auth seed profile.",
+      patch: { error: "missing auth seed profile" },
+    }), {
+      at: wakeupRequestedAt,
+      source: "oracle:poller",
+    }));
+
+    const readResult = await readTool.execute!("oracle-read-terminal-summary-test", { jobId }, undefined, () => { }, readCtx) as { content?: Array<{ text?: string }>; details?: unknown };
+    const readText = readResult.content?.[0]?.text;
+    const readJobDetails = asRecord(asRecord(readResult.details)?.job);
+    assert(typeof readText === "string", "oracle read should return textual terminal summaries");
+    assert(readText.includes("terminal-event: 2026-01-01T00:00:20.000Z [oracle:worker] Job failed: missing auth seed profile."), "oracle read should keep the worker terminal failure event prominent after wake-up settlement bookkeeping");
+    assert(readText.includes("wakeup-event:") && !readText.includes(`response: ${String(readJob(jobId)?.responsePath)}`), "oracle read should separate wake-up bookkeeping and hide unavailable response paths from failed-job summaries");
+    assert(readJobDetails?.responseAvailable === false, "oracle read structured details should report responseAvailable=false when the response file is absent");
+    const terminalEvent = asRecord(readJobDetails?.terminalEvent);
+    assert(terminalEvent?.source === "oracle:worker", "oracle read structured details should expose the terminal worker event separately from the latest wake-up event");
+
+    await statusCommand.handler(jobId, statusCtx);
+    const statusMessage = statusUi.notifications.at(-1)?.message;
+    assert(typeof statusMessage === "string", "oracle status should emit a textual terminal summary");
+    assert(statusMessage.includes("terminal-event: 2026-01-01T00:00:20.000Z [oracle:worker] Job failed: missing auth seed profile."), "oracle status should keep the terminal worker failure event prominent after manual wake-up settlement");
+    assert(statusMessage.includes("wakeup-event:") && !statusMessage.includes(`response: ${String(readJob(jobId)?.responsePath)}`), "oracle status should separate wake-up bookkeeping and hide unavailable response paths from failed-job summaries");
+  } finally {
+    await rm(fakeWorkerPath, { force: true });
+    await cleanupJob(jobId);
+  }
+}
+
+async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-tool-errors-${randomUUID()}-`));
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  const submitTool = pi.tools.get("oracle_submit");
+  const readTool = pi.tools.get("oracle_read");
+  const toolResultHandler = pi.handlers.get("tool_result");
+  assert(submitTool?.execute, "oracle submit tool should register for structured-error testing");
+  assert(readTool?.execute, "oracle read tool should register for structured-error testing");
+  assert(toolResultHandler, "oracle tools should register a tool_result hook to preserve isError for structured errors");
+
+  const sessionFile = `/tmp/oracle-sanity-session-tool-errors-${randomUUID()}.jsonl`;
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const invalidPresetResult = await (submitTool.execute!(
+      "oracle-submit-invalid-preset-test",
+      { prompt: "sanity", files: ["README.md"], preset: "not-a-real-preset" },
+      undefined,
+      () => { },
+      ctx,
+    )) as { details?: unknown; content?: unknown };
+    const invalidPresetError = asRecord(asRecord(invalidPresetResult.details)?.error);
+    assert(invalidPresetError?.code === "invalid_preset", "oracle submit should return a structured invalid_preset error code");
+    assert(invalidPresetError?.rejectedValue === "not-a-real-preset", "oracle submit should report the rejected preset value");
+    const allowedValues = invalidPresetError?.allowedValues;
+    assert(Array.isArray(allowedValues) && allowedValues.includes("instant") && allowedValues.includes("thinking_standard"), "oracle submit should report canonical preset ids as allowedValues");
+    assert(typeof invalidPresetError?.suggestedNextStep === "string", "oracle submit should include a retry hint for invalid preset errors");
+    const invalidPresetPatch = await toolResultHandler({
+      toolName: "oracle_submit",
+      toolCallId: "oracle-submit-invalid-preset-test",
+      input: { prompt: "sanity", files: ["README.md"], preset: "not-a-real-preset" },
+      content: invalidPresetResult.content,
+      details: invalidPresetResult.details,
+      isError: false,
+    }, ctx);
+    assert(asRecord(invalidPresetPatch)?.isError === true, "oracle tool_result hook should preserve isError for structured oracle tool errors");
+
+    const missingJobResult = await readTool.execute!("oracle-read-missing-job-test", { jobId: "missing-job" }, undefined, () => { }, ctx) as { details?: unknown };
+    const missingJobError = asRecord(asRecord(missingJobResult.details)?.error);
+    assert(missingJobError?.code === "job_not_found", "oracle read should return a structured job_not_found error code");
+    assert(missingJobError?.rejectedValue === "missing-job", "oracle read should report the rejected job id");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testCleanupPendingRecoveryTerminatesStaleLiveWorker(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const cwd = process.cwd();
@@ -2042,9 +2372,13 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   };
   const pi = createPiHarness();
   registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
+  const preflightTool = pi.tools.get("oracle_preflight");
   const submitTool = pi.tools.get("oracle_submit");
+  assert(preflightTool, "oracle preflight tool should register for schema inspection");
   assert(submitTool, "oracle submit tool should register for schema inspection");
+  const preflightProperties = asRecord(asRecord(preflightTool.parameters)?.properties);
   const submitProperties = asRecord(asRecord(submitTool.parameters)?.properties);
+  assert(preflightProperties !== undefined, "oracle preflight tool should expose an object schema");
   assert(submitProperties, "oracle submit tool should expose an object schema");
   const representativePresetAliases: [string, OracleSubmitPresetId][] = [
     ["Pro-standard", "pro_standard"],
@@ -2055,6 +2389,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
 
   assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle prompt template should contain the oracle dispatch instructions");
+  assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
+  assert(promptSource.includes("Do not read files, search the codebase, or prepare archive inputs first"), "/oracle prompt should forbid expensive prep before preflight passes");
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
   assert(promptSource.includes("is the only model-selection parameter"), "/oracle prompt should state preset is the only selector");
   assert(promptSource.includes("canonical preset registry"), "/oracle prompt should point callers to the canonical registry instead of a hard-coded preset list");
@@ -2073,6 +2409,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("If a submitted oracle job later fails because upload is rejected"), "/oracle prompt should describe the post-submit upload-rejection fallback ladder");
   assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
+  assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
+  assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
   assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
   assert(recoveryDrillSource.includes("/tmp/pi-oracle-auth-*/"), "recovery drill should reference the per-run oracle-auth diagnostics bundle");
@@ -2090,6 +2428,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("Use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only selector");
   assert(toolsSource.includes("matching human-readable preset labels are normalized automatically"), "oracle tool guidance should mention preset label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
+  assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
+  assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
+  assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
   assert(readmeSource.includes("## Available presets"), "README should document available oracle preset ids");
   assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
   assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
@@ -2097,7 +2438,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
   }
+  const preflightSchema = preflightTool.parameters as import("@sinclair/typebox").TSchema;
   const submitSchema = submitTool.parameters as import("@sinclair/typebox").TSchema;
+  assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
+  assert(Object.keys(preflightProperties ?? {}).length === 0, "oracle_preflight should not require caller arguments");
   assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
   for (const [presetAlias, presetId] of representativePresetAliases) {
     assert(
@@ -2118,7 +2462,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
   assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
+  assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
+  assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
+  assert(toolsSource.includes("await assertOracleSubmitPrerequisites(config);"), "oracle submit should preflight locally knowable blockers before archiving or persisting jobs");
+  assert(toolsSource.includes("buildOracleToolErrorResult"), "oracle tools should centralize structured error payload creation");
+  assert(toolsSource.includes('pi.on("tool_result"'), "oracle tools should register a tool_result hook so structured oracle errors still surface with isError=true");
+  assert(toolsSource.includes("job: redactJobDetails(job"), "oracle submit should now return structured job details under details.job");
+  assert(!toolsSource.includes("details: {\n            jobId:"), "oracle submit should no longer expose legacy top-level detail fields like jobId instead of details.job");
   assert(toolsSource.includes("artifactsPath: `${getJobDir(current.id)}/artifacts`"), "oracle read should derive artifact paths from the configured jobs dir instead of hard-coding /tmp");
   assert(toolsSource.includes("source: \"oracle_read\""), "oracle read should pass explicit settlement provenance when a terminal job has been manually read");
   assert(commandsSource.includes("source: \"oracle_status\""), "oracle status should pass explicit settlement provenance when a terminal job has been manually inspected");
@@ -2168,6 +2519,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
   assert(pollerSource.includes("requestWakeupTurn(pi, deliverable)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent(job"), "poller wake-up turns should include durable response/artifact paths from job state via the shared observability helper");
+  assert(pollerSource.includes("responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath))"), "poller wake-up turns should hide missing response paths when no response file was actually written");
   assert(sharedObservabilitySource.includes("Use oracle_read with jobId"), "poller wake-up content should direct receivers to oracle_read so reminder retries settle through the canonical path");
   assert(!pollerSource.includes("Read response:"), "poller wake-up content should no longer steer receivers toward raw response-file reads as the primary action");
   assert(pollerSource.includes("getJobDir(job.id)"), "poller wake-up content should derive artifact/response paths from the configured oracle jobs dir instead of hard-coding /tmp");
@@ -2201,6 +2553,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("isTrackedProcessAlive"), "runtime admission should use the shared tracked-process identity helper when evaluating live workers");
   assert(sharedLifecycleSource.includes("MAX_ORACLE_JOB_LIFECYCLE_EVENTS = 64"), "shared lifecycle helpers should bound stored lifecycle breadcrumbs to keep job state durable and reviewable");
   assert(sharedObservabilitySource.includes("formatOracleJobSummary"), "shared observability helpers should centralize detached job summary formatting");
+  assert(sharedObservabilitySource.includes("terminal-event:"), "shared observability helpers should keep terminal lifecycle events prominent in detached job summaries");
+  assert(sharedObservabilitySource.includes("response: unavailable yet"), "shared observability helpers should avoid showing response paths as ready when the response file does not exist yet");
   assert(sharedProcessSource.includes("spawnDetachedNodeProcess"), "shared process helpers should centralize detached process spawning semantics for worker handoff");
   assert(!runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should not treat cleanup warnings alone as live capacity blockers");
   assert(!runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should not retain leases solely because teardown leaves warnings");
@@ -2299,6 +2653,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("Skipping queued promotion because runtime cleanup left"), "worker should log when cleanup warnings block auto-promotion");
   assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
   assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
+  assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
 }
 
@@ -2868,9 +3223,26 @@ function testSharedObservabilityHelpers(): void {
     queuePosition: { position: 2, depth: 3 },
     artifactsPath: "/tmp/artifacts",
     responsePreview: "Preview body",
+    responseAvailable: true,
   });
-  assert(summary.includes("queue-position: 2 of 3 global") && summary.includes("last-event:"), "shared observability helpers should include queue position and latest lifecycle breadcrumbs in job summaries");
-  assert(summary.includes("worker-log: /tmp/worker.log") && summary.includes("Preview body"), "shared observability helpers should include worker log paths and optional response previews");
+  assert(summary.includes("queue-position: 2 of 3 global") && summary.includes("last-event:"), "shared observability helpers should include queue position and latest lifecycle breadcrumbs in non-terminal job summaries");
+  assert(summary.includes("worker-log: /tmp/worker.log") && summary.includes("Preview body") && summary.includes("response: /tmp/response.md"), "shared observability helpers should include worker log paths, visible response paths, and optional response previews");
+
+  const failedSummary = formatOracleJobSummary(markOracleJobWakeupSettled(transitionOracleJobPhase(job, "failed", {
+    at: "2026-01-01T00:00:20.000Z",
+    source: "oracle:worker",
+    message: "Job failed: missing auth seed profile.",
+    patch: { error: "missing auth seed profile" },
+  }), {
+    at: "2026-01-01T00:00:25.000Z",
+    source: "oracle_read",
+    allowBeforeFirstAttempt: true,
+  }), {
+    artifactsPath: "/tmp/artifacts",
+    responseAvailable: false,
+  });
+  assert(failedSummary.includes("terminal-event: 2026-01-01T00:00:20.000Z [oracle:worker] Job failed: missing auth seed profile."), "shared observability helpers should keep the terminal failure event prominent even after wake-up settlement bookkeeping");
+  assert(failedSummary.includes("wakeup-event:") && !failedSummary.includes("response: /tmp/response.md"), "shared observability helpers should label wake-up bookkeeping separately and hide unavailable response paths from the summary");
 
   const submitResponse = formatOracleSubmitResponse(job, {
     autoPrunedPrefixes: [{ relativePath: "build", bytes: 2048 }],
@@ -2882,9 +3254,21 @@ function testSharedObservabilityHelpers(): void {
 
   const wakeupContent = buildOracleWakeupNotificationContent(job, {
     responsePath: "/tmp/response.md",
+    responseAvailable: true,
     artifactsPath: "/tmp/artifacts",
   });
-  assert(wakeupContent.includes("Use oracle_read with jobId job-observe") && wakeupContent.includes("Last event:"), "shared observability helpers should include both the oracle_read guidance and latest lifecycle event in wake-up content");
+  assert(wakeupContent.includes("Use oracle_read with jobId job-observe") && wakeupContent.includes("Last event:") && wakeupContent.includes("Response file: /tmp/response.md"), "shared observability helpers should include both the oracle_read guidance and the persisted response path when a response file exists");
+
+  const failedWakeupContent = buildOracleWakeupNotificationContent(transitionOracleJobPhase(job, "failed", {
+    at: "2026-01-01T00:00:20.000Z",
+    source: "oracle:worker",
+    message: "Job failed: missing auth seed profile.",
+    patch: { error: "missing auth seed profile" },
+  }), {
+    responseAvailable: false,
+    artifactsPath: "/tmp/artifacts",
+  });
+  assert(failedWakeupContent.includes("Response file: unavailable yet") && !failedWakeupContent.includes("Response file: /tmp/response.md"), "shared observability helpers should hide missing response paths in wake-up content for failed jobs without a saved response");
 
   assert(buildOracleStatusText({ active: 2, queued: 1 }) === "oracle: running (2), queued (1)", "shared observability helpers should format mixed active/queued session status text");
   assert(buildOracleStatusText({ active: 0, queued: 0 }) === "oracle: ready", "shared observability helpers should format empty session status text");
@@ -3335,6 +3719,11 @@ async function main() {
   await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
   await testJobCreationPersistsSelectionSnapshot(config);
   await testOracleSubmitPresetGuardrails();
+  await testOraclePreflightReportsBlockingReadinessStates();
+  await testOracleSubmitPreflightRejectsKnownAuthSeedFailures();
+  await testOracleToolResultsExposeStructuredJobDetails(config);
+  await testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config);
+  await testOracleToolErrorsExposeStructuredMetadata();
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
   await testActiveCancellationDoesNotOverwriteCompletion(config);

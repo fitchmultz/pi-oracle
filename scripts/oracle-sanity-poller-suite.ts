@@ -31,6 +31,7 @@ import oracleExtension from "../extensions/oracle/index.ts";
 import {
   appendAssistantMessage,
   appendUserMessage,
+  asRecord,
   assert,
   cleanupJob,
   completeJob,
@@ -158,15 +159,17 @@ async function testOracleSubmitRejectsMissingSessionIdentity(): Promise<void> {
   const submitTool = pi.tools.get("oracle_submit");
   assert(submitTool, "oracle submit tool should register");
 
-  let rejected = false;
-  try {
-    await submitTool.execute!("oracle-submit-missing-session", { prompt: "test", files: ["README.md"] }, undefined, () => { }, createExtensionCtx({ getSessionFile: () => undefined } as ExtensionContext["sessionManager"]));
-  } catch (error) {
-    rejected = error instanceof Error && error.message.includes("persisted pi session");
-  }
+  const result = await submitTool.execute!(
+    "oracle-submit-missing-session",
+    { prompt: "test", files: ["README.md"] },
+    undefined,
+    () => { },
+    createExtensionCtx({ getSessionFile: () => undefined } as ExtensionContext["sessionManager"]),
+  ) as { details?: unknown };
+  const errorDetails = asRecord(asRecord(result.details)?.error);
 
   await rm(fakeWorkerPath, { force: true });
-  assert(rejected, "oracle submit should reject contexts without a persisted session identity");
+  assert(errorDetails?.code === "persisted_session_required", "oracle submit should return a structured persisted_session_required error when session identity is unavailable");
   assert(listOracleJobDirs().length === 0, "oracle submit should not persist jobs when session identity is unavailable");
 }
 

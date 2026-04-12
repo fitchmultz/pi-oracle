@@ -4,6 +4,7 @@
 // Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi.
 // Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { loadOracleConfig } from "./config.js";
@@ -29,9 +30,11 @@ function summarizeJob(jobId: string): string {
   const job = readJob(jobId);
   if (!job) return `Oracle job ${jobId} not found.`;
 
+  const responseAvailable = Boolean(job.responsePath && existsSync(job.responsePath));
   return formatOracleJobSummary(job, {
     queuePosition: job.status === "queued" ? getQueuePosition(job.id) : undefined,
     artifactsPath: `${getJobDir(job.id)}/artifacts`,
+    responseAvailable,
   });
 }
 

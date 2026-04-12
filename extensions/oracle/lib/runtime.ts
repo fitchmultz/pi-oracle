@@ -5,8 +5,8 @@
 // Invariants/Assumptions: Lease metadata is the admission source of truth, tracked worker identity checks defend against PID reuse, and runtime cleanup always attempts lease release.
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
@@ -96,6 +96,45 @@ export function allocateRuntime(config: OracleConfig): { runtimeId: string; runt
 
 export function authSessionName(config: OracleConfig): string {
   return `${config.browser.sessionPrefix}-auth`;
+}
+
+function missingAuthSeedProfileMessage(seedDir: string): string {
+  return `Oracle auth seed profile not found: ${seedDir}. Run /oracle-auth first.`;
+}
+
+function invalidAuthSeedProfileTypeMessage(seedDir: string): string {
+  return `Oracle auth seed profile is not a directory: ${seedDir}. Remove the invalid path or rerun /oracle-auth.`;
+}
+
+function unreadableAuthSeedProfileMessage(seedDir: string): string {
+  return `Oracle auth seed profile is not readable: ${seedDir}. Fix its permissions or rerun /oracle-auth.`;
+}
+
+export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Promise<void> {
+  const seedDir = config.browser.authSeedProfileDir;
+  let seedStats;
+  try {
+    seedStats = await stat(seedDir);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT") throw new Error(missingAuthSeedProfileMessage(seedDir));
+    if (code === "EACCES" || code === "EPERM") throw new Error(unreadableAuthSeedProfileMessage(seedDir));
+    throw new Error(`Failed to inspect oracle auth seed profile ${seedDir}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!seedStats.isDirectory()) {
+    throw new Error(invalidAuthSeedProfileTypeMessage(seedDir));
+  }
+
+  try {
+    await access(seedDir, fsConstants.R_OK | fsConstants.X_OK);
+  } catch {
+    throw new Error(unreadableAuthSeedProfileMessage(seedDir));
+  }
+}
+
+export async function assertOracleSubmitPrerequisites(config: OracleConfig): Promise<void> {
+  await assertOracleAuthSeedProfileReady(config);
 }
 
 export function getSeedGeneration(config: OracleConfig): string | undefined {
@@ -267,9 +306,7 @@ export async function cloneSeedProfileToRuntime(
   options?: { cpTimeoutMs?: number },
 ): Promise<string | undefined> {
   const seedDir = config.browser.authSeedProfileDir;
-  if (!existsSync(seedDir)) {
-    throw new Error(`Oracle auth seed profile not found: ${seedDir}. Run /oracle-auth first.`);
-  }
+  await assertOracleAuthSeedProfileReady(config);
 
   await withAuthLock({ runtimeProfileDir, seedDir }, async () => {
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);

@@ -42,12 +42,15 @@ pi install https://github.com/fitchmultz/pi-oracle
 
 ## Quickstart
 
-1. Make sure ChatGPT already works in your local Chrome profile.
-2. Make sure these are installed: Google Chrome, `agent-browser`, `tar`, and `zstd`.
-3. Optional: create `~/.pi/agent/extensions/oracle.json` if you want non-default settings.
-4. Run `/oracle-auth`.
-5. Run `/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better.`
-6. Wait for a best-effort wake-up, or check `/oracle-status`.
+1. Start a normal persisted `pi` session. Do not use `pi --no-session` for oracle.
+2. Make sure ChatGPT already works in your local Chrome profile.
+3. Make sure these are installed: Google Chrome, `agent-browser`, `tar`, and `zstd`.
+4. Optional: create `~/.pi/agent/extensions/oracle.json` if you want non-default settings.
+5. Run `/oracle-auth`.
+6. Run `/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better.`
+7. Wait for a best-effort wake-up, or check `/oracle-status`.
+
+The `/oracle` prompt now runs an early oracle preflight before it gathers repo context, so missing persisted-session or local auth/config blockers fail before the agent spends time reading files.
 
 If you miss the wake-up, the result is still saved durably in the oracle job directory and can be read later.
 
@@ -85,6 +88,7 @@ User-facing commands:
 - `/oracle-clean <job-id|all>` — remove temp files for terminal jobs
 
 Agent-facing tools:
+- `oracle_preflight`
 - `oracle_submit`
 - `oracle_read`
 - `oracle_cancel`

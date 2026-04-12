@@ -32,6 +32,7 @@ export interface OracleJobSummaryOptions {
   queuePosition?: OracleQueuePositionLike;
   artifactsPath?: string;
   responsePreview?: string;
+  responseAvailable?: boolean;
   includeLatestEvent?: boolean;
   includeWorkerLogPath?: boolean;
 }
@@ -53,7 +54,7 @@ export declare function formatOracleLifecycleEvent(event: OracleJobLifecycleEven
 export declare function formatOracleJobSummary(job: OracleJobSummaryLike, options?: OracleJobSummaryOptions): string;
 export declare function buildOracleWakeupNotificationContent(
   job: OracleJobSummaryLike,
-  options?: { responsePath?: string; artifactsPath?: string },
+  options?: { responsePath?: string; responseAvailable?: boolean; artifactsPath?: string },
 ): string;
 export declare function formatOracleSubmitResponse(job: OracleJobSummaryLike & { promptPath: string; archivePath: string }, options: OracleSubmitResponseOptions): string;
 export declare function buildOracleStatusText(counts: OracleStatusCounts): string;

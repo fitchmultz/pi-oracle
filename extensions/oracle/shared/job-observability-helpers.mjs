@@ -4,7 +4,7 @@
 // Usage: Imported by commands, tools, poller, and extension startup/status code to keep detached-oracle messaging consistent.
 // Invariants/Assumptions: Job summaries read from durable job state, and lifecycle event trails are bounded and already normalized by shared lifecycle helpers.
 
-import { getLatestOracleJobLifecycleEvent } from "./job-lifecycle-helpers.mjs";
+import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent } from "./job-lifecycle-helpers.mjs";
 
 /** @typedef {import("./job-observability-helpers.d.mts").OracleJobSummaryLike} OracleJobSummaryLike */
 /** @typedef {import("./job-observability-helpers.d.mts").OracleJobSummaryOptions} OracleJobSummaryOptions */
@@ -52,7 +52,22 @@ function formatAutoPrunedArchiveMessage(autoPrunedPrefixes) {
  * @returns {string}
  */
 export function formatOracleJobSummary(job, options = {}) {
-  const latestEvent = options.includeLatestEvent === false ? undefined : formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job));
+  const latestEventRaw = options.includeLatestEvent === false ? undefined : getLatestOracleJobLifecycleEvent(job);
+  const terminalEventRaw = getLatestOracleTerminalLifecycleEvent(job);
+  const latestEvent = formatOracleLifecycleEvent(latestEventRaw);
+  const terminalEvent = formatOracleLifecycleEvent(terminalEventRaw);
+  const sameEvent = Boolean(
+    latestEventRaw && terminalEventRaw &&
+    latestEventRaw.at === terminalEventRaw.at &&
+    latestEventRaw.source === terminalEventRaw.source &&
+    latestEventRaw.kind === terminalEventRaw.kind &&
+    latestEventRaw.message === terminalEventRaw.message,
+  );
+  const responseLine = options.responseAvailable === true
+    ? job.responsePath ? `response: ${job.responsePath}` : undefined
+    : job.responsePath ? "response: unavailable yet" : undefined;
+  const responseFormatLine = options.responseAvailable === true && job.responseFormat ? `response-format: ${job.responseFormat}` : undefined;
+  const latestEventLabel = latestEventRaw?.kind === "wakeup" ? "wakeup-event" : "last-event";
   return [
     `job: ${job.id}`,
     `status: ${job.status}`,
@@ -67,14 +82,15 @@ export function formatOracleJobSummary(job, options = {}) {
     job.followUpToJobId ? `follow-up-to: ${job.followUpToJobId}` : undefined,
     job.chatUrl ? `chat: ${job.chatUrl}` : undefined,
     job.conversationId ? `conversation: ${job.conversationId}` : undefined,
-    job.responsePath ? `response: ${job.responsePath}` : undefined,
-    job.responseFormat ? `response-format: ${job.responseFormat}` : undefined,
+    responseLine,
+    responseFormatLine,
     options.artifactsPath ? `artifacts: ${options.artifactsPath}` : undefined,
     typeof job.artifactFailureCount === "number" ? `artifact-failures: ${job.artifactFailureCount}` : undefined,
     options.includeWorkerLogPath === false ? undefined : job.workerLogPath ? `worker-log: ${job.workerLogPath}` : undefined,
     job.lastCleanupAt ? `last-cleanup: ${job.lastCleanupAt}` : undefined,
     job.cleanupWarnings?.length ? `cleanup-warnings: ${job.cleanupWarnings.join(" | ")}` : undefined,
-    latestEvent ? `last-event: ${latestEvent}` : undefined,
+    terminalEvent ? `terminal-event: ${terminalEvent}` : undefined,
+    latestEvent && !sameEvent ? `${latestEventLabel}: ${latestEvent}` : undefined,
     job.error ? `error: ${job.error}` : undefined,
     options.responsePreview ? "" : undefined,
     options.responsePreview,
@@ -85,16 +101,18 @@ export function formatOracleJobSummary(job, options = {}) {
 
 /**
  * @param {OracleJobSummaryLike} job
- * @param {{ responsePath?: string; artifactsPath?: string }} [options]
+ * @param {{ responsePath?: string; responseAvailable?: boolean; artifactsPath?: string }} [options]
  * @returns {string}
  */
 export function buildOracleWakeupNotificationContent(job, options = {}) {
-  const responsePath = options.responsePath ?? job.responsePath ?? `response unavailable for ${job.id}`;
+  const responseLine = options.responseAvailable === false
+    ? "Response file: unavailable yet"
+    : `Response file: ${options.responsePath ?? job.responsePath ?? `response unavailable for ${job.id}`}`;
   const artifactsPath = options.artifactsPath ?? `artifacts unavailable for ${job.id}`;
   return [
     `Oracle job ${job.id} is ${job.status}.`,
     `Use oracle_read with jobId ${job.id} to open the response and settle wake-up retries.`,
-    `Response file: ${responsePath}`,
+    responseLine,
     `Artifacts: ${artifactsPath}`,
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
     job.error ? `Error: ${job.error}` : "After oracle_read, continue from the oracle output.",

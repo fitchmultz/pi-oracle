@@ -6,12 +6,14 @@ You are preparing an /oracle job.
 Do not answer the user's request directly yet.
 
 Required workflow:
-1. Understand the request.
-2. Gather repo context first by reading files and searching the codebase.
-3. Choose archive inputs for the oracle job.
-4. Craft a concise but complete oracle prompt for ChatGPT web.
-5. Call oracle_submit with the prompt and exact archive inputs.
-6. Stop immediately after dispatching the oracle job.
+1. Call `oracle_preflight` immediately.
+2. If `oracle_preflight` reports `ready: false`, stop immediately and report the blocking issue plus the suggested next step. Do not read files, search the codebase, or prepare archive inputs first.
+3. Understand the request.
+4. Gather repo context first by reading files and searching the codebase.
+5. Choose archive inputs for the oracle job.
+6. Craft a concise but complete oracle prompt for ChatGPT web.
+7. Call `oracle_submit` with the prompt and exact archive inputs.
+8. Stop immediately after dispatching the oracle job.
 
 Oracle model (`oracle_submit`):
 - To choose a specific ChatGPT model, pass **`preset`** with one of the allowed ids from the canonical preset registry.
@@ -21,6 +23,7 @@ Oracle model (`oracle_submit`):
 - If unsure which preset fits the task, ask the user.
 
 Rules:
+- Use `oracle_preflight` before any expensive `/oracle` preparation so missing persisted-session or local auth/config blockers fail fast.
 - Always include an archive. Do not submit without context files.
 - By default, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
 - Only limit file selection if the user explicitly requests it, if the task is clearly scoped to a smaller area, or if privacy/sensitivity requires it.

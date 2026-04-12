@@ -434,15 +434,19 @@ export async function createJobForTest(
 
 export async function completeJob(jobId: string, status: "complete" | "failed" | "cancelled" = "complete"): Promise<void> {
   const completedAt = new Date().toISOString();
+  const responsePath = join(getJobDir(jobId), "response.md");
   await updateJob(jobId, (job) => transitionOracleJobPhase(job, status === "complete" ? "complete" : status, {
     at: completedAt,
     source: "oracle:test",
     message: `Fixture job moved to ${status}.`,
     patch: {
-      responsePath: join(getJobDir(job.id), "response.md"),
+      responsePath,
       responseFormat: "text/plain",
     },
   }));
+  if (status === "complete") {
+    await writeFile(responsePath, "fixture oracle response\n", { mode: 0o600 });
+  }
 }
 
 export async function createTerminalJob(

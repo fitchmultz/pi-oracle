@@ -112,6 +112,19 @@ export function getLatestOracleJobLifecycleEvent(job) {
 }
 
 /**
+ * @param {Pick<OracleLifecycleTrackedJobLike, "lifecycleEvents">} job
+ * @returns {OracleJobLifecycleEvent | undefined}
+ */
+export function getLatestOracleTerminalLifecycleEvent(job) {
+  const events = job.lifecycleEvents || [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.kind === "phase" && TERMINAL_ORACLE_JOB_STATUSES.includes(event.status)) return event;
+  }
+  return undefined;
+}
+
+/**
  * @template {OracleLifecycleTrackedJobLike} TJob
  * @param {TJob} job
  * @param {{ at?: string; source?: string; message?: string }} [options]
