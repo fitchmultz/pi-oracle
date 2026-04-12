@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0 - 2026-04-12
+
+### Added
+- repeatable isolated local-extension `pi` validation guidance for oracle release verification, including smoke workflows that load the in-repo extension source directly
+- persisted oracle lifecycle-event breadcrumbs plus richer detached-job observability in `oracle_submit`, `oracle_read`, poller wake-ups, and `/oracle-status`, including worker-log paths and last-event context
+- shared worker/auth validation helpers, shared concurrency primitives, shared lifecycle reducers, and shared observability formatters to keep extension and worker behavior aligned
+- extracted sanity-harness support and poller suites with typed helper scaffolding and repeated-run stability coverage
+
+### Changed
+- oracle whole-repo archiving now excludes local tool state like `.pi/`, `.oracle-context/`, `.cursor/`, and `.scratchpad.md` by default while preserving explicitly requested paths
+- lock/lease recovery, queue promotion, process identity handling, and lifecycle transitions now flow through shared helper modules instead of duplicated inline implementations
+- worker/auth verification now leans on behaviorally tested helper modules plus dedicated `typecheck:worker-helpers` coverage instead of syntax checks and brittle source-string assertions alone
+- release validation now expects isolated local-extension `pi` smoke tests and a stronger local oracle verification gate before shipping
+
+### Fixed
+- archive input resolution now rejects symlink escapes outside the repo root and preserves safer repo-boundary handling for targeted archives
+- hung `tar`, `zstd`, `cp`, and auth `agent-browser` subprocesses now time out and fail clearly instead of wedging archive, runtime-clone, or auth flows indefinitely
+- cleanup warnings without a live worker no longer consume runtime/conversation capacity forever, while teardown still attempts lease release and preserves warnings for later triage
+- detached oracle workers and poller flows now report clearer lifecycle breadcrumbs, wake-up settlement state, and failure context during fast-fail auth/bootstrap scenarios
+- sanity-runner cleanup now retries transient temp-directory removal races, and the extracted harness is less timing-fragile and less `any`-driven than the previous monolithic runner
+
 ## 0.3.4 - 2026-04-11
 
 ### Changed

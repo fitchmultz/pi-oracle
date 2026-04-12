@@ -13,6 +13,26 @@ const tsxCli = require.resolve("tsx/cli");
 const stateDir = `/tmp/pi-oracle-sanity-state-${randomUUID()}`;
 const jobsDir = `/tmp/pi-oracle-sanity-jobs-${randomUUID()}`;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeDirRobust(path, options = {}) {
+  const attempts = options.attempts ?? 5;
+  const delayMs = options.delayMs ?? 50;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      const retryable = code === "ENOTEMPTY" || code === "EBUSY" || code === "EPERM";
+      if (!retryable || attempt === attempts) throw error;
+      await sleep(delayMs * attempt);
+    }
+  }
+}
+
 const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {
   stdio: "inherit",
   env: {
@@ -24,8 +44,8 @@ const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {
 
 async function cleanup() {
   await Promise.all([
-    rm(stateDir, { recursive: true, force: true }).catch(() => undefined),
-    rm(jobsDir, { recursive: true, force: true }).catch(() => undefined),
+    removeDirRobust(stateDir).catch(() => undefined),
+    removeDirRobust(jobsDir).catch(() => undefined),
   ]);
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
