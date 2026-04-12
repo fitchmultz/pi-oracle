@@ -17,6 +17,7 @@ import {
   jobBlocksAdmission,
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
+import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
@@ -164,14 +165,6 @@ async function mutateJob(mutator) {
     currentJob = next;
     return next;
   });
-}
-
-function phasePatch(phase, patch = undefined, at = new Date().toISOString()) {
-  return {
-    ...(patch || {}),
-    phase,
-    phaseAt: at,
-  };
 }
 
 async function heartbeat(patch = undefined, options = {}) {
@@ -355,15 +348,15 @@ async function spawnDetachedWorker(targetJobId) {
 async function failQueuedPromotion(targetJobId, message, at = new Date().toISOString()) {
   await mutateAnyJob(targetJobId, (latest) => {
     if (["complete", "failed", "cancelled"].includes(String(latest.status || ""))) return latest;
-    return {
-      ...latest,
-      ...phasePatch("failed", {
-        status: "failed",
-        completedAt: at,
+    return transitionOracleJobPhase(latest, "failed", {
+      at,
+      source: "oracle:worker-cleanup-promotion",
+      message: `Queued promotion failed: ${message}`,
+      patch: {
         heartbeatAt: at,
         error: message,
-      }, at),
-    };
+      },
+    });
   }).catch(() => undefined);
 }
 
@@ -381,13 +374,14 @@ async function promoteQueuedJobsAfterCleanup() {
       markSubmitted: async (job, at) => {
         await mutateAnyJob(job.id, (latest) => {
           if (latest.status !== "queued") throw new Error(`Queued job ${latest.id} changed state during cleanup promotion (${latest.status})`);
-          return {
-            ...latest,
-            ...phasePatch("submitted", {
-              status: "submitted",
+          return transitionOracleJobPhase(latest, "submitted", {
+            at,
+            source: "oracle:worker-cleanup-promotion",
+            message: "Queued job admitted after runtime cleanup released capacity.",
+            patch: {
               submittedAt: latest.submittedAt || at,
-            }, at),
-          };
+            },
+          });
         });
       },
       spawnWorker: async (job) => spawnDetachedWorker(job.id),
@@ -426,11 +420,10 @@ async function promoteQueuedJobsAfterCleanup() {
             await log(message).catch(() => undefined);
           }
           if (cleanupWarnings.length > 0) {
-            await mutateAnyJob(job.id, (current) => ({
-              ...current,
-              cleanupWarnings: [...(current.cleanupWarnings || []), ...cleanupWarnings],
-              lastCleanupAt: at,
-              error: [current.error, ...cleanupWarnings].filter(Boolean).join("\n"),
+            await mutateAnyJob(job.id, (current) => applyOracleJobCleanupWarnings(current, cleanupWarnings, {
+              at,
+              source: "oracle:worker-cleanup-promotion",
+              message: `Cleanup-driven queued promotion teardown left ${cleanupWarnings.length} warning(s).`,
             })).catch(() => undefined);
             await log(`Stopping queued cleanup promotion after ${job.id} because teardown left ${cleanupWarnings.length} warning(s)`).catch(() => undefined);
             return "break";
@@ -1622,19 +1615,44 @@ async function run() {
 
   try {
     await log(`Starting oracle worker for job ${currentJob.id}`);
-    await heartbeat(phasePatch("cloning_runtime", { status: "waiting" }), { force: true });
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "cloning_runtime", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Cloning the auth seed profile into the isolated runtime.",
+      patch: { heartbeatAt: new Date().toISOString() },
+    }));
     await closeBrowser(currentJob);
 
     const seedGeneration = await cloneSeedProfileToRuntime(currentJob);
-    currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("launching_browser", { seedGeneration, heartbeatAt: new Date().toISOString() }) }));
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "launching_browser", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Launching the isolated oracle browser runtime.",
+      patch: { seedGeneration, heartbeatAt: new Date().toISOString() },
+    }));
 
     const targetUrl = currentJob.chatUrl || currentJob.config.browser.chatUrl;
     await launchBrowser(currentJob, targetUrl);
-    currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("verifying_auth", { heartbeatAt: new Date().toISOString() }) }));
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "verifying_auth", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Verifying the imported ChatGPT auth session.",
+      patch: { heartbeatAt: new Date().toISOString() },
+    }));
     await waitForOracleReady(currentJob);
-    currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("configuring_model", { heartbeatAt: new Date().toISOString() }) }));
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "configuring_model", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Configuring the requested ChatGPT model selection.",
+      patch: { heartbeatAt: new Date().toISOString() },
+    }));
     await configureModel(currentJob);
-    currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("uploading_archive", { heartbeatAt: new Date().toISOString() }) }));
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "uploading_archive", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Uploading the oracle context archive.",
+      patch: { heartbeatAt: new Date().toISOString() },
+    }));
     await uploadArchive(currentJob);
     await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
     const baselineAssistantCount = (await assistantMessages(currentJob)).length;
@@ -1645,30 +1663,44 @@ async function run() {
 
     const chatUrl = await waitForStableChatUrl(currentJob, currentJob.chatUrl);
     const conversationId = parseConversationId(chatUrl) || currentJob.conversationId;
-    currentJob = await mutateJob((job) => ({
-      ...job,
-      ...phasePatch("awaiting_response", { chatUrl, conversationId, heartbeatAt: new Date().toISOString() }),
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "awaiting_response", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Waiting for the assistant response to finish streaming.",
+      patch: { chatUrl, conversationId, heartbeatAt: new Date().toISOString() },
     }));
 
     const completion = await waitForChatCompletion(currentJob, baselineAssistantCount);
-    currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("extracting_response", { heartbeatAt: new Date().toISOString() }) }));
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "extracting_response", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Extracting the completed response body.",
+      patch: { heartbeatAt: new Date().toISOString() },
+    }));
     await secureWriteText(currentJob.responsePath, `${completion.responseText.trim()}\n`);
-    currentJob = await mutateJob((job) => ({ ...job, ...phasePatch("downloading_artifacts", { heartbeatAt: new Date().toISOString() }) }));
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "downloading_artifacts", {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: "Downloading any response artifacts.",
+      patch: { heartbeatAt: new Date().toISOString() },
+    }));
     const artifacts = await downloadArtifacts(currentJob, completion.responseIndex, completion.responseText);
     const artifactFailureCount = artifacts.filter((artifact) => artifact.unconfirmed || artifact.error).length;
     const finalPhase = artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete";
 
-    await heartbeat(
-      phasePatch(finalPhase, {
-        status: "complete",
-        completedAt: new Date().toISOString(),
+    currentJob = await mutateJob((job) => transitionOracleJobPhase(job, finalPhase, {
+      at: new Date().toISOString(),
+      source: "oracle:worker",
+      message: artifactFailureCount > 0
+        ? `Job completed with ${artifactFailureCount} artifact issue(s).`
+        : "Job completed successfully.",
+      patch: {
         responsePath: currentJob.responsePath,
         responseFormat: "text/plain",
         artifactFailureCount,
         cleanupPending: true,
-      }),
-      { force: true },
-    );
+      },
+    }));
     const persistedJob = await readJob().catch(() => undefined);
     await log(`Persisted final status after completion write: ${persistedJob?.status || "unknown"}`);
     await log(`Job ${currentJob.id} complete (${finalPhase}, artifact failures=${artifactFailureCount})`);
@@ -1677,15 +1709,15 @@ async function run() {
       const message = error instanceof Error ? error.message : String(error);
       await captureDiagnostics(currentJob, "failure");
       await log(`Job failed: ${message}`);
-      await heartbeat(
-        phasePatch("failed", {
-          status: "failed",
-          completedAt: new Date().toISOString(),
+      currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "failed", {
+        at: new Date().toISOString(),
+        source: "oracle:worker",
+        message: `Job failed: ${message}`,
+        patch: {
           error: message,
           cleanupPending: true,
-        }),
-        { force: true },
-      );
+        },
+      }));
       process.exitCode = 1;
     }
   } finally {
@@ -1698,17 +1730,17 @@ async function run() {
     }
     if (currentJob?.id) {
       const cleanupAt = new Date().toISOString();
-      await mutateJob((job) => ({
-        ...job,
-        cleanupPending: false,
-        ...(cleanupWarnings.length > 0
-          ? {
-              cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupWarnings],
-              lastCleanupAt: cleanupAt,
-              error: [job.error, ...cleanupWarnings].filter(Boolean).join("\n"),
-            }
-          : { lastCleanupAt: cleanupAt }),
-      })).catch(() => undefined);
+      await mutateJob((job) => cleanupWarnings.length > 0
+        ? applyOracleJobCleanupWarnings(job, cleanupWarnings, {
+          at: cleanupAt,
+          source: "oracle:worker",
+          message: `Runtime cleanup completed with ${cleanupWarnings.length} warning(s).`,
+        })
+        : clearOracleJobCleanupState(job, {
+          at: cleanupAt,
+          source: "oracle:worker",
+          message: "Runtime cleanup finished without warnings.",
+        })).catch(() => undefined);
     }
     if (cleanupWarnings.length === 0) {
       await promoteQueuedJobsAfterCleanup().catch(() => undefined);

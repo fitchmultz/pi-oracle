@@ -11,9 +11,10 @@ import {
   isQueuedOracleJob,
   runQueuedJobPromotionPass,
 } from "../shared/job-coordination-helpers.mjs";
+import { transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { loadOracleConfig } from "./config.js";
 import { withLock } from "./locks.js";
-import { appendCleanupWarnings, createJob, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, withJobPhase, type OracleJob } from "./jobs.js";
+import { appendCleanupWarnings, createJob, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, type OracleJob } from "./jobs.js";
 import { cleanupRuntimeArtifacts, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "./runtime.js";
 
 export interface OracleQueuePosition {
@@ -54,16 +55,15 @@ export function getQueuePosition(jobId: string): OracleQueuePosition | undefined
 }
 
 async function failQueuedPromotion(job: OracleJob, message: string, at: string): Promise<void> {
-  await updateJob(job.id, (current) => ({
-    ...current,
-    ...withJobPhase("failed", {
-      status: "failed",
-      completedAt: at,
+  await updateJob(job.id, (current) => transitionOracleJobPhase(current, "failed", {
+    at,
+    source: "oracle:queue",
+    message: `Queued promotion failed: ${message}`,
+    clearNotificationClaim: true,
+    patch: {
       heartbeatAt: at,
-      notifyClaimedAt: undefined,
-      notifyClaimedBy: undefined,
       error: message,
-    }, at),
+    },
   })).catch(() => undefined);
 }
 
@@ -96,14 +96,17 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
         if (latest.status !== "queued") {
           throw new Error(`Queued job ${latest.id} changed state during promotion (${latest.status})`);
         }
-        return {
+        return transitionOracleJobPhase({
           ...latest,
           config,
-          ...withJobPhase("submitted", {
-            status: "submitted",
+        }, "submitted", {
+          at,
+          source: "oracle:queue",
+          message: "Queued job admitted for worker launch.",
+          patch: {
             submittedAt: latest.submittedAt || at,
-          }, at),
-        };
+          },
+        });
       });
     },
     spawnWorker: async (job) => spawnWorkerFn(options.workerPath, job.id),

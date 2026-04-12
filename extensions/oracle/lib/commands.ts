@@ -1,8 +1,15 @@
+// Purpose: Register slash commands for oracle auth/bootstrap, status inspection, cancellation, and cleanup.
+// Responsibilities: Bridge command handlers to shared oracle lifecycle helpers, surface consistent summaries, and coordinate follow-up queue advancement.
+// Scope: Command-facing orchestration only; durable lifecycle mutations live in jobs/runtime/tools modules and browser execution stays in worker scripts.
+// Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi.
+// Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { loadOracleConfig } from "./config.js";
 import {
   cancelOracleJob,
+  getJobDir,
   isOpenOracleJob,
   isTerminalOracleJob,
   listJobsForCwd,
@@ -22,30 +29,10 @@ function summarizeJob(jobId: string): string {
   const job = readJob(jobId);
   if (!job) return `Oracle job ${jobId} not found.`;
 
-  const queuePosition = job.status === "queued" ? getQueuePosition(job.id) : undefined;
-  return [
-    `job: ${job.id}`,
-    `status: ${job.status}`,
-    `phase: ${job.phase}`,
-    `created: ${job.createdAt}`,
-    job.queuedAt ? `queued: ${job.queuedAt}` : undefined,
-    job.submittedAt ? `submitted: ${job.submittedAt}` : undefined,
-    queuePosition ? `queue-position: ${queuePosition.position} of ${queuePosition.depth} global` : undefined,
-    `project: ${job.projectId}`,
-    `session: ${job.sessionId}`,
-    job.completedAt ? `completed: ${job.completedAt}` : undefined,
-    job.followUpToJobId ? `follow-up-to: ${job.followUpToJobId}` : undefined,
-    job.chatUrl ? `chat: ${job.chatUrl}` : undefined,
-    job.conversationId ? `conversation: ${job.conversationId}` : undefined,
-    job.responsePath ? `response: ${job.responsePath}` : undefined,
-    job.responseFormat ? `response-format: ${job.responseFormat}` : undefined,
-    typeof job.artifactFailureCount === "number" ? `artifact-failures: ${job.artifactFailureCount}` : undefined,
-    job.lastCleanupAt ? `last-cleanup: ${job.lastCleanupAt}` : undefined,
-    job.cleanupWarnings?.length ? `cleanup-warnings: ${job.cleanupWarnings.join(" | ")}` : undefined,
-    job.error ? `error: ${job.error}` : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return formatOracleJobSummary(job, {
+    queuePosition: job.status === "queued" ? getQueuePosition(job.id) : undefined,
+    artifactsPath: `${getJobDir(job.id)}/artifacts`,
+  });
 }
 
 function getLatestJobId(cwd: string): string | undefined {

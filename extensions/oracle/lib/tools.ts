@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
+import { transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
   coerceOracleSubmitPresetId,
@@ -36,7 +38,6 @@ import {
   spawnWorker,
   terminateWorkerPid,
   updateJob,
-  withJobPhase,
   type OracleJob,
 } from "./jobs.js";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "./queue.js";
@@ -588,36 +589,8 @@ function redactJobDetails(job: NonNullable<ReturnType<typeof readJob>>) {
     cleanupWarnings: job.cleanupWarnings,
     lastCleanupAt: job.lastCleanupAt,
     error: job.error,
+    lifecycleEvents: job.lifecycleEvents,
   };
-}
-
-function formatAutoPrunedArchiveMessage(autoPrunedPrefixes: ArchiveCreationResult["autoPrunedPrefixes"]): string | undefined {
-  if (autoPrunedPrefixes.length === 0) return undefined;
-  return `Archive auto-pruned generic generated-output-name dirs to fit size limit: ${autoPrunedPrefixes.map((entry) => `${entry.relativePath}/ (${formatBytes(entry.bytes)})`).join(", ")}`;
-}
-
-function formatSubmitResponse(
-  job: NonNullable<ReturnType<typeof readJob>>,
-  options: {
-    autoPrunedPrefixes: ArchiveCreationResult["autoPrunedPrefixes"];
-    queued: boolean;
-    queuePosition?: number;
-    queueDepth?: number;
-  },
-): string {
-  return [
-    `${options.queued ? "Oracle job queued" : "Oracle job dispatched"}: ${job.id}`,
-    options.queued && options.queuePosition && options.queueDepth ? `Queue position: ${options.queuePosition} of ${options.queueDepth}` : undefined,
-    job.followUpToJobId ? `Follow-up to: ${job.followUpToJobId}` : undefined,
-    `Prompt: ${job.promptPath}`,
-    `Archive: ${job.archivePath}`,
-    formatAutoPrunedArchiveMessage(options.autoPrunedPrefixes),
-    `Response will be written to: ${job.responsePath}`,
-    options.queued ? "The job will start automatically when capacity is available." : undefined,
-    "Stop now and wait for the oracle completion wake-up.",
-  ]
-    .filter(Boolean)
-    .join("\n");
 }
 
 export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void {
@@ -783,7 +756,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
           content: [
             {
               type: "text",
-              text: formatSubmitResponse(job, {
+              text: formatOracleSubmitResponse(job, {
                 autoPrunedPrefixes: currentArchive.autoPrunedPrefixes,
                 queued,
                 queuePosition: queuePosition?.position,
@@ -814,7 +787,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
             content: [
               {
                 type: "text",
-                text: formatSubmitResponse(latest, {
+                text: formatOracleSubmitResponse(latest, {
                   autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
                   queued: true,
                   queuePosition: queuePosition?.position,
@@ -842,7 +815,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
             content: [
               {
                 type: "text",
-                text: formatSubmitResponse(latest, {
+                text: formatOracleSubmitResponse(latest, {
                   autoPrunedPrefixes: archive?.autoPrunedPrefixes ?? [],
                   queued: false,
                 }),
@@ -865,13 +838,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
         }
         if (job && (!latest || !isTerminalOracleJob(latest))) {
           const failedAt = new Date().toISOString();
-          await updateJob(job.id, (current) => ({
-            ...current,
-            ...withJobPhase("failed", {
-              status: "failed",
-              completedAt: failedAt,
+          await updateJob(job.id, (current) => transitionOracleJobPhase(current, "failed", {
+            at: failedAt,
+            source: "oracle:submit",
+            message: `Submission failed before durable worker handoff: ${message}`,
+            patch: {
               error: message,
-            }, failedAt),
+            },
           })).catch(() => undefined);
         }
         const cleanupReport = await cleanupRuntimeArtifacts({
@@ -922,28 +895,11 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
         content: [
           {
             type: "text",
-            text: [
-              `job: ${current.id}`,
-              `status: ${current.status}`,
-              current.queuedAt ? `queued: ${current.queuedAt}` : undefined,
-              current.submittedAt ? `submitted: ${current.submittedAt}` : undefined,
-              ...(current.status === "queued"
-                ? (() => {
-                  const queuePosition = getQueuePosition(current.id);
-                  return queuePosition ? [`queue-position: ${queuePosition.position} of ${queuePosition.depth}`] : [];
-                })()
-                : []),
-              current.followUpToJobId ? `follow-up-to: ${current.followUpToJobId}` : undefined,
-              current.chatUrl ? `chat: ${current.chatUrl}` : undefined,
-              current.responsePath ? `response: ${current.responsePath}` : undefined,
-              current.responseFormat ? `response-format: ${current.responseFormat}` : undefined,
-              `artifacts: ${getJobDir(current.id)}/artifacts`,
-              current.error ? `error: ${current.error}` : undefined,
-              "",
+            text: formatOracleJobSummary(current, {
+              queuePosition: current.status === "queued" ? getQueuePosition(current.id) : undefined,
+              artifactsPath: `${getJobDir(current.id)}/artifacts`,
               responsePreview,
-            ]
-              .filter(Boolean)
-              .join("\n"),
+            }),
           },
         ],
         details: { job: redactJobDetails(current) },

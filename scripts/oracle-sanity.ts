@@ -39,6 +39,24 @@ import {
   jobBlocksAdmission,
   runQueuedJobPromotionPass,
 } from "../extensions/oracle/shared/job-coordination-helpers.mjs";
+import {
+  buildOracleStatusText,
+  buildOracleWakeupNotificationContent,
+  formatOracleJobSummary,
+  formatOracleSubmitResponse,
+} from "../extensions/oracle/shared/job-observability-helpers.mjs";
+import {
+  appendOracleJobLifecycleEvent,
+  applyOracleJobCleanupWarnings,
+  clearOracleJobCleanupState,
+  getLatestOracleJobLifecycleEvent,
+  markOracleJobCreated,
+  markOracleJobNotified,
+  markOracleJobWakeupSettled,
+  noteOracleJobWakeupRequested,
+  transitionOracleJobPhase,
+} from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
+import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import { isTrackedProcessAlive, spawnDetachedNodeProcess, terminateTrackedProcess } from "../extensions/oracle/shared/process-helpers.mjs";
 import {
   acquireLock as acquireWorkerStateLock,
@@ -3396,6 +3414,7 @@ async function testLifecycleEventCutover(): Promise<void> {
   assert(!extensionSource.includes('pi.on("session_fork"'), "oracle extension must not bind removed session_fork event");
   assert(extensionSource.includes("hasPersistedSessionFile(sessionFile)"), "oracle extension should refuse to start poller routing when the current session has no persisted identity");
   assert(extensionSource.includes("oracle: unavailable"), "oracle extension should mark oracle unavailable when no persisted session identity exists");
+  assert(extensionSource.includes('ctx.ui.notify(message, "warning")'), "oracle extension should surface startup-maintenance failures through the session UI as well as stderr");
 }
 
 async function testOraclePromptTemplateCutover(): Promise<void> {
@@ -3408,6 +3427,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
+  const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
+  const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
@@ -3506,7 +3527,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
-  assert(toolsSource.includes("`artifacts: ${getJobDir(current.id)}/artifacts`"), "oracle read should derive artifact paths from the configured jobs dir instead of hard-coding /tmp");
+  assert(toolsSource.includes("artifactsPath: `${getJobDir(current.id)}/artifacts`"), "oracle read should derive artifact paths from the configured jobs dir instead of hard-coding /tmp");
   assert(toolsSource.includes("source: \"oracle_read\""), "oracle read should pass explicit settlement provenance when a terminal job has been manually read");
   assert(commandsSource.includes("source: \"oracle_status\""), "oracle status should pass explicit settlement provenance when a terminal job has been manually inspected");
   assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
@@ -3517,10 +3538,13 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes('if (latest?.status === "queued" && queuedSubmissionDurable)'), "oracle submit should preserve queued jobs only after the archive and metadata persist durably");
   assert(toolsSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt)"), "oracle submit should terminate a spawned worker if persisting worker metadata fails");
   assert(toolsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel tool should only promote queued jobs after a clean cancellation");
+  assert(toolsSource.includes("formatOracleSubmitResponse"), "oracle tools should format submit responses through the shared observability helper");
+  assert(toolsSource.includes("formatOracleJobSummary"), "oracle tools should format oracle_read output through the shared observability helper");
   assert(jobsSource.includes("return job.status === \"cancelled\" && !job.cleanupPending && !job.cleanupWarnings?.length;"), "queue advancement after cancellation should require a cancelled job with no pending cleanup or cleanup warnings");
   assert(sharedJobCoordinationSource.includes("if (job.workerPid) return true;"), "durable worker handoff should require a persisted worker pid");
   assert(!sharedJobCoordinationSource.includes('if (job.status === "waiting") return true;'), "worker phase alone should not count as a durable handoff without a persisted pid");
   assert(queueSource.includes("runQueuedJobPromotionPass"), "queued promotion should delegate the shared orchestration pass instead of keeping a divergent loop inline");
+  assert(queueSource.includes("transitionOracleJobPhase"), "queued promotion should apply lifecycle transitions through the shared lifecycle helper");
   assert(queueSource.includes("await terminateWorkerPid(worker.pid, worker.startedAt)"), "queued promotion should terminate a spawned worker if persisting worker metadata fails");
   assert(locksSource.includes("state-coordination-helpers.mjs"), "typed lock wrappers should delegate to the shared state coordination helper module");
   assert(sharedStateSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "locks/leases should use a bounded grace window before reclaiming metadata-less state dirs left behind by crashes");
@@ -3544,13 +3568,15 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("if (shouldPruneTerminalJob(job, now)) return false;"), "poller should exclude already-prunable terminal jobs from wake-up candidacy");
   assert(pollerSource.includes("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should re-check live wake-up targets again immediately before sending a best-effort wake-up");
   assert(pollerSource.includes("recordNotificationTarget(jobId, notificationClaimant"), "poller should persist the intended wake-up target before sending a best-effort completion reminder");
+  assert(pollerSource.includes("buildOracleWakeupNotificationContent"), "poller wake-up turns should format content through the shared observability helper");
+  assert(pollerSource.includes("buildOracleStatusText"), "poller status updates should format session status through the shared observability helper");
   assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
   assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck immediately before the wake-up send path");
   assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
   assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
   assert(pollerSource.includes("requestWakeupTurn(pi, deliverable)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
-  assert(pollerSource.includes("buildNotificationContent(job)"), "poller wake-up turns should include durable response/artifact paths from job state");
-  assert(pollerSource.includes("Use oracle_read with jobId"), "poller wake-up content should direct receivers to oracle_read so reminder retries settle through the canonical path");
+  assert(pollerSource.includes("buildOracleWakeupNotificationContent(job"), "poller wake-up turns should include durable response/artifact paths from job state via the shared observability helper");
+  assert(sharedObservabilitySource.includes("Use oracle_read with jobId"), "poller wake-up content should direct receivers to oracle_read so reminder retries settle through the canonical path");
   assert(!pollerSource.includes("Read response:"), "poller wake-up content should no longer steer receivers toward raw response-file reads as the primary action");
   assert(pollerSource.includes("getJobDir(job.id)"), "poller wake-up content should derive artifact/response paths from the configured oracle jobs dir instead of hard-coding /tmp");
   assert(pollerSource.includes("beforeNotificationPersist"), "poller should support a last-moment revalidation hook before wake-up delivery for regression coverage");
@@ -3564,11 +3590,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("if (shouldPruneTerminalJob(current, nowMs)) return undefined;"), "notification claims should reject already-prunable jobs under the job lock so stale candidates cannot wake after prune eligibility");
   assert(jobsSource.includes("if (!shouldRequestWakeup(current, nowMs)) return undefined;"), "notification claims should re-check wake-up retry eligibility under the job lock to block stale second claimants");
   assert(jobsSource.includes("notificationSessionFile"), "jobs should persist the durable session file path for wake-up-target tracking");
+  assert(jobsSource.includes("job-lifecycle-helpers.mjs"), "jobs should delegate lifecycle mutation ownership to the shared lifecycle helper module");
   assert(jobsSource.includes("recordNotificationTarget"), "jobs should persist the intended notification target before best-effort wake-up delivery so retries can recover idempotently");
   assert(jobsSource.includes("wakeupSettledSource"), "wake-up settlement should persist provenance for later RCA attribution");
   assert(jobsSource.includes("wakeupObservedAt"), "pre-send manual observation should be recorded separately from wake-up settlement");
-  assert(jobsSource.includes("beforeFirstAttempt && !options.allowBeforeFirstAttempt"), "pre-send manual observations should not silently suppress the first wake-up attempt");
-  assert(jobsSource.includes("wakeupSettledBeforeFirstAttempt"), "wake-up settlement should record whether it happened before the first reminder attempt");
+  assert(sharedLifecycleSource.includes("beforeFirstAttempt && !options.allowBeforeFirstAttempt"), "pre-send manual observations should not silently suppress the first wake-up attempt");
+  assert(sharedLifecycleSource.includes("wakeupSettledBeforeFirstAttempt"), "wake-up settlement should record whether it happened before the first reminder attempt");
   assert(jobsSource.includes("ORACLE_WAKEUP_POST_SEND_RETENTION_MS"), "jobs should keep wake-up-target files around for a short post-send retention grace window");
   assert(jobsSource.includes("wakeupRetentionGraceIsActive"), "jobs should detect recently sent wake-ups when deciding whether removal/pruning is safe");
   assert(jobsSource.includes("if (job.status === \"complete\" || job.status === \"cancelled\") {"), "job pruning should treat complete/cancelled retention as an explicit age-based policy under the wake-up-only model");
@@ -3580,6 +3607,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("Refusing to remove terminal oracle job"), "terminal job removal should refuse live terminal workers instead of deleting around them");
   assert(runtimeSource.includes("jobBlocksAdmission"), "runtime admission should delegate cleanup/worker blocking decisions to the shared job coordination helper");
   assert(runtimeSource.includes("isTrackedProcessAlive"), "runtime admission should use the shared tracked-process identity helper when evaluating live workers");
+  assert(sharedLifecycleSource.includes("MAX_ORACLE_JOB_LIFECYCLE_EVENTS = 64"), "shared lifecycle helpers should bound stored lifecycle breadcrumbs to keep job state durable and reviewable");
+  assert(sharedObservabilitySource.includes("formatOracleJobSummary"), "shared observability helpers should centralize detached job summary formatting");
   assert(sharedProcessSource.includes("spawnDetachedNodeProcess"), "shared process helpers should centralize detached process spawning semantics for worker handoff");
   assert(!runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should not treat cleanup warnings alone as live capacity blockers");
   assert(!runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should not retain leases solely because teardown leaves warnings");
@@ -3600,12 +3629,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
   assert(pkg.overrides?.["basic-ftp"] === "^5.2.2", "package.json should override basic-ftp to a patched version");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
+  assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
   assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
   assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
   assert(jobsSource.includes("report.attempted.push(\"queuedArchive\")"), "cleanup retry should treat queued archive deletion as a first-class cleanup target");
   assert(jobsSource.includes("Failed to remove queued archive"), "queued cleanup retries should preserve warnings when archive deletion keeps failing");
   assert(jobsSource.includes("if (cleanupReport.warnings.length > 0)"), "terminal cleanup should retain job state when cleanup reports warnings");
   assert(jobsSource.includes("cleanupPending: terminated"), "terminal cancellation/recovery should mark cleanup pending until teardown finishes");
+  assert(jobsSource.includes("markOracleJobCreated"), "job creation should register durable lifecycle breadcrumbs through the shared lifecycle helper");
 }
 
 async function testResponseTimeoutGuard(): Promise<void> {
@@ -3614,6 +3645,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const stateLocksSource = await readFile(new URL("../extensions/oracle/worker/state-locks.mjs", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
+  const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
+  const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
@@ -3631,6 +3664,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(!workerSource.includes("workerStartedAt: undefined"), "cleanup-driven worker promotion should not drop worker start time metadata");
   assert(sharedJobCoordinationSource.includes("if (job.workerPid) return true;"), "worker-side durable handoff checks should require a persisted pid");
   assert(!sharedJobCoordinationSource.includes('if (job.status === "waiting") return true;'), "worker-side durable handoff checks should not trust phase alone without a persisted pid");
+  assert(sharedLifecycleSource.includes("transitionOracleJobPhase"), "worker/extension lifecycle changes should flow through the shared lifecycle transition helper");
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(job);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
   assert(workerSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "worker runtime profile cloning should enforce a subprocess timeout");
@@ -3658,19 +3692,21 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(sharedStateSource.includes("await rename(tempPath, targetPath);"), "shared worker state-lock helper should write metadata atomically via temp-file rename");
   assert(queueSource.includes("appendCleanupWarnings"), "global queued promotion should persist cleanup warnings from failed teardown");
   assert(queueSource.includes("runQueuedJobPromotionPass"), "global queued promotion should delegate the shared queued-promotion orchestration helper");
+  assert(queueSource.includes("transitionOracleJobPhase"), "global queued promotion should apply queue state changes through the shared lifecycle helper");
   assert(toolsSource.includes("appendCleanupWarnings(job.id, cleanupReport.warnings)"), "submit failure teardown should persist cleanup warnings when runtime cleanup is incomplete");
   assert(toolsSource.includes("ARCHIVE_COMMAND_TIMEOUT_MS = 120_000"), "archive creation should enforce a subprocess timeout envelope");
   assert(toolsSource.includes("Oracle archive subprocess timed out after"), "archive creation should surface timeout failures clearly");
-  assert(workerSource.includes("cleanupWarnings: [...(current.cleanupWarnings || []), ...cleanupWarnings]"), "worker should persist cleanup warnings when runtime teardown is incomplete");
+  assert(workerSource.includes("applyOracleJobCleanupWarnings"), "worker should persist cleanup warnings when runtime teardown is incomplete through the shared lifecycle helper");
   assert(workerSource.includes("Stopping queued cleanup promotion after"), "cleanup-driven queued promotion should stop when teardown leaves warnings");
   assert(workerSource.includes("if (existing?.jobId === job.id) return true;"), "cleanup-driven queued promotion should reuse same-job conversation leases during retry");
   assert(workerSource.includes("runQueuedJobPromotionPass"), "cleanup-driven queued promotion should reuse the shared queued-promotion orchestration helper");
   assert(sharedProcessSource.includes("terminateTrackedProcess"), "shared process helpers should centralize tracked-process termination semantics");
   assert(workerSource.includes("cleanupPending: true"), "worker should mark terminal jobs as cleanup-pending before teardown starts");
-  assert(workerSource.includes("cleanupPending: false"), "worker should clear cleanup-pending once teardown finishes");
+  assert(workerSource.includes("clearOracleJobCleanupState"), "worker should clear cleanup-pending through the shared lifecycle helper once teardown finishes");
   assert(workerSource.includes("if (cleanupWarnings.length === 0)"), "worker should only auto-promote queued jobs after a clean runtime teardown");
   assert(workerSource.includes("Skipping queued promotion because runtime cleanup left"), "worker should log when cleanup warnings block auto-promotion");
   assert(!workerSource.includes("Proceeding after model configuration timeout because strong in-dialog verification already succeeded"), "worker should not proceed if the model configuration sheet never closes");
+  assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
 }
 
@@ -4103,6 +4139,163 @@ async function testSharedQueuedPromotionHelper(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
+}
+
+function testSharedLifecycleHelpers(): void {
+  type LifecycleFixture = OracleLifecycleTrackedJobLike & {
+    id: string;
+    projectId: string;
+    sessionId: string;
+  };
+
+  const created = markOracleJobCreated<LifecycleFixture>({
+    id: "job-lifecycle",
+    status: "queued",
+    phase: "queued",
+    phaseAt: "2026-01-01T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    queuedAt: "2026-01-01T00:00:00.000Z",
+    projectId: "/repo",
+    sessionId: "/repo/.pi/session.jsonl",
+  }, {
+    at: "2026-01-01T00:00:00.000Z",
+    source: "oracle:test",
+    message: "Created queued lifecycle fixture.",
+  });
+  assert(getLatestOracleJobLifecycleEvent(created)?.message === "Created queued lifecycle fixture.", "shared lifecycle helpers should append an initial creation event");
+
+  const submitted = transitionOracleJobPhase(created, "submitted", {
+    at: "2026-01-01T00:00:05.000Z",
+    source: "oracle:test",
+    message: "Submitted lifecycle fixture.",
+  });
+  assert(submitted.status === "submitted" && submitted.submittedAt === "2026-01-01T00:00:05.000Z", "shared lifecycle helpers should derive submitted status/timestamps from submitted phase transitions");
+
+  const waiting = transitionOracleJobPhase(submitted, "awaiting_response", {
+    at: "2026-01-01T00:00:10.000Z",
+    source: "oracle:test",
+    message: "Waiting for response.",
+    patch: { heartbeatAt: "2026-01-01T00:00:10.000Z" },
+  });
+  assert(waiting.status === "waiting" && waiting.heartbeatAt === "2026-01-01T00:00:10.000Z", "shared lifecycle helpers should map waiting phases onto waiting status");
+
+  const complete = transitionOracleJobPhase(waiting, "complete_with_artifact_errors", {
+    at: "2026-01-01T00:00:20.000Z",
+    source: "oracle:test",
+    message: "Completed with artifact warnings.",
+    patch: {
+      responsePath: "/tmp/response.md",
+      responseFormat: "text/plain",
+      artifactFailureCount: 2,
+      cleanupPending: true,
+    },
+  });
+  assert(complete.status === "complete" && complete.completedAt === "2026-01-01T00:00:20.000Z", "shared lifecycle helpers should derive complete status/timestamps from terminal completion phases");
+
+  const withWarnings = applyOracleJobCleanupWarnings(complete, ["warning-a", "warning-a", "warning-b"], {
+    at: "2026-01-01T00:00:25.000Z",
+    source: "oracle:test",
+    message: "Cleanup left warnings.",
+  });
+  assert(withWarnings.cleanupPending === false && withWarnings.cleanupWarnings?.join(",") === "warning-a,warning-b", "shared lifecycle helpers should dedupe cleanup warnings and clear cleanupPending");
+
+  const cleaned = clearOracleJobCleanupState(withWarnings, {
+    at: "2026-01-01T00:00:30.000Z",
+    source: "oracle:test",
+    message: "Cleanup finished cleanly.",
+  });
+  assert(cleaned.cleanupWarnings === undefined && cleaned.lastCleanupAt === "2026-01-01T00:00:30.000Z", "shared lifecycle helpers should clear cleanup warnings and retain cleanup timestamps");
+
+  const wakeupRequested = noteOracleJobWakeupRequested(cleaned, {
+    at: "2026-01-01T00:00:35.000Z",
+    source: "oracle:test",
+  });
+  assert(wakeupRequested.wakeupAttemptCount === 1 && wakeupRequested.wakeupLastRequestedAt === "2026-01-01T00:00:35.000Z", "shared lifecycle helpers should count wake-up reminder attempts");
+
+  const settled = markOracleJobWakeupSettled(wakeupRequested, {
+    at: "2026-01-01T00:00:40.000Z",
+    source: "oracle_read",
+    sessionFile: "/repo/.pi/session.jsonl",
+    sessionKey: "/repo::.pi/session.jsonl",
+  });
+  assert(settled.wakeupSettledSource === "oracle_read" && settled.wakeupSettledAt === "2026-01-01T00:00:40.000Z", "shared lifecycle helpers should settle wake-ups once a reminder attempt already exists");
+
+  const observed = markOracleJobWakeupSettled(cleaned, {
+    at: "2026-01-01T00:00:41.000Z",
+    source: "oracle_status",
+    sessionFile: "/repo/.pi/session.jsonl",
+    sessionKey: "/repo::.pi/session.jsonl",
+  });
+  assert(!observed.wakeupSettledAt && observed.wakeupObservedSource === "oracle_status", "shared lifecycle helpers should record pre-send wake-up observations without suppressing the first reminder");
+
+  const notified = markOracleJobNotified(appendOracleJobLifecycleEvent(settled, {
+    at: "2026-01-01T00:00:45.000Z",
+    source: "oracle:test",
+    kind: "notification",
+    message: "Notification target recorded.",
+  }), {
+    at: "2026-01-01T00:00:50.000Z",
+    source: "oracle:test",
+    notificationEntryId: "entry-1",
+    notificationSessionKey: "project::session",
+    notificationSessionFile: "/repo/.pi/session.jsonl",
+  });
+  assert(notified.notifiedAt === "2026-01-01T00:00:50.000Z" && notified.wakeupAttemptCount === 0 && !notified.notifyClaimedBy, "shared lifecycle helpers should clear wake-up claim/attempt state when delivery is recorded");
+}
+
+function testSharedObservabilityHelpers(): void {
+  type ObservabilityFixture = OracleLifecycleTrackedJobLike & {
+    id: string;
+    projectId: string;
+    sessionId: string;
+    promptPath: string;
+    archivePath: string;
+    workerLogPath: string;
+  };
+
+  const job = markOracleJobCreated<ObservabilityFixture>({
+    id: "job-observe",
+    status: "queued",
+    phase: "queued",
+    phaseAt: "2026-01-01T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    queuedAt: "2026-01-01T00:00:00.000Z",
+    projectId: "/repo",
+    sessionId: "/repo/.pi/session.jsonl",
+    promptPath: "/tmp/prompt.md",
+    archivePath: "/tmp/context.tar.zst",
+    responsePath: "/tmp/response.md",
+    responseFormat: "text/plain",
+    workerLogPath: "/tmp/worker.log",
+  }, {
+    at: "2026-01-01T00:00:00.000Z",
+    source: "oracle:test",
+    message: "Created observability fixture.",
+  });
+  const summary = formatOracleJobSummary(job, {
+    queuePosition: { position: 2, depth: 3 },
+    artifactsPath: "/tmp/artifacts",
+    responsePreview: "Preview body",
+  });
+  assert(summary.includes("queue-position: 2 of 3 global") && summary.includes("last-event:"), "shared observability helpers should include queue position and latest lifecycle breadcrumbs in job summaries");
+  assert(summary.includes("worker-log: /tmp/worker.log") && summary.includes("Preview body"), "shared observability helpers should include worker log paths and optional response previews");
+
+  const submitResponse = formatOracleSubmitResponse(job, {
+    autoPrunedPrefixes: [{ relativePath: "build", bytes: 2048 }],
+    queued: true,
+    queuePosition: 2,
+    queueDepth: 3,
+  });
+  assert(submitResponse.includes("Oracle job queued: job-observe") && submitResponse.includes("Archive auto-pruned"), "shared observability helpers should format queued submit responses and auto-prune notes consistently");
+
+  const wakeupContent = buildOracleWakeupNotificationContent(job, {
+    responsePath: "/tmp/response.md",
+    artifactsPath: "/tmp/artifacts",
+  });
+  assert(wakeupContent.includes("Use oracle_read with jobId job-observe") && wakeupContent.includes("Last event:"), "shared observability helpers should include both the oracle_read guidance and latest lifecycle event in wake-up content");
+
+  assert(buildOracleStatusText({ active: 2, queued: 1 }) === "oracle: running (2), queued (1)", "shared observability helpers should format mixed active/queued session status text");
+  assert(buildOracleStatusText({ active: 0, queued: 0 }) === "oracle: ready", "shared observability helpers should format empty session status text");
 }
 
 function testChatGptUiHelpers(): void {
@@ -4614,6 +4807,8 @@ async function main() {
   testSharedJobCoordinationHelpers();
   await testSharedProcessHelpers();
   await testSharedQueuedPromotionHelper();
+  testSharedLifecycleHelpers();
+  testSharedObservabilityHelpers();
   testChatGptUiHelpers();
   testAuthFlowHelpers();
   testChatGptFlowHelpers();

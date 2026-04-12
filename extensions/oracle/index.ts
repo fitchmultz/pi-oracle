@@ -1,3 +1,8 @@
+// Purpose: Register the oracle extension, wire commands/tools/workers, and manage per-session background maintenance.
+// Responsibilities: Bootstrap oracle commands and tools, start or stop polling, and surface startup/config availability in the pi session UI.
+// Scope: Extension entrypoint only; lifecycle mutation lives in lib modules and browser execution lives in worker scripts.
+// Usage: Loaded by pi as the extension module declared in package.json.
+// Invariants/Assumptions: Oracle only runs against persisted sessions, and startup maintenance should be best-effort without breaking session initialization.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -42,7 +47,9 @@ export default function oracleExtension(pi: ExtensionAPI) {
 
       const config = loadOracleConfig(ctx.cwd);
       void runStartupMaintenance(ctx).catch((error) => {
-        console.error("Oracle startup maintenance failed:", error);
+        const message = `Oracle startup maintenance failed: ${error instanceof Error ? error.message : String(error)}`;
+        console.error(message);
+        ctx.ui.notify(message, "warning");
       });
       startPoller(pi, ctx, config.poller.intervalMs, workerPath);
       refreshOracleStatus(ctx);

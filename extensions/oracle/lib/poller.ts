@@ -1,5 +1,11 @@
-import { execFileSync } from "node:child_process";
+// Purpose: Poll oracle jobs in the background, reconcile stale state, and deliver best-effort wake-up reminders to eligible sessions.
+// Responsibilities: Track live wake-up targets, promote queued jobs, scan terminal jobs for delivery, and keep session status text current.
+// Scope: Poller/orchestration only; durable lifecycle mutations live in jobs.ts and shared observability formatting lives in extensions/oracle/shared.
+// Usage: Imported by the oracle extension entrypoint to start or stop per-session oracle polling.
+// Invariants/Assumptions: Poller scans are serialized per session key, wake-up delivery is best-effort, and terminal-job notifications always re-read durable job state before send.
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { buildOracleStatusText, buildOracleWakeupNotificationContent } from "../shared/job-observability-helpers.mjs";
+import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
 import { isLockTimeoutError, listLeaseMetadata, releaseLease, withGlobalReconcileLock, writeLeaseMetadata } from "./locks.js";
 import {
   getJobDir,
@@ -62,26 +68,6 @@ function jobMatchesContext(job: { projectId: string; sessionId: string }, sessio
   const projectId = getProjectId(cwd);
   const sessionId = getSessionId(sessionFile, projectId);
   return job.projectId === projectId && job.sessionId === sessionId;
-}
-
-function readProcessStartedAt(pid: number | undefined): string | undefined {
-  if (!pid || pid <= 0) return undefined;
-  try {
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    return startedAt || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
-    return true;
-  }
 }
 
 function parseTimestamp(value: string | undefined): number | undefined {
@@ -157,43 +143,20 @@ export function refreshOracleStatus(ctx: ExtensionContext): void {
     return;
   }
   const counts = getJobCounts(ctx);
-  if (counts.active > 0 && counts.queued > 0) {
-    ctx.ui.setStatus("oracle", ctx.ui.theme.fg("success", `oracle: running (${counts.active}), queued (${counts.queued})`));
-    return;
-  }
-  if (counts.active > 0) {
-    const suffix = counts.active > 1 ? ` (${counts.active})` : "";
-    ctx.ui.setStatus("oracle", ctx.ui.theme.fg("success", `oracle: running${suffix}`));
-    return;
-  }
-  if (counts.queued > 0) {
-    const suffix = counts.queued > 1 ? ` (${counts.queued})` : "";
-    ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", `oracle: queued${suffix}`));
-    return;
-  }
-
-  ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", "oracle: ready"));
+  const statusText = buildOracleStatusText(counts);
+  const tone = counts.active > 0 ? "success" : "accent";
+  ctx.ui.setStatus("oracle", ctx.ui.theme.fg(tone, statusText));
 }
-
-function buildNotificationContent(job: OraclePollerJob): string {
-  const responsePath = job.responsePath || `${getJobDir(job.id)}/response.md`;
-  const artifactsPath = `${getJobDir(job.id)}/artifacts`;
-  return [
-    `Oracle job ${job.id} is ${job.status}.`,
-    `Use oracle_read with jobId ${job.id} to open the response and settle wake-up retries.`,
-    `Response file: ${responsePath}`,
-    `Artifacts: ${artifactsPath}`,
-    job.error ? `Error: ${job.error}` : "After oracle_read, continue from the oracle output.",
-  ].join("\n");
-}
-
 
 function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
   pi.sendMessage(
     {
       customType: ORACLE_WAKEUP_REMINDER_CUSTOM_TYPE,
       display: false,
-      content: buildNotificationContent(job),
+      content: buildOracleWakeupNotificationContent(job, {
+        responsePath: job.responsePath || `${getJobDir(job.id)}/response.md`,
+        artifactsPath: `${getJobDir(job.id)}/artifacts`,
+      }),
       details: { jobId: job.id, status: job.status },
     },
     { triggerTurn: true, deliverAs: "followUp" },
