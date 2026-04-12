@@ -195,6 +195,7 @@ Project config should only override safe, non-privileged settings.
 
 - `docs/ORACLE_DESIGN.md` — architecture, lifecycle, queueing, persistence, presets, and recovery behavior
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
+- `docs/ORACLE_ISOLATED_PI_VALIDATION.md` — repeatable isolated `pi` session smoke test for local-extension validation
 
 ## Privacy / local data
 

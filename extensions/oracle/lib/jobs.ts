@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
 import { withJobLock, withLock } from "./locks.js";
@@ -1005,11 +1005,17 @@ export async function createJob(
   return job;
 }
 
+function isPathInsideDirectory(rootPath: string, candidatePath: string): boolean {
+  const boundary = relativePath(rootPath, candidatePath);
+  return boundary === "" || (!boundary.startsWith(`..${sep}`) && boundary !== ".." && !isAbsolute(boundary));
+}
+
 export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: string; relative: string }[] {
   if (files.length === 0) {
     throw new Error("oracle_submit requires at least one file or directory to archive");
   }
 
+  const realCwd = realpathSync(cwd);
   return files.map((file) => {
     const absolute = resolve(cwd, file);
     const relative = absolute.startsWith(`${cwd}/`) ? absolute.slice(cwd.length + 1) : absolute === cwd ? "." : "";
@@ -1018,6 +1024,9 @@ export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: 
     }
     if (!existsSync(absolute)) {
       throw new Error(`Archive input does not exist: ${file}`);
+    }
+    if (!isPathInsideDirectory(realCwd, realpathSync(absolute))) {
+      throw new Error(`Archive input must resolve inside the project cwd without symlink escapes: ${file}`);
     }
     return { absolute, relative };
   });

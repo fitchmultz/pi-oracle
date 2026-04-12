@@ -49,6 +49,7 @@ import {
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
+  resolveArchiveInputs,
   tryClaimNotification,
   updateJob,
   withJobPhase,
@@ -3410,6 +3411,9 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await mkdir(join(fixtureDir, "secrets"), { recursive: true });
     await mkdir(join(fixtureDir, "apps", "api", "secrets"), { recursive: true });
     await mkdir(join(fixtureDir, "apps", "api", ".secrets"), { recursive: true });
+    await mkdir(join(fixtureDir, ".pi"), { recursive: true });
+    await mkdir(join(fixtureDir, ".oracle-context", "jobs"), { recursive: true });
+    await mkdir(join(fixtureDir, ".cursor"), { recursive: true });
     await writeFile(join(fixtureDir, "src", "build", "keeper.ts"), "export const keeper = true;\n");
     await writeFile(join(fixtureDir, "src", "regular.ts"), "export const regular = true;\n");
     await writeFile(join(fixtureDir, "build", "root-output.js"), "console.log('build');\n");
@@ -3420,10 +3424,14 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await writeFile(join(fixtureDir, ".env"), "API_KEY=secret\n");
     await writeFile(join(fixtureDir, ".env.example"), "API_KEY=example\n");
     await writeFile(join(fixtureDir, ".npmrc"), "//registry.npmjs.org/:_authToken=secret\n");
+    await writeFile(join(fixtureDir, ".scratchpad.md"), "private notes\n");
     await writeFile(join(fixtureDir, "dev.sqlite"), "sqlite\n");
     await writeFile(join(fixtureDir, "secrets", "prod.pem"), "pem\n");
     await writeFile(join(fixtureDir, "apps", "api", "secrets", "service.pem"), "pem\n");
     await writeFile(join(fixtureDir, "apps", "api", ".secrets", "token.txt"), "token\n");
+    await writeFile(join(fixtureDir, ".pi", "settings.json"), "{}\n");
+    await writeFile(join(fixtureDir, ".oracle-context", "jobs", "job.json"), "{}\n");
+    await writeFile(join(fixtureDir, ".cursor", "debug-22d6ee.log"), "debug\n");
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "coverage"));
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "linked", "node_modules"));
 
@@ -3438,7 +3446,11 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     assert(!rootEntries.includes(".env"), "root archive expansion should exclude .env files by default");
     assert(rootEntries.includes(".env.example"), "root archive expansion should preserve .env example files");
     assert(!rootEntries.includes(".npmrc"), "root archive expansion should exclude credential dotfiles by default");
+    assert(!rootEntries.includes(".scratchpad.md"), "root archive expansion should exclude scratchpad notes by default");
     assert(!rootEntries.includes("dev.sqlite"), "root archive expansion should exclude local database files by default");
+    assert(!rootEntries.includes(".pi/settings.json"), "root archive expansion should exclude local pi state by default");
+    assert(!rootEntries.includes(".oracle-context/jobs/job.json"), "root archive expansion should exclude local oracle state by default");
+    assert(!rootEntries.includes(".cursor/debug-22d6ee.log"), "root archive expansion should exclude local editor state by default");
     assert(!rootEntries.includes("secrets/prod.pem"), "root archive expansion should exclude root secrets directories by default");
     assert(!rootEntries.includes("apps/api/secrets/service.pem"), "root archive expansion should exclude nested secrets directories anywhere in the repo by default");
     assert(!rootEntries.includes("apps/api/.secrets/token.txt"), "root archive expansion should exclude nested dot-secrets directories anywhere in the repo by default");
@@ -3458,11 +3470,23 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     const explicitYarnCacheEntries = await resolveExpandedArchiveEntries(fixtureDir, ["packages/app/.yarn/cache"]);
     assert(explicitYarnCacheEntries.includes("packages/app/.yarn/cache/pkg.tgz"), "explicitly requested .yarn/cache directories should include their subtree");
 
+    const explicitPiEntries = await resolveExpandedArchiveEntries(fixtureDir, [".pi"]);
+    assert(explicitPiEntries.includes(".pi/settings.json"), "explicitly requested .pi directories should be preserved");
+
+    const explicitOracleContextEntries = await resolveExpandedArchiveEntries(fixtureDir, [".oracle-context"]);
+    assert(explicitOracleContextEntries.includes(".oracle-context/jobs/job.json"), "explicitly requested .oracle-context directories should be preserved");
+
+    const explicitCursorEntries = await resolveExpandedArchiveEntries(fixtureDir, [".cursor"]);
+    assert(explicitCursorEntries.includes(".cursor/debug-22d6ee.log"), "explicitly requested .cursor directories should be preserved");
+
     const explicitBuildFileEntries = await resolveExpandedArchiveEntries(fixtureDir, ["build/root-output.js"]);
     assert(explicitBuildFileEntries.length === 1 && explicitBuildFileEntries[0] === "build/root-output.js", "explicitly requested files should always be preserved");
 
     const explicitEnvEntries = await resolveExpandedArchiveEntries(fixtureDir, [".env"]);
     assert(explicitEnvEntries.length === 1 && explicitEnvEntries[0] === ".env", "explicitly requested secret-bearing files should be preserved");
+
+    const explicitScratchpadEntries = await resolveExpandedArchiveEntries(fixtureDir, [".scratchpad.md"]);
+    assert(explicitScratchpadEntries.length === 1 && explicitScratchpadEntries[0] === ".scratchpad.md", "explicitly requested scratchpad files should be preserved");
 
     const explicitSecretsDirEntries = await resolveExpandedArchiveEntries(fixtureDir, ["secrets"]);
     assert(explicitSecretsDirEntries.includes("secrets/prod.pem"), "explicitly requested root secrets directories should be preserved");
@@ -3486,6 +3510,35 @@ async function testArchiveDefaultExclusions(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(excludedOnlyDir, { recursive: true, force: true });
+  }
+}
+
+async function testArchiveRejectsSymlinkEscapes(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-symlink-"));
+  const outsideDir = await mkdtemp(join(tmpdir(), "oracle-archive-outside-"));
+  try {
+    await mkdir(join(fixtureDir, "src"), { recursive: true });
+    await writeFile(join(fixtureDir, "src", "inside.ts"), "export const inside = true;\n");
+    await writeFile(join(outsideDir, "secret.txt"), "secret\n");
+    await symlink(join(fixtureDir, "src"), join(fixtureDir, "linked-inside"));
+    await symlink(outsideDir, join(fixtureDir, "linked-outside"));
+
+    const insideInputs = resolveArchiveInputs(fixtureDir, ["linked-inside/inside.ts"]);
+    assert(insideInputs.length === 1 && insideInputs[0]?.relative === "linked-inside/inside.ts", "archive input resolution should preserve symlinked paths that stay inside the repo");
+
+    assertThrows(
+      () => resolveArchiveInputs(fixtureDir, ["linked-outside/secret.txt"]),
+      "archive input resolution should reject files that escape the repo through symlinked directories",
+      "without symlink escapes",
+    );
+    assertThrows(
+      () => resolveArchiveInputs(fixtureDir, ["linked-outside"]),
+      "archive input resolution should reject explicit symlinks that resolve outside the repo",
+      "without symlink escapes",
+    );
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 }
 
@@ -3922,6 +3975,7 @@ async function main() {
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
   await testArchiveDefaultExclusions();
+  await testArchiveRejectsSymlinkEscapes();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testSanityRunnerIsolation();
