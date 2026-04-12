@@ -102,12 +102,13 @@ Instead it instructs the agent to:
 
 1. call `oracle_preflight` immediately
 2. stop right away if preflight reports the session or local oracle setup is not ready
-3. understand the task
-4. gather repo context
-5. choose exact archive inputs
-6. craft the oracle prompt
-7. call `oracle_submit`
-8. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
+3. understand whether the request is explicitly narrow or genuinely broad
+4. gather only the smallest repo context needed to submit well
+5. if the request is narrow, prefer a minimal targeted archive and dispatch as soon as enough context is in hand
+6. if the request is broad/repo-wide, gather broader context and usually archive `.`
+7. craft the oracle prompt
+8. call `oracle_submit`
+9. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
 
 ### `/oracle-auth`
 
@@ -138,7 +139,7 @@ The authenticated seed profile remains the source of truth for future oracle run
 
 ### `oracle_submit`
 
-Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state.
+Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting `preset` and using the configured default unless the task clearly needs a different model or the user explicitly asked for one.
 
 1. resolve the preset (submit-time or config default) into an execution snapshot
 2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`

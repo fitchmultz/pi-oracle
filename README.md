@@ -52,6 +52,8 @@ pi install https://github.com/fitchmultz/pi-oracle
 
 The `/oracle` prompt now runs an early oracle preflight before it gathers repo context, so missing persisted-session or local auth/config blockers fail before the agent spends time reading files.
 
+For explicitly narrow requests, `/oracle` should gather only minimal context and prefer a minimal archive instead of broad repo exploration. It should also omit `preset` and use the configured default model unless the task clearly needs a different one.
+
 If you miss the wake-up, the result is still saved durably in the oracle job directory and can be read later.
 
 ## Example requests
@@ -64,11 +66,15 @@ If you miss the wake-up, the result is still saved durably in the oracle job dir
 /oracle Read the codebase and explain the highest-risk auth/session failure modes, including what to test before shipping.
 ```
 
+```text
+/oracle Explain the README guidance for /oracle-clean retention grace. Only archive README.md unless another file is clearly necessary.
+```
+
 ## High-level flow
 
 ```mermaid
 flowchart LR
-    A["/oracle request"] --> B["Agent gathers repo context"]
+    A["/oracle request"] --> B["Agent preflights, then gathers only the needed repo context"]
     B --> C["oracle_submit builds archive"]
     C --> D["Detached worker starts isolated ChatGPT runtime"]
     D --> E["Archive + prompt sent to ChatGPT.com"]
