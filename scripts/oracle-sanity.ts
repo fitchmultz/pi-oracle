@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
@@ -71,7 +71,16 @@ import {
 } from "../extensions/oracle/lib/locks.ts";
 import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
-import { acquireConversationLease, acquireRuntimeLease, getProjectId, releaseConversationLease, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
+import {
+  acquireConversationLease,
+  acquireRuntimeLease,
+  cloneSeedProfileToRuntime,
+  getProjectId,
+  releaseConversationLease,
+  releaseRuntimeLease,
+  tryAcquireConversationLease,
+  tryAcquireRuntimeLease,
+} from "../extensions/oracle/lib/runtime.ts";
 import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
@@ -93,6 +102,72 @@ function assertThrows(block: () => void, failureMessage: string, expectedSubstri
     return;
   }
   throw new Error(`${failureMessage}: expected throw`);
+}
+
+async function assertRejects(block: () => Promise<unknown>, failureMessage: string, expectedSubstring: string): Promise<void> {
+  try {
+    await block();
+  } catch (error) {
+    const text = error instanceof Error ? error.message : String(error);
+    if (!text.includes(expectedSubstring)) {
+      throw new Error(
+        `${failureMessage}: expected error message to include ${JSON.stringify(expectedSubstring)}, got ${JSON.stringify(text)}`,
+      );
+    }
+    return;
+  }
+  throw new Error(`${failureMessage}: expected rejection`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+async function writeExecutableScript(path: string, content: string): Promise<void> {
+  await writeFile(path, content, { encoding: "utf8", mode: 0o755 });
+  await chmod(path, 0o755);
+}
+
+async function runProcess(
+  command: string,
+  args: string[],
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options?.cwd,
+      env: options?.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    if ((options?.timeoutMs ?? 0) > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        setTimeout(() => child.kill("SIGKILL"), 2_000).unref?.();
+      }, options?.timeoutMs);
+      killTimer.unref?.();
+    }
+
+    child.stdout.on("data", (data) => {
+      stdout += String(data);
+    });
+    child.stderr.on("data", (data) => {
+      stderr += String(data);
+    });
+    child.on("error", (error) => {
+      if (killTimer) clearTimeout(killTimer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ code, stdout, stderr, timedOut });
+    });
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -522,6 +597,168 @@ async function testCleanupPendingBlocksAdmission(config: OracleConfig): Promise<
   await releaseConversationLease(conversationId);
   await releaseRuntimeLease(blockingOwner.runtimeId);
   await cleanupJob(ownerId);
+}
+
+async function testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config: OracleConfig): Promise<void> {
+  await rm(getOracleStateDir(), { recursive: true, force: true });
+  const cwd = process.cwd();
+  const sessionId = "/tmp/oracle-sanity-session-cleanup-warnings.jsonl";
+  const ownerId = await createTerminalJob(config, cwd, sessionId);
+  const owner = readJob(ownerId);
+  assert(owner, "cleanup-warning owner job should exist");
+  const conversationId = `conversation-${randomUUID()}`;
+  await updateJob(owner.id, (job) => ({
+    ...job,
+    cleanupWarnings: ["profile cleanup failed"],
+    conversationId,
+  }));
+  const blockingOwner = readJob(owner.id);
+  assert(blockingOwner, "cleanup-warning owner should be readable");
+
+  await acquireRuntimeLease(config, {
+    jobId: blockingOwner.id,
+    runtimeId: blockingOwner.runtimeId,
+    runtimeSessionName: blockingOwner.runtimeSessionName,
+    runtimeProfileDir: blockingOwner.runtimeProfileDir,
+    projectId: blockingOwner.projectId,
+    sessionId: blockingOwner.sessionId,
+    createdAt: new Date().toISOString(),
+  });
+  await acquireConversationLease({
+    jobId: blockingOwner.id,
+    conversationId,
+    projectId: blockingOwner.projectId,
+    sessionId: blockingOwner.sessionId,
+    createdAt: new Date().toISOString(),
+  });
+
+  const replacementRuntime = {
+    jobId: `cleanup-warning-runtime-${randomUUID()}`,
+    runtimeId: `runtime-${randomUUID()}`,
+    runtimeSessionName: `oracle-runtime-${randomUUID()}`,
+    runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
+    projectId: "/tmp/project-b",
+    sessionId: "session-b",
+    createdAt: new Date().toISOString(),
+  };
+  const runtimeAttempt = await tryAcquireRuntimeLease(config, replacementRuntime);
+  assert(runtimeAttempt.acquired, "cleanup warnings without a live worker should not keep runtime admission blocked");
+  assert(!listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === ownerId), "runtime admission should prune stale leases owned only by cleanup-warning terminal jobs");
+
+  const conversationAttempt = await tryAcquireConversationLease({
+    jobId: `cleanup-warning-conversation-${randomUUID()}`,
+    conversationId,
+    projectId: "/tmp/project-b",
+    sessionId: "session-b",
+    createdAt: new Date().toISOString(),
+  });
+  assert(conversationAttempt.acquired, "cleanup warnings without a live worker should not keep conversation admission blocked");
+  assert(!listLeaseMetadata<{ jobId: string }>("conversation").some((lease) => lease.jobId === ownerId), "conversation admission should prune stale leases owned only by cleanup-warning terminal jobs");
+
+  await releaseConversationLease(conversationId);
+  await releaseRuntimeLease(replacementRuntime.runtimeId);
+  await releaseRuntimeLease(blockingOwner.runtimeId);
+  await cleanupJob(ownerId);
+}
+
+async function testRuntimeProfileCloneTimeoutKillsHungCp(config: OracleConfig): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-clone-timeout-"));
+  const binDir = await mkdtemp(join(tmpdir(), "oracle-clone-bin-"));
+  const seedDir = join(fixtureDir, "seed");
+  const runtimeProfileDir = join(fixtureDir, "runtime", "profile");
+  const cpPidPath = join(binDir, "cp.pid");
+  const originalPath = process.env.PATH ?? "";
+  const cloneConfig: OracleConfig = {
+    ...config,
+    browser: {
+      ...config.browser,
+      authSeedProfileDir: seedDir,
+      runtimeProfilesDir: join(fixtureDir, "runtime"),
+      cloneStrategy: "copy",
+    },
+  };
+
+  try {
+    await mkdir(seedDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(seedDir, "Preferences"), "{}\n", { mode: 0o600 });
+    await writeExecutableScript(
+      join(binDir, "cp"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(cpPidPath)}
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`,
+    );
+    process.env.PATH = `${binDir}:${originalPath}`;
+
+    await assertRejects(
+      () => cloneSeedProfileToRuntime(cloneConfig, runtimeProfileDir, { cpTimeoutMs: 250 }),
+      "runtime profile cloning should time out when cp hangs",
+      "timed out",
+    );
+
+    const cpPid = Number.parseInt((await readFile(cpPidPath, "utf8")).trim(), 10);
+    assert(Number.isFinite(cpPid), "clone timeout test should record a cp pid");
+    assert(await waitForPidExit(cpPid), "runtime profile cloning timeout should terminate the hung cp process");
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+  }
+}
+
+async function testAuthBootstrapAgentBrowserTimeoutFailsFast(config: OracleConfig): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-timeout-"));
+  const agentBrowserPath = join(fixtureDir, "agent-browser");
+  const browserPidPath = join(fixtureDir, "agent-browser.pid");
+  const authConfig: OracleConfig = {
+    ...config,
+    browser: {
+      ...config.browser,
+      sessionPrefix: `oracle-auth-timeout-${randomUUID()}`,
+      authSeedProfileDir: join(fixtureDir, "seed-profile"),
+      runtimeProfilesDir: join(fixtureDir, "runtime-profiles"),
+    },
+    auth: {
+      ...config.auth,
+      chromeCookiePath: join(fixtureDir, "missing-cookies.sqlite"),
+    },
+  };
+
+  try {
+    await writeExecutableScript(
+      agentBrowserPath,
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(browserPidPath)}
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`,
+    );
+
+    const result = await runProcess(
+      process.execPath,
+      [join(process.cwd(), "extensions/oracle/worker/auth-bootstrap.mjs"), JSON.stringify(authConfig)],
+      {
+        env: {
+          ...process.env,
+          AGENT_BROWSER_PATH: agentBrowserPath,
+          PI_ORACLE_STATE_DIR: join(fixtureDir, "state"),
+          PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS: "250",
+          PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS: "250",
+          PI_ORACLE_AUTH_KILL_GRACE_MS: "100",
+        },
+        timeoutMs: 8_000,
+      },
+    );
+
+    assert(!result.timedOut, "auth bootstrap should not hang when agent-browser close stalls");
+    assert(result.code !== 0, "auth bootstrap timeout smoke test should still fail because source cookies are unavailable");
+    const browserPid = Number.parseInt((await readFile(browserPidPath, "utf8")).trim(), 10);
+    assert(Number.isFinite(browserPid), "auth bootstrap timeout test should record an agent-browser pid");
+    assert(await waitForPidExit(browserPid), "auth bootstrap should terminate the hung agent-browser process after timing out");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
 }
 
 async function testJobCreationPersistsSelectionSnapshot(config: OracleConfig): Promise<void> {
@@ -1325,7 +1562,7 @@ async function testQueuedPromotionPersistsCleanupWarningsOnTeardownFailure(confi
   const failedJob = readJob(queuedId);
   assert(failedJob?.status === "failed", "teardown-warning promotions should fail the queued job");
   assert(Boolean(failedJob?.cleanupWarnings?.length), "teardown-warning promotions should persist cleanup warnings when teardown is incomplete");
-  assert(listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === queuedId), "teardown-warning promotions should retain runtime leases while cleanup warnings remain unresolved");
+  assert(!listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === queuedId), "teardown-warning promotions should release runtime leases even when teardown leaves cleanup warnings");
 
   await releaseRuntimeLease(failedJob?.runtimeId);
   await cleanupJob(queuedId);
@@ -3058,7 +3295,7 @@ async function testTerminalCleanupWarningsPreserveJob(config: OracleConfig): Pro
   const retainedJob = readJob(jobId);
   assert(Boolean(retainedJob), "cleanup-warning terminal job should remain on disk");
   assert(Boolean(retainedJob?.cleanupWarnings?.length), "cleanup-warning terminal job should persist cleanup warnings");
-  assert(listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === jobId), "cleanup-warning terminal job should retain runtime lease until cleanup succeeds");
+  assert(!listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === jobId), "cleanup-warning terminal job should release runtime leases even when cleanup warnings remain");
 
   await releaseRuntimeLease(retainedJob?.runtimeId);
   await cleanupJob(jobId);
@@ -3326,8 +3563,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("post-send retention grace window"), "terminal job removal should refuse recently woken jobs until their response/artifact files survive a short post-send grace window");
   assert(jobsSource.includes("Refusing to remove terminal oracle job"), "terminal job removal should refuse live terminal workers instead of deleting around them");
   assert(runtimeSource.includes("job.cleanupPending === true"), "runtime admission should stay blocked for jobs with cleanup still pending");
-  assert(runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should stay blocked for jobs with unresolved cleanup warnings");
-  assert(runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should keep leases when teardown leaves warnings");
+  assert(runtimeSource.includes("isAdmissionBlockingWorker"), "runtime admission should stay blocked when a recorded live worker still owns cleanup");
+  assert(!runtimeSource.includes("Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0"), "runtime admission should not treat cleanup warnings alone as live capacity blockers");
+  assert(!runtimeSource.includes("if (report.warnings.length > 0) {\n    return report;\n  }"), "runtime cleanup should not retain leases solely because teardown leaves warnings");
+  assert(runtimeSource.includes("await releaseConversationLease(runtime.conversationId)"), "runtime cleanup should always attempt to release conversation leases");
+  assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
+  assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
   assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");
@@ -3370,6 +3611,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(!workerSource.includes('if (job.status === "waiting") return true;'), "worker-side durable handoff checks should not trust phase alone without a persisted pid");
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(current);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
+  assert(workerSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "worker runtime profile cloning should enforce a subprocess timeout");
+  assert(workerSource.includes("hasAdmissionBlockingWorker"), "worker queued-promotion admission should only stay blocked when a recorded live worker still owns cleanup");
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
   assert(workerSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "worker should use the shared ChatGPT UI helper module for model/origin/completion logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
@@ -3377,6 +3620,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
   assert(!authBootstrapSource.includes('"/tmp/oracle-auth'), "auth bootstrap should not write diagnostics to fixed /tmp/oracle-auth.* paths");
   assert(authBootstrapSource.includes('mkdtemp(join(tmpdir(), "pi-oracle-auth-"))'), "auth bootstrap should isolate diagnostics in a unique private temp directory per run");
+  assert(authBootstrapSource.includes("AGENT_BROWSER_COMMAND_TIMEOUT_MS"), "auth bootstrap should enforce process-level timeouts for agent-browser commands");
+  assert(authBootstrapSource.includes("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS"), "auth bootstrap should allow shorter timeout overrides for close-time smoke tests");
+  assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
+  assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
   assert(stateLocksSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
   assert(stateLocksSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
   assert(stateLocksSource.includes("createStateDirAtomically"), "shared worker state-lock helper should publish new state dirs atomically so first creation never exposes a final dir without metadata");
@@ -3386,6 +3633,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(stateLocksSource.includes("await rename(tempPath, targetPath);"), "shared worker state-lock helper should write metadata atomically via temp-file rename");
   assert(queueSource.includes("appendCleanupWarnings"), "global queued promotion should persist cleanup warnings from failed teardown");
   assert(toolsSource.includes("appendCleanupWarnings(job.id, cleanupReport.warnings)"), "submit failure teardown should persist cleanup warnings when runtime cleanup is incomplete");
+  assert(toolsSource.includes("ARCHIVE_COMMAND_TIMEOUT_MS = 120_000"), "archive creation should enforce a subprocess timeout envelope");
+  assert(toolsSource.includes("Oracle archive subprocess timed out after"), "archive creation should surface timeout failures clearly");
   assert(workerSource.includes("cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupWarnings]"), "worker should persist cleanup warnings when runtime teardown is incomplete");
   assert(workerSource.includes("Stopping queued cleanup promotion after"), "cleanup-driven queued promotion should stop when teardown leaves warnings");
   assert(workerSource.includes("if (existing?.jobId === job.id) return true;"), "cleanup-driven queued promotion should reuse same-job conversation leases during retry");
@@ -3539,6 +3788,55 @@ async function testArchiveRejectsSymlinkEscapes(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
+  }
+}
+
+async function testArchiveSubprocessTimeoutKillsHungChildren(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-timeout-"));
+  const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-bin-"));
+  const archivePath = join(tmpdir(), `oracle-archive-timeout-${randomUUID()}.tar.zst`);
+  const tarPidPath = join(binDir, "tar.pid");
+  const zstdPidPath = join(binDir, "zstd.pid");
+  const originalPath = process.env.PATH ?? "";
+
+  try {
+    await mkdir(join(fixtureDir, "src"), { recursive: true });
+    await writeFile(join(fixtureDir, "src", "main.ts"), "export const main = true;\n");
+    await writeExecutableScript(
+      join(binDir, "tar"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(tarPidPath)}
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`,
+    );
+    await writeExecutableScript(
+      join(binDir, "zstd"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(zstdPidPath)}
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`,
+    );
+    process.env.PATH = `${binDir}:${originalPath}`;
+
+    await assertRejects(
+      () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 250 }),
+      "archive creation should time out when tar/zstd hang",
+      "timed out",
+    );
+
+    const tarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
+    const zstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
+    assert(Number.isFinite(tarPid), "archive timeout test should record a tar pid");
+    assert(Number.isFinite(zstdPid), "archive timeout test should record a zstd pid");
+    assert(await waitForPidExit(tarPid), "archive timeout should terminate the hung tar process");
+    assert(await waitForPidExit(zstdPid), "archive timeout should terminate the hung zstd process");
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
   }
 }
 
@@ -3915,6 +4213,9 @@ async function main() {
   await testCleanupPendingRecoveryUnblocksAdmission(config);
   await testCleanupPendingRecoveryTerminatesStaleLiveWorker(config);
   await testCleanupPendingBlocksAdmission(config);
+  await testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config);
+  await testRuntimeProfileCloneTimeoutKillsHungCp(config);
+  await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
   await testJobCreationPersistsSelectionSnapshot(config);
   await testOracleSubmitPresetGuardrails();
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
@@ -3976,6 +4277,7 @@ async function main() {
   await testResponseTimeoutGuard();
   await testArchiveDefaultExclusions();
   await testArchiveRejectsSymlinkEscapes();
+  await testArchiveSubprocessTimeoutKillsHungChildren();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testSanityRunnerIsolation();

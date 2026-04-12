@@ -78,6 +78,8 @@ const ORACLE_CANCEL_PARAMS = Type.Object({
 const MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
 const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = MAX_ARCHIVE_BYTES;
+const ARCHIVE_COMMAND_TIMEOUT_MS = 120_000;
+const ARCHIVE_COMMAND_KILL_GRACE_MS = 2_000;
 
 const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".git",
@@ -325,7 +327,13 @@ function formatArchiveOversizeError(args: {
     .join("\n");
 }
 
-async function writeArchiveFile(cwd: string, entries: string[], archivePath: string, listPath: string): Promise<number> {
+async function writeArchiveFile(
+  cwd: string,
+  entries: string[],
+  archivePath: string,
+  listPath: string,
+  options?: { commandTimeoutMs?: number },
+): Promise<number> {
   await writeFile(listPath, Buffer.from(`${entries.join("\0")}\0`), { mode: 0o600 });
   await rm(archivePath, { force: true }).catch(() => undefined);
 
@@ -341,23 +349,56 @@ async function writeArchiveFile(cwd: string, entries: string[], archivePath: str
 
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let killGraceTimer: NodeJS.Timeout | undefined;
     let tarCode: number | null | undefined;
     let zstdCode: number | null | undefined;
+
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (killGraceTimer) clearTimeout(killGraceTimer);
+    };
+
+    const terminateChildren = () => {
+      tar.kill("SIGTERM");
+      zstd.kill("SIGTERM");
+      killGraceTimer = setTimeout(() => {
+        tar.kill("SIGKILL");
+        zstd.kill("SIGKILL");
+      }, ARCHIVE_COMMAND_KILL_GRACE_MS);
+      killGraceTimer.unref?.();
+    };
 
     const finish = (error?: Error) => {
       if (settled) return;
       if (error) {
         settled = true;
-        tar.kill("SIGTERM");
-        zstd.kill("SIGTERM");
+        clearTimers();
+        terminateChildren();
         rejectPromise(error);
         return;
       }
       if (tarCode === undefined || zstdCode === undefined) return;
       settled = true;
+      clearTimers();
+      if (timedOut) {
+        rejectPromise(new Error(stderr || `Oracle archive subprocess timed out after ${options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS}ms`));
+        return;
+      }
       if (tarCode === 0 && zstdCode === 0) resolvePromise();
       else rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}, zstd=${zstdCode})`));
     };
+
+    const commandTimeoutMs = options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS;
+    if (commandTimeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        stderr = `${stderr}${stderr ? "\n" : ""}Oracle archive subprocess timed out after ${commandTimeoutMs}ms`;
+        terminateChildren();
+      }, commandTimeoutMs);
+      timeout.unref?.();
+    }
 
     tar.stderr.on("data", (data) => {
       stderr += String(data);
@@ -385,7 +426,7 @@ export async function createArchiveForTesting(
   cwd: string,
   files: string[],
   archivePath: string,
-  options?: { maxBytes?: number; adaptivePruneMinBytes?: number },
+  options?: { maxBytes?: number; adaptivePruneMinBytes?: number; commandTimeoutMs?: number },
 ): Promise<ArchiveCreationResult> {
   const archiveInputs = resolveArchiveInputs(cwd, files);
   const wholeRepoSelection = isWholeRepoArchiveSelection(archiveInputs);
@@ -407,7 +448,7 @@ export async function createArchiveForTesting(
         throw new Error("Oracle archive inputs are empty after default exclusions and automatic size pruning");
       }
 
-      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath);
+      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath, { commandTimeoutMs: options?.commandTimeoutMs });
       if (archiveBytes < maxBytes) {
         return {
           sha256: await sha256File(archivePath),

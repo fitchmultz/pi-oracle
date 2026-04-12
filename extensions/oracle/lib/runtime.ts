@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -12,6 +12,8 @@ const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
+const PROFILE_CLONE_TIMEOUT_MS = 120_000;
+const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
 
 export interface OracleRuntimeLeaseMetadata {
   jobId: string;
@@ -106,12 +108,35 @@ export async function writeSeedGeneration(config: OracleConfig, value = new Date
   return value;
 }
 
+function readProcessStartedAt(pid: number | undefined): string | undefined {
+  if (!pid || pid <= 0) return undefined;
+  try {
+    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return startedAt || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAdmissionBlockingWorker(pid: number | undefined, startedAt?: string): boolean {
+  const currentStartedAt = readProcessStartedAt(pid);
+  if (!currentStartedAt) return false;
+  return startedAt ? currentStartedAt === startedAt : true;
+}
+
 function activeJobExists(jobId: string): boolean {
   const path = join(ORACLE_JOBS_DIR, `oracle-${jobId}`, "job.json");
   if (!existsSync(path)) return false;
   try {
-    const job = JSON.parse(readFileSync(path, "utf8")) as { status?: string; cleanupWarnings?: unknown; cleanupPending?: unknown };
-    return ["preparing", "submitted", "waiting"].includes(job.status || "") || job.cleanupPending === true || (Array.isArray(job.cleanupWarnings) && job.cleanupWarnings.length > 0);
+    const job = JSON.parse(readFileSync(path, "utf8")) as {
+      status?: string;
+      cleanupPending?: unknown;
+      workerPid?: unknown;
+      workerStartedAt?: unknown;
+    };
+    return ["preparing", "submitted", "waiting"].includes(job.status || "") ||
+      job.cleanupPending === true ||
+      isAdmissionBlockingWorker(typeof job.workerPid === "number" ? job.workerPid : undefined, typeof job.workerStartedAt === "string" ? job.workerStartedAt : undefined);
   } catch {
     return false;
   }
@@ -198,22 +223,55 @@ function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDi
   return ["-R", sourceDir, destinationDir];
 }
 
-async function spawnCp(args: string[]): Promise<void> {
+async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn("cp", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    let killGraceTimer: NodeJS.Timeout | undefined;
+
+    const clearTimers = () => {
+      if (killTimer) clearTimeout(killTimer);
+      if (killGraceTimer) clearTimeout(killGraceTimer);
+    };
+
+    if ((options?.timeoutMs ?? 0) > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        killGraceTimer = setTimeout(() => {
+          child.kill("SIGKILL");
+        }, ORACLE_SUBPROCESS_KILL_GRACE_MS);
+        killGraceTimer.unref?.();
+      }, options?.timeoutMs);
+      killTimer.unref?.();
+    }
+
     child.stderr.on("data", (data) => {
       stderr += String(data);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimers();
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimers();
+      if (timedOut) {
+        reject(new Error(stderr || `cp timed out after ${options?.timeoutMs}ms`));
+        return;
+      }
       if (code === 0) resolve();
       else reject(new Error(stderr || `cp exited with code ${code}`));
     });
   });
 }
 
-export async function cloneSeedProfileToRuntime(config: OracleConfig, runtimeProfileDir: string): Promise<string | undefined> {
+export async function cloneSeedProfileToRuntime(
+  config: OracleConfig,
+  runtimeProfileDir: string,
+  options?: { cpTimeoutMs?: number },
+): Promise<string | undefined> {
   const seedDir = config.browser.authSeedProfileDir;
   if (!existsSync(seedDir)) {
     throw new Error(`Oracle auth seed profile not found: ${seedDir}. Run /oracle-auth first.`);
@@ -222,7 +280,7 @@ export async function cloneSeedProfileToRuntime(config: OracleConfig, runtimePro
   await withAuthLock({ runtimeProfileDir, seedDir }, async () => {
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await mkdir(dirname(runtimeProfileDir), { recursive: true, mode: 0o700 }).catch(() => undefined);
-    await spawnCp(profileCloneArgs(config, seedDir, runtimeProfileDir));
+    await spawnCp(profileCloneArgs(config, seedDir, runtimeProfileDir), { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
   });
 
   return getSeedGeneration(config);
@@ -285,9 +343,6 @@ export async function cleanupRuntimeArtifacts(runtime: {
     await rm(runtime.runtimeProfileDir, { recursive: true, force: true }).catch((error: Error) => {
       report.warnings.push(`Failed to remove runtime profile ${runtime.runtimeProfileDir}: ${error.message}`);
     });
-  }
-  if (report.warnings.length > 0) {
-    return report;
   }
   if (runtime.conversationId) {
     report.attempted.push("conversationLease");

@@ -48,6 +48,7 @@ const ARTIFACT_DOWNLOAD_HEARTBEAT_MS = 10_000;
 const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000;
 const ARTIFACT_DOWNLOAD_MAX_ATTEMPTS = 2;
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS = 20_000;
 const MODEL_CONFIGURATION_SETTLE_POLL_MS = 250;
 const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
@@ -197,8 +198,15 @@ function isActiveJobStatus(status) {
   return ["preparing", "submitted", "waiting"].includes(String(status || ""));
 }
 
+function hasAdmissionBlockingWorker(job) {
+  if (!job?.workerPid) return false;
+  const currentStartedAt = readProcessStartedAt(job.workerPid);
+  if (!currentStartedAt) return false;
+  return job.workerStartedAt ? currentStartedAt === job.workerStartedAt : true;
+}
+
 function jobBlocksAdmission(job) {
-  return isActiveJobStatus(job?.status) || job?.cleanupPending === true || (Array.isArray(job?.cleanupWarnings) && job.cleanupWarnings.length > 0);
+  return isActiveJobStatus(job?.status) || job?.cleanupPending === true || hasAdmissionBlockingWorker(job);
 }
 
 function hasDurableWorkerHandoff(job) {
@@ -342,7 +350,7 @@ async function cloneSeedProfileToRuntime(job) {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
     const cloneArgs = job.config.browser.cloneStrategy === "apfs-clone" ? ["-cR", seedDir, job.runtimeProfileDir] : ["-R", seedDir, job.runtimeProfileDir];
-    await spawnCommand("cp", cloneArgs);
+    await spawnCommand("cp", cloneArgs, { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
   }, 10 * 60 * 1000);
 
   return seedGeneration;

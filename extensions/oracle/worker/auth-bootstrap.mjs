@@ -42,6 +42,17 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
 
+function readPositiveIntEnv(name, fallback) {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const AGENT_BROWSER_COMMAND_TIMEOUT_MS = readPositiveIntEnv("PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS", 30_000);
+const AGENT_BROWSER_CLOSE_TIMEOUT_MS = readPositiveIntEnv("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS", 10_000);
+const AGENT_BROWSER_KILL_GRACE_MS = readPositiveIntEnv("PI_ORACLE_AUTH_KILL_GRACE_MS", 2_000);
+
 let runtimeProfileDir = config.browser.authSeedProfileDir;
 
 function authSessionName() {
@@ -78,12 +89,25 @@ async function log(message) {
 
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      ...options,
+      ...spawnOptions,
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let killTimer;
+    let killGraceTimer;
+    if (typeof timeoutMs === "number" && timeoutMs > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        killGraceTimer = setTimeout(() => child.kill("SIGKILL"), AGENT_BROWSER_KILL_GRACE_MS);
+        killGraceTimer.unref?.();
+      }, timeoutMs);
+      killTimer.unref?.();
+    }
     if (options.input) child.stdin.end(options.input);
     else child.stdin.end();
     child.stdout.on("data", (data) => {
@@ -92,8 +116,20 @@ function spawnCommand(command, args, options = {}) {
     child.stderr.on("data", (data) => {
       stderr += String(data);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (killTimer) clearTimeout(killTimer);
+      if (killGraceTimer) clearTimeout(killGraceTimer);
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (killTimer) clearTimeout(killTimer);
+      if (killGraceTimer) clearTimeout(killGraceTimer);
+      if (timedOut) {
+        const error = new Error(stderr || stdout || `${command} timed out after ${timeoutMs}ms`);
+        if (options.allowFailure) resolve({ code, stdout: stdout.trim(), stderr: error.message });
+        else reject(error);
+        return;
+      }
       if (code === 0 || options.allowFailure) resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
       else reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
     });
@@ -114,7 +150,10 @@ function targetBrowserBaseArgs(options = {}) {
 
 async function closeTargetBrowser() {
   await log(`Closing target browser session ${authSessionName()} if present`);
-  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "close"], { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "close"], {
+    allowFailure: true,
+    timeoutMs: AGENT_BROWSER_CLOSE_TIMEOUT_MS,
+  });
   await log(`close result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
 }
 
@@ -131,7 +170,10 @@ async function ensureNotSymlink(path, label) {
 }
 
 async function isAuthBrowserConnected() {
-  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "--json", "stream", "status"], {
+    allowFailure: true,
+    timeoutMs: AGENT_BROWSER_COMMAND_TIMEOUT_MS,
+  });
   try {
     const parsed = JSON.parse(result.stdout || "{}");
     return parsed?.data?.connected === true;
@@ -223,7 +265,7 @@ async function launchTargetBrowser() {
   await closeTargetBrowser();
   const args = [...targetBrowserBaseArgs({ withLaunchOptions: true, mode: "headed" }), "open", "about:blank"];
   await log(`Launching isolated browser: agent-browser ${JSON.stringify(args)}`);
-  const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true, timeoutMs: AGENT_BROWSER_COMMAND_TIMEOUT_MS });
   await log(`launch result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
   if (result.code !== 0) {
     throw new Error(result.stderr || result.stdout || "Failed to launch isolated oracle browser");
@@ -231,7 +273,10 @@ async function launchTargetBrowser() {
 }
 
 async function streamStatus() {
-  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "--json", "stream", "status"], { allowFailure: true });
+  const result = await spawnCommand(AGENT_BROWSER_BIN, [...targetBrowserBaseArgs(), "--json", "stream", "status"], {
+    allowFailure: true,
+    timeoutMs: AGENT_BROWSER_COMMAND_TIMEOUT_MS,
+  });
   await log(`stream status: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
   try {
     const parsed = JSON.parse(result.stdout || "{}");
@@ -255,7 +300,11 @@ async function targetCommand(...args) {
     maybeOptions &&
     typeof maybeOptions === "object" &&
     !Array.isArray(maybeOptions) &&
-    (Object.hasOwn(maybeOptions, "allowFailure") || Object.hasOwn(maybeOptions, "input") || Object.hasOwn(maybeOptions, "cwd") || Object.hasOwn(maybeOptions, "logLabel"))
+    (Object.hasOwn(maybeOptions, "allowFailure") ||
+      Object.hasOwn(maybeOptions, "input") ||
+      Object.hasOwn(maybeOptions, "cwd") ||
+      Object.hasOwn(maybeOptions, "logLabel") ||
+      Object.hasOwn(maybeOptions, "timeoutMs"))
   ) {
     options = args.pop();
   }

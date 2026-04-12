@@ -159,6 +159,63 @@ Expected behavior:
 - the error should say the archive input must resolve inside the project cwd without symlink escapes
 - no oracle job directory should be created for the rejected submit
 
+## Additional failure-mode smoke tests
+
+### `/oracle-auth` should fail fast when `agent-browser` hangs
+
+Use this when validating timeout hardening around auth/bootstrap browser commands.
+
+```bash
+set -euo pipefail
+
+REPO="$PWD"
+TEST_ROOT="/tmp/pi-oracle-auth-timeout-$$"
+AGENT_DIR="$TEST_ROOT/agent"
+SESSION_DIR="$TEST_ROOT/sessions"
+JOBS_DIR="$TEST_ROOT/jobs"
+FAKE_BROWSER="$TEST_ROOT/agent-browser"
+SESSION_NAME="pi-oracle-auth-timeout"
+
+mkdir -p "$AGENT_DIR/extensions" "$SESSION_DIR" "$JOBS_DIR"
+
+cat > "$AGENT_DIR/extensions/oracle.json" <<JSON
+{
+  "auth": {
+    "chromeCookiePath": "$TEST_ROOT/missing-cookies.sqlite"
+  }
+}
+JSON
+
+cat > "$FAKE_BROWSER" <<'SH'
+#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+SH
+chmod +x "$FAKE_BROWSER"
+
+cleanup() {
+  tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+}
+trap 'cleanup; rm -rf "$TEST_ROOT"' EXIT
+cleanup
+
+TMUX_CMD="cd '$REPO' && env PI_CODING_AGENT_DIR='$AGENT_DIR' PI_ORACLE_JOBS_DIR='$JOBS_DIR' AGENT_BROWSER_PATH='$FAKE_BROWSER' PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS='250' PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS='250' PI_ORACLE_AUTH_KILL_GRACE_MS='100' PATH='$PATH' pi --session-dir '$SESSION_DIR' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
+
+tmux new-session -d -s "$SESSION_NAME" "$TMUX_CMD"
+sleep 8
+tmux send-keys -t "$SESSION_NAME":0.0 '/oracle-auth' Enter
+sleep 12
+
+tmux capture-pane -p -S -220 -t "$SESSION_NAME":0.0 | tail -n 140
+```
+
+Expected behavior:
+
+- the isolated `pi` session loads the local extension successfully
+- `/oracle-auth` returns with an error instead of hanging indefinitely
+- the output should mention the missing ChatGPT session-token cookies or the configured cookie source problem
+- the session should remain usable after the command failure
+
 ## Switching to `thinking_light`
 
 To run the same smoke test with `thinking_light`, change both prompts from:
