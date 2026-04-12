@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 - 2026-04-12
+
+### Added
+- `oracle_preflight`, a lightweight readiness tool that lets `/oracle` fail fast on missing persisted-session or local auth/config blockers before archive/context work begins
+
+### Changed
+- `/oracle` now follows a stricter preflight-first flow, biases toward minimal context gathering for explicitly narrow requests, and prefers the configured default model unless a different preset is clearly needed
+- `oracle_read`, `/oracle-status`, and wake-up messaging now keep the true terminal event prominent, separate wake-up bookkeeping from failure state, and stop implying that a missing `response.md` is ready
+- `/oracle-auth` failure guidance now reports the effective agent config path for the active agent dir and explains when a project config was also read but could not override `auth.*`
+- `/oracle-clean` now documents the short post-send retention grace window and returns a retry-after timestamp when a terminal job is still intentionally retained
+
+### Fixed
+- `oracle_submit` now rejects locally knowable auth-seed blockers before archive creation or job persistence while still preserving direct archive-input validation errors like symlink escapes
+- oracle tool results now use consistent structured `details.job` / `details.error` payloads and preserve `isError` for structured failures through the tool-result hook
+- `/oracle` no-session and missing-seed flows now stop before unnecessary repo exploration, and narrow prompt-template runs dispatch more quickly with smaller archives when the user scope is explicit
+- repeated oracle sanity runs now quiesce background pollers before isolated-state teardown so release verification no longer emits a noisy temp-lock ENOENT race
+
 ## 0.4.0 - 2026-04-12
 
 ### Added

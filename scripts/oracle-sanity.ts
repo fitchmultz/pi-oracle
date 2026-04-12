@@ -2464,6 +2464,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
   const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
+  const supportSource = await readFile(new URL("./oracle-sanity-support.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
   const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
   const recoveryDrillSource = await readFile(new URL("../docs/ORACLE_RECOVERY_DRILL.md", import.meta.url), "utf8");
@@ -2636,6 +2637,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("recordNotificationTarget(jobId, notificationClaimant"), "poller should persist the intended wake-up target before sending a best-effort completion reminder");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent"), "poller wake-up turns should format content through the shared observability helper");
   assert(pollerSource.includes("buildOracleStatusText"), "poller status updates should format session status through the shared observability helper");
+  assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
+  assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
   assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
   assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck immediately before the wake-up send path");
   assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
@@ -2649,6 +2652,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("beforeNotificationPersist"), "poller should support a last-moment revalidation hook before wake-up delivery for regression coverage");
   assert(!pollerSource.includes("manager.setSessionFile(sessionFile)"), "poller should not discard live in-memory session history by reloading the current session manager before completion delivery");
   assert(!pollerSource.includes("appendMessage(buildNotificationMessage(job, notificationModel))"), "poller should not append synthetic assistant completion messages into session history");
+  assert(supportSource.includes("await stopAllPollers();"), "sanity support should stop active pollers before removing the isolated oracle state dir");
+  assert(supportSource.includes("await waitForAllPollersToQuiesce()"), "sanity support should wait for in-flight poller scans before removing the isolated oracle state dir");
   assert(!pollerSource.includes("reopenAndVerifyNotification"), "poller should no longer rely on post-append session-history verification for completion delivery");
   assert(!pollerSource.includes("findExistingNotificationRecord"), "poller should not rely on durable session-history notification recovery under the wake-up-only model");
   assert(pollerSource.includes("ORACLE_WAKEUP_REMINDER_CUSTOM_TYPE"), "poller should deliver completion reminders via a dedicated best-effort wake-up custom message type");

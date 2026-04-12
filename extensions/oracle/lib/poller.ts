@@ -294,10 +294,31 @@ export function stopPollerForSession(sessionFile: string | undefined, cwd: strin
   if (timer) {
     clearInterval(timer);
     activePollers.delete(sessionKey);
-    scansInFlight.delete(sessionKey);
   }
   const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(sessionKey);
   void releaseLease(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey).catch(() => undefined);
+}
+
+export async function stopAllPollers(): Promise<void> {
+  const sessionKeys = [...activePollers.keys()];
+  for (const timer of activePollers.values()) {
+    clearInterval(timer);
+  }
+  activePollers.clear();
+  await Promise.all(sessionKeys.map(async (sessionKey) => {
+    const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(sessionKey);
+    await releaseLease(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey).catch(() => undefined);
+  }));
+}
+
+export async function waitForAllPollersToQuiesce(timeoutMs = 2_000): Promise<void> {
+  const startedAt = Date.now();
+  while (scansInFlight.size > 0) {
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`Timed out waiting for oracle pollers to quiesce after ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 export function stopPoller(ctx: ExtensionContext): void {

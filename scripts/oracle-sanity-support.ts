@@ -17,6 +17,7 @@ import {
   type OracleSubmitPresetId,
 } from "../extensions/oracle/lib/config.ts";
 import { getOracleStateDir } from "../extensions/oracle/lib/locks.ts";
+import { stopAllPollers, waitForAllPollersToQuiesce } from "../extensions/oracle/lib/poller.ts";
 import { createJob, getJobDir, readJob, updateJob } from "../extensions/oracle/lib/jobs.ts";
 import { transitionOracleJobPhase } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 
@@ -194,6 +195,8 @@ export async function removeDirRobust(path: string, options?: { attempts?: numbe
 }
 
 export async function resetOracleStateDir(): Promise<void> {
+  await stopAllPollers();
+  await waitForAllPollersToQuiesce().catch(() => undefined);
   await removeDirRobust(getOracleStateDir());
 }
 
