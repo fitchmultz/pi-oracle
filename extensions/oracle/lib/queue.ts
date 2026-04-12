@@ -1,15 +1,20 @@
-import { existsSync } from "node:fs";
+// Purpose: Coordinate queued oracle job ordering and promotion into active worker execution.
+// Responsibilities: List queued jobs, compute queue position, and promote queued work under admission control using shared coordination helpers.
+// Scope: Extension-side queue orchestration only; shared promotion primitives live in extensions/oracle/shared and worker-side autonomous promotion stays in run-job.mjs.
+// Usage: Imported by oracle tools/commands when queued jobs may advance after submission or cancellation.
+// Invariants/Assumptions: Queue promotion runs under the global admission lock and only promotes jobs with durable archives and acquired runtime/conversation leases.
+import {
+  buildConversationLeaseMetadata,
+  buildRuntimeLeaseMetadata,
+  compareQueuedOracleJobs,
+  hasDurableWorkerHandoff,
+  isQueuedOracleJob,
+  runQueuedJobPromotionPass,
+} from "../shared/job-coordination-helpers.mjs";
 import { loadOracleConfig } from "./config.js";
 import { withLock } from "./locks.js";
-import { appendCleanupWarnings, createJob, hasDurableWorkerHandoff, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, withJobPhase, type OracleJob } from "./jobs.js";
-import {
-  cleanupRuntimeArtifacts,
-  releaseRuntimeLease,
-  tryAcquireConversationLease,
-  tryAcquireRuntimeLease,
-  type OracleConversationLeaseMetadata,
-  type OracleRuntimeLeaseMetadata,
-} from "./runtime.js";
+import { appendCleanupWarnings, createJob, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, withJobPhase, type OracleJob } from "./jobs.js";
+import { cleanupRuntimeArtifacts, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "./runtime.js";
 
 export interface OracleQueuePosition {
   position: number;
@@ -24,13 +29,11 @@ export interface PromoteQueuedJobsOptions {
 }
 
 function isQueuedJob(job: OracleJob | undefined): job is OracleJob {
-  return Boolean(job && job.status === "queued");
+  return isQueuedOracleJob(job);
 }
 
 export function compareQueuedJobs(left: OracleJob, right: OracleJob): number {
-  const leftKey = left.queuedAt ?? left.createdAt;
-  const rightKey = right.queuedAt ?? right.createdAt;
-  return leftKey.localeCompare(rightKey) || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+  return compareQueuedOracleJobs(left, right);
 }
 
 export function listQueuedJobs(): OracleJob[] {
@@ -47,29 +50,6 @@ export function getQueuePosition(jobId: string): OracleQueuePosition | undefined
   return {
     position: index + 1,
     depth: queuedJobs.length,
-  };
-}
-
-function runtimeLeaseMetadata(job: OracleJob, createdAt: string): OracleRuntimeLeaseMetadata {
-  return {
-    jobId: job.id,
-    runtimeId: job.runtimeId,
-    runtimeSessionName: job.runtimeSessionName,
-    runtimeProfileDir: job.runtimeProfileDir,
-    projectId: job.projectId,
-    sessionId: job.sessionId,
-    createdAt,
-  };
-}
-
-function conversationLeaseMetadata(job: OracleJob, createdAt: string): OracleConversationLeaseMetadata | undefined {
-  if (!job.conversationId) return undefined;
-  return {
-    jobId: job.id,
-    conversationId: job.conversationId,
-    projectId: job.projectId,
-    sessionId: job.sessionId,
-    createdAt,
   };
 }
 
@@ -90,40 +70,29 @@ async function failQueuedPromotion(job: OracleJob, message: string, at: string):
 export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueuedJobsOptions): Promise<{ promotedJobIds: string[] }> {
   const spawnWorkerFn = options.spawnWorkerFn ?? spawnWorker;
   const loadConfigFn = options.loadConfigFn ?? loadOracleConfig;
-  const promotedJobIds: string[] = [];
 
-  for (const queuedJob of listQueuedJobs()) {
-    const now = new Date().toISOString();
-    let runtimeLeaseAcquired = false;
-    let conversationLeaseAcquired = false;
-    let workerSpawned = false;
-    let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
-
-    try {
-      const current = readJob(queuedJob.id);
-      if (!isQueuedJob(current)) continue;
-      if (!existsSync(current.archivePath)) {
-        await failQueuedPromotion(current, `Queued oracle archive is missing: ${current.archivePath}`, now);
-        continue;
-      }
-
-      const config = current.config ?? loadConfigFn(current.cwd);
-      const runtimeAttempt = await tryAcquireRuntimeLease(config, runtimeLeaseMetadata(current, now));
-      if (!runtimeAttempt.acquired) break;
-      runtimeLeaseAcquired = true;
-
-      const conversationMetadata = conversationLeaseMetadata(current, now);
-      if (conversationMetadata) {
-        const conversationAttempt = await tryAcquireConversationLease(conversationMetadata);
-        if (!conversationAttempt.acquired) {
-          await releaseRuntimeLease(current.runtimeId).catch(() => undefined);
-          runtimeLeaseAcquired = false;
-          continue;
-        }
-        conversationLeaseAcquired = true;
-      }
-
-      await updateJob(current.id, (latest) => {
+  return runQueuedJobPromotionPass<OracleJob, Awaited<ReturnType<typeof spawnWorkerFn>>>({
+    listQueuedJobs,
+    refreshJob: (jobId) => readJob(jobId),
+    readLatestJob: (jobId) => readJob(jobId),
+    isQueuedJob,
+    acquireRuntimeLease: async (job, at) => {
+      const config = job.config ?? loadConfigFn(job.cwd);
+      const attempt = await tryAcquireRuntimeLease(config, buildRuntimeLeaseMetadata(job, at));
+      return attempt.acquired;
+    },
+    acquireConversationLease: async (job, at) => {
+      const metadata = buildConversationLeaseMetadata(job, at);
+      if (!metadata) return true;
+      const attempt = await tryAcquireConversationLease(metadata);
+      return attempt.acquired;
+    },
+    releaseRuntimeLease: async (job) => {
+      await releaseRuntimeLease(job.runtimeId);
+    },
+    markSubmitted: async (job, at) => {
+      const config = job.config ?? loadConfigFn(job.cwd);
+      await updateJob(job.id, (latest) => {
         if (latest.status !== "queued") {
           throw new Error(`Queued job ${latest.id} changed state during promotion (${latest.status})`);
         }
@@ -132,47 +101,38 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
           config,
           ...withJobPhase("submitted", {
             status: "submitted",
-            submittedAt: latest.submittedAt || now,
-          }, now),
+            submittedAt: latest.submittedAt || at,
+          }, at),
         };
       });
-
-      spawnedWorker = await spawnWorkerFn(options.workerPath, current.id);
-      workerSpawned = true;
-      const worker = spawnedWorker;
-      await updateJob(current.id, (latest) => ({
+    },
+    spawnWorker: async (job) => spawnWorkerFn(options.workerPath, job.id),
+    persistWorker: async (job, worker) => {
+      await updateJob(job.id, (latest) => ({
         ...latest,
         workerPid: worker.pid,
         workerNonce: worker.nonce,
         workerStartedAt: worker.startedAt,
       }));
-      promotedJobIds.push(current.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const latest = readJob(queuedJob.id);
-      if (workerSpawned && latest && hasDurableWorkerHandoff(latest)) {
-        promotedJobIds.push(queuedJob.id);
-        continue;
-      }
-      if (spawnedWorker) {
-        await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt).catch(() => undefined);
-      }
-      if (latest && !isTerminalOracleJob(latest)) {
-        await failQueuedPromotion(latest, message, now);
-      }
+    },
+    hasDurableWorkerHandoff,
+    isTerminalJob: isTerminalOracleJob,
+    failQueuedPromotion,
+    terminateSpawnedWorker: async (worker) => {
+      await terminateWorkerPid(worker.pid, worker.startedAt);
+    },
+    cleanupAfterFailure: async ({ job, at, spawnedWorker, runtimeLeaseAcquired, conversationLeaseAcquired }) => {
       const cleanupReport = await cleanupRuntimeArtifacts({
-        runtimeId: runtimeLeaseAcquired ? queuedJob.runtimeId : undefined,
-        runtimeProfileDir: runtimeLeaseAcquired ? queuedJob.runtimeProfileDir : undefined,
-        runtimeSessionName: workerSpawned ? queuedJob.runtimeSessionName : undefined,
-        conversationId: conversationLeaseAcquired ? queuedJob.conversationId : undefined,
+        runtimeId: runtimeLeaseAcquired ? job.runtimeId : undefined,
+        runtimeProfileDir: runtimeLeaseAcquired ? job.runtimeProfileDir : undefined,
+        runtimeSessionName: spawnedWorker ? job.runtimeSessionName : undefined,
+        conversationId: conversationLeaseAcquired ? job.conversationId : undefined,
       }).catch(() => ({ attempted: [], warnings: [] }));
       if (cleanupReport.warnings.length > 0) {
-        await appendCleanupWarnings(queuedJob.id, cleanupReport.warnings, now).catch(() => undefined);
+        await appendCleanupWarnings(job.id, cleanupReport.warnings, at).catch(() => undefined);
       }
-    }
-  }
-
-  return { promotedJobIds };
+    },
+  });
 }
 
 export async function promoteQueuedJobs(options: PromoteQueuedJobsOptions): Promise<{ promotedJobIds: string[] }> {

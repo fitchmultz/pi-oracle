@@ -13,11 +13,19 @@
     "types": ["node"]
   },
   "include": [
+    "extensions/oracle/shared/process-helpers.mjs",
+    "extensions/oracle/shared/process-helpers.d.mts",
+    "extensions/oracle/shared/state-coordination-helpers.mjs",
+    "extensions/oracle/shared/state-coordination-helpers.d.mts",
+    "extensions/oracle/shared/job-coordination-helpers.mjs",
+    "extensions/oracle/shared/job-coordination-helpers.d.mts",
     "extensions/oracle/worker/chatgpt-ui-helpers.mjs",
     "extensions/oracle/worker/chatgpt-ui-helpers.d.mts",
     "extensions/oracle/worker/chatgpt-flow-helpers.mjs",
     "extensions/oracle/worker/chatgpt-flow-helpers.d.mts",
     "extensions/oracle/worker/auth-flow-helpers.mjs",
-    "extensions/oracle/worker/auth-flow-helpers.d.mts"
+    "extensions/oracle/worker/auth-flow-helpers.d.mts",
+    "extensions/oracle/worker/state-locks.mjs",
+    "extensions/oracle/worker/state-locks.d.mts"
   ]
 }

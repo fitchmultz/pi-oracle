@@ -1,8 +1,15 @@
+// Purpose: Manage oracle browser runtime allocation, lease admission, seed/runtime profile handling, and runtime cleanup for the extension side.
+// Responsibilities: Allocate runtimes, enforce persisted-session requirements, acquire/release runtime and conversation leases, and clean up runtime artifacts safely.
+// Scope: Extension-side runtime coordination only; shared concurrency/process primitives live in extensions/oracle/shared.
+// Usage: Imported by jobs, tools, and queue logic to provision or tear down isolated oracle browser runtimes.
+// Invariants/Assumptions: Lease metadata is the admission source of truth, tracked worker identity checks defend against PID reuse, and runtime cleanup always attempts lease release.
 import { randomUUID, createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
+import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
 import type { OracleConfig } from "./config.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
@@ -108,22 +115,6 @@ export async function writeSeedGeneration(config: OracleConfig, value = new Date
   return value;
 }
 
-function readProcessStartedAt(pid: number | undefined): string | undefined {
-  if (!pid || pid <= 0) return undefined;
-  try {
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    return startedAt || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isAdmissionBlockingWorker(pid: number | undefined, startedAt?: string): boolean {
-  const currentStartedAt = readProcessStartedAt(pid);
-  if (!currentStartedAt) return false;
-  return startedAt ? currentStartedAt === startedAt : true;
-}
-
 function activeJobExists(jobId: string): boolean {
   const path = join(ORACLE_JOBS_DIR, `oracle-${jobId}`, "job.json");
   if (!existsSync(path)) return false;
@@ -134,9 +125,12 @@ function activeJobExists(jobId: string): boolean {
       workerPid?: unknown;
       workerStartedAt?: unknown;
     };
-    return ["preparing", "submitted", "waiting"].includes(job.status || "") ||
-      job.cleanupPending === true ||
-      isAdmissionBlockingWorker(typeof job.workerPid === "number" ? job.workerPid : undefined, typeof job.workerStartedAt === "string" ? job.workerStartedAt : undefined);
+    return jobBlocksAdmission({
+      status: typeof job.status === "string" ? job.status : undefined,
+      cleanupPending: job.cleanupPending === true,
+      workerPid: typeof job.workerPid === "number" ? job.workerPid : undefined,
+      workerStartedAt: typeof job.workerStartedAt === "string" ? job.workerStartedAt : undefined,
+    }, isTrackedProcessAlive);
   } catch {
     return false;
   }

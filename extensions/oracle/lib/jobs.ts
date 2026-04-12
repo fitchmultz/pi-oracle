@@ -1,9 +1,15 @@
+// Purpose: Manage durable oracle job state, lifecycle transitions, reconciliation, and worker orchestration from the extension side.
+// Responsibilities: Persist job metadata, detect stale workers, coordinate notification/wake-up state, and spawn or terminate worker processes safely.
+// Scope: Extension-facing job management only; low-level shared process and state primitives live in extensions/oracle/shared.
+// Usage: Imported by oracle commands, tools, queue logic, poller flows, and runtime cleanup/reconciliation paths.
+// Invariants/Assumptions: Job mutations happen under per-job locks, worker identity checks defend against PID reuse, and persisted jobs remain the source of truth.
 import { createHash, randomUUID } from "node:crypto";
-import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { hasDurableWorkerHandoff as sharedHasDurableWorkerHandoff } from "../shared/job-coordination-helpers.mjs";
+import { isTrackedProcessAlive, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
 import { withJobLock, withLock } from "./locks.js";
 import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
@@ -65,9 +71,7 @@ export function hasRetainedPreSubmitArchive(job: Pick<OracleJob, "submittedAt" |
 export function hasDurableWorkerHandoff(
   job: Pick<OracleJob, "status" | "phase" | "workerPid" | "workerStartedAt" | "heartbeatAt">,
 ): boolean {
-  if (job.status === "queued") return false;
-  if (job.workerPid) return true;
-  return false;
+  return sharedHasDurableWorkerHandoff(job);
 }
 
 export function hasPersistedOriginSession(
@@ -76,30 +80,8 @@ export function hasPersistedOriginSession(
   return typeof job.originSessionFile === "string" && job.originSessionFile.length > 0 && job.sessionId === job.originSessionFile;
 }
 
-function readProcessStartedAt(pid: number | undefined): string | undefined {
-  if (!pid || pid <= 0) return undefined;
-  try {
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    return startedAt || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function waitForProcessStartedAt(pid: number | undefined, timeoutMs = 2_000): Promise<string | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const startedAt = readProcessStartedAt(pid);
-    if (startedAt) return startedAt;
-    await sleep(100);
-  }
-  return readProcessStartedAt(pid);
-}
-
 export function isWorkerProcessAlive(pid: number | undefined, startedAt?: string): boolean {
-  const currentStartedAt = readProcessStartedAt(pid);
-  if (!currentStartedAt) return false;
-  return startedAt ? currentStartedAt === startedAt : true;
+  return isTrackedProcessAlive(pid, startedAt);
 }
 
 export interface OracleArtifactRecord {
@@ -292,10 +274,6 @@ export async function clearCleanupPending(jobId: string, at = new Date().toISOSt
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function parseTimestamp(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Date.parse(value);
@@ -356,39 +334,7 @@ export async function terminateWorkerPid(
   startedAt?: string,
   options?: { termGraceMs?: number; killGraceMs?: number },
 ): Promise<boolean> {
-  if (!pid || pid <= 0) return true;
-  const currentStartedAt = readProcessStartedAt(pid);
-  if (!currentStartedAt) return true;
-  if (startedAt && currentStartedAt !== startedAt) return false;
-
-  const termGraceMs = options?.termGraceMs ?? 5000;
-  const killGraceMs = options?.killGraceMs ?? 2000;
-
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return !isWorkerProcessAlive(pid, startedAt);
-  }
-
-  const termDeadline = Date.now() + termGraceMs;
-  while (Date.now() < termDeadline) {
-    if (!isWorkerProcessAlive(pid, startedAt)) return true;
-    await sleep(250);
-  }
-
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    return !isWorkerProcessAlive(pid, startedAt);
-  }
-
-  const killDeadline = Date.now() + killGraceMs;
-  while (Date.now() < killDeadline) {
-    if (!isWorkerProcessAlive(pid, startedAt)) return true;
-    await sleep(250);
-  }
-
-  return !isWorkerProcessAlive(pid, startedAt);
+  return terminateTrackedProcess(pid, startedAt, options);
 }
 
 export function getStaleOracleJobReason(job: OracleJob, now = Date.now()): string | undefined {
@@ -1037,14 +983,10 @@ export async function spawnWorker(
   jobId: string,
 ): Promise<{ pid: number | undefined; nonce: string; startedAt: string | undefined }> {
   const nonce = randomUUID();
-  const child = spawn(process.execPath, [workerPath, jobId, nonce], {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
+  const child = await spawnDetachedNodeProcess(workerPath, [jobId, nonce]);
   return {
     pid: child.pid,
     nonce,
-    startedAt: await waitForProcessStartedAt(child.pid),
+    startedAt: child.startedAt,
   };
 }

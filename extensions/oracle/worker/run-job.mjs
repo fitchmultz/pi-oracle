@@ -1,9 +1,23 @@
+// Purpose: Execute a single oracle worker job from browser launch through response/artifact extraction and cleanup.
+// Responsibilities: Drive the isolated browser session, update durable job state, coordinate cleanup, and autonomously promote queued work after successful teardown.
+// Scope: Worker runtime behavior only; shared concurrency/process helpers live in extensions/oracle/shared and extension-side policy remains in lib modules.
+// Usage: Spawned as a detached Node process with a job id argument by the oracle extension queue/submission flows.
+// Invariants/Assumptions: Job state is persisted under worker-held locks, browser/session artifacts live under the configured oracle directories, and cleanup preserves durable recovery semantics.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import {
+  buildConversationLeaseMetadata,
+  buildRuntimeLeaseMetadata,
+  compareQueuedOracleJobs,
+  hasDurableWorkerHandoff,
+  jobBlocksAdmission,
+  runQueuedJobPromotionPass,
+} from "../shared/job-coordination-helpers.mjs";
+import { spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
@@ -70,78 +84,9 @@ async function ensurePrivateDir(path) {
   await chmod(path, 0o700).catch(() => undefined);
 }
 
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") return false;
-    return true;
-  }
-}
-
-function readProcessStartedAt(pid) {
-  if (!pid || pid <= 0) return undefined;
-  try {
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
-    return startedAt || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function waitForProcessStartedAt(pid, timeoutMs = 2_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const startedAt = readProcessStartedAt(pid);
-    if (startedAt) return startedAt;
-    await sleep(100);
-  }
-  return readProcessStartedAt(pid);
-}
-
 async function terminateWorkerPid(pid, startedAt, options = {}) {
-  if (!pid || pid <= 0) return true;
-  const currentStartedAt = readProcessStartedAt(pid);
-  if (!currentStartedAt) return true;
-  if (startedAt && currentStartedAt !== startedAt) return false;
-
-  const termGraceMs = options.termGraceMs ?? 5_000;
-  const killGraceMs = options.killGraceMs ?? 2_000;
-
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return !isProcessAlive(pid);
-  }
-
-  const termDeadline = Date.now() + termGraceMs;
-  while (Date.now() < termDeadline) {
-    const liveStartedAt = readProcessStartedAt(pid);
-    if (!liveStartedAt) return true;
-    if (startedAt && liveStartedAt !== startedAt) return true;
-    await sleep(250);
-  }
-
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    return !isProcessAlive(pid);
-  }
-
-  const killDeadline = Date.now() + killGraceMs;
-  while (Date.now() < killDeadline) {
-    const liveStartedAt = readProcessStartedAt(pid);
-    if (!liveStartedAt) return true;
-    if (startedAt && liveStartedAt !== startedAt) return true;
-    await sleep(250);
-  }
-
-  const finalStartedAt = readProcessStartedAt(pid);
-  if (!finalStartedAt) return true;
-  return startedAt ? finalStartedAt !== startedAt : false;
+  return terminateTrackedProcess(pid, startedAt, options);
 }
-
 
 async function secureWriteText(path, content) {
   const tmpPath = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -188,32 +133,7 @@ function listQueuedJobs() {
     .filter((name) => name.startsWith("oracle-"))
     .map((name) => readAnyJob(name.slice("oracle-".length)))
     .filter((job) => job?.status === "queued")
-    .sort((left, right) => {
-      const leftKey = left?.queuedAt || left?.createdAt || "";
-      const rightKey = right?.queuedAt || right?.createdAt || "";
-      return leftKey.localeCompare(rightKey) || String(left?.createdAt || "").localeCompare(String(right?.createdAt || "")) || String(left?.id || "").localeCompare(String(right?.id || ""));
-    });
-}
-
-function isActiveJobStatus(status) {
-  return ["preparing", "submitted", "waiting"].includes(String(status || ""));
-}
-
-function hasAdmissionBlockingWorker(job) {
-  if (!job?.workerPid) return false;
-  const currentStartedAt = readProcessStartedAt(job.workerPid);
-  if (!currentStartedAt) return false;
-  return job.workerStartedAt ? currentStartedAt === job.workerStartedAt : true;
-}
-
-function jobBlocksAdmission(job) {
-  return isActiveJobStatus(job?.status) || job?.cleanupPending === true || hasAdmissionBlockingWorker(job);
-}
-
-function hasDurableWorkerHandoff(job) {
-  if (!job || job.status === "queued") return false;
-  if (job.workerPid) return true;
-  return false;
+    .sort(compareQueuedOracleJobs);
 }
 
 async function mutateAnyJob(targetJobId, mutator) {
@@ -223,12 +143,6 @@ async function mutateAnyJob(targetJobId, mutator) {
     const next = mutator(current);
     await secureWriteText(path, `${JSON.stringify(next, null, 2)}\n`);
     return next;
-  });
-}
-
-async function writeAnyJob(targetJobId, job) {
-  await withLock(ORACLE_STATE_DIR, "job", targetJobId, { processPid: process.pid, action: "writeJob", targetJobId }, async () => {
-    await secureWriteText(getAnyJobPath(targetJobId), `${JSON.stringify(job, null, 2)}\n`);
   });
 }
 
@@ -409,49 +323,32 @@ async function tryAcquireRuntimeLeaseForJob(job, createdAt) {
   if (liveLeases.length >= job.config.browser.maxConcurrentJobs) {
     return false;
   }
-  await createLease(ORACLE_STATE_DIR, "runtime", job.runtimeId, {
-    jobId: job.id,
-    runtimeId: job.runtimeId,
-    runtimeSessionName: job.runtimeSessionName,
-    runtimeProfileDir: job.runtimeProfileDir,
-    projectId: job.projectId,
-    sessionId: job.sessionId,
-    createdAt,
-  });
+  await createLease(ORACLE_STATE_DIR, "runtime", job.runtimeId, buildRuntimeLeaseMetadata(job, createdAt));
   return true;
 }
 
 async function tryAcquireConversationLeaseForJob(job, createdAt) {
-  if (!job.conversationId) return true;
-  const existing = await readLeaseMetadata(ORACLE_STATE_DIR, "conversation", job.conversationId);
+  const metadata = buildConversationLeaseMetadata(job, createdAt);
+  if (!metadata) return true;
+  const existing = await readLeaseMetadata(ORACLE_STATE_DIR, "conversation", metadata.conversationId);
   if (existing?.jobId === job.id) return true;
   if (existing && existing.jobId !== job.id) {
     if (!jobBlocksAdmission(readAnyJob(existing.jobId))) {
-      await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(() => undefined);
+      await releaseLease(ORACLE_STATE_DIR, "conversation", metadata.conversationId).catch(() => undefined);
     } else {
       return false;
     }
   }
-  await createLease(ORACLE_STATE_DIR, "conversation", job.conversationId, {
-    jobId: job.id,
-    conversationId: job.conversationId,
-    projectId: job.projectId,
-    sessionId: job.sessionId,
-    createdAt,
-  });
+  await createLease(ORACLE_STATE_DIR, "conversation", metadata.conversationId, metadata);
   return true;
 }
 
 async function spawnDetachedWorker(targetJobId) {
-  const child = spawn(process.execPath, [WORKER_SCRIPT_PATH, targetJobId], {
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
+  const child = await spawnDetachedNodeProcess(WORKER_SCRIPT_PATH, [targetJobId]);
   return {
     pid: child.pid,
     workerNonce: randomUUID(),
-    workerStartedAt: await waitForProcessStartedAt(child.pid),
+    workerStartedAt: child.startedAt,
   };
 }
 
@@ -472,39 +369,30 @@ async function failQueuedPromotion(targetJobId, message, at = new Date().toISOSt
 
 async function promoteQueuedJobsAfterCleanup() {
   await withLock(ORACLE_STATE_DIR, "admission", "global", { processPid: process.pid, source: "worker_cleanup_promoter", jobId }, async () => {
-    for (const queuedJob of listQueuedJobs()) {
-      const current = readAnyJob(queuedJob.id);
-      if (!current || current.status !== "queued") continue;
-
-      let spawnedWorker;
-      const promotedAt = new Date().toISOString();
-      if (!existsSync(current.archivePath)) {
-        await failQueuedPromotion(current.id, `Queued oracle archive is missing: ${current.archivePath}`, promotedAt);
-        continue;
-      }
-      const runtimeLeaseAcquired = await tryAcquireRuntimeLeaseForJob(current, promotedAt);
-      if (!runtimeLeaseAcquired) break;
-
-      const conversationLeaseAcquired = await tryAcquireConversationLeaseForJob(current, promotedAt);
-      if (!conversationLeaseAcquired) {
-        await releaseLease(ORACLE_STATE_DIR, "runtime", current.runtimeId).catch(() => undefined);
-        continue;
-      }
-
-      try {
-        await mutateAnyJob(current.id, (latest) => {
+    await runQueuedJobPromotionPass({
+      listQueuedJobs,
+      refreshJob: (targetJobId) => readAnyJob(targetJobId),
+      readLatestJob: (targetJobId) => readAnyJob(targetJobId),
+      acquireRuntimeLease: async (job, at) => tryAcquireRuntimeLeaseForJob(job, at),
+      acquireConversationLease: async (job, at) => tryAcquireConversationLeaseForJob(job, at),
+      releaseRuntimeLease: async (job) => {
+        await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId);
+      },
+      markSubmitted: async (job, at) => {
+        await mutateAnyJob(job.id, (latest) => {
           if (latest.status !== "queued") throw new Error(`Queued job ${latest.id} changed state during cleanup promotion (${latest.status})`);
           return {
             ...latest,
             ...phasePatch("submitted", {
               status: "submitted",
-              submittedAt: latest.submittedAt || promotedAt,
-            }, promotedAt),
+              submittedAt: latest.submittedAt || at,
+            }, at),
           };
         });
-
-        spawnedWorker = await spawnDetachedWorker(current.id);
-        await mutateAnyJob(current.id, (latest) => {
+      },
+      spawnWorker: async (job) => spawnDetachedWorker(job.id),
+      persistWorker: async (job, spawnedWorker) => {
+        await mutateAnyJob(job.id, (latest) => {
           if (hasDurableWorkerHandoff(latest)) {
             return {
               ...latest,
@@ -520,44 +408,43 @@ async function promoteQueuedJobsAfterCleanup() {
             workerStartedAt: spawnedWorker.workerStartedAt,
           };
         });
-      } catch (error) {
-        const latest = readAnyJob(current.id);
-        if (hasDurableWorkerHandoff(latest)) {
-          await log(`Queued promotion handoff already durable for ${current.id}; leaving active job intact`).catch(() => undefined);
-          continue;
-        }
-        if (spawnedWorker) {
-          await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt).catch(() => undefined);
-        }
-        const failedAt = new Date().toISOString();
-        if (latest && !["complete", "failed", "cancelled"].includes(String(latest.status || ""))) {
-          await failQueuedPromotion(current.id, error instanceof Error ? error.message : String(error), failedAt);
-        }
+      },
+      hasDurableWorkerHandoff,
+      isTerminalJob: (job) => ["complete", "failed", "cancelled"].includes(String(job.status || "")),
+      failQueuedPromotion: async (job, message, at) => failQueuedPromotion(job.id, message, at),
+      terminateSpawnedWorker: async (spawnedWorker) => {
+        await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt);
+      },
+      cleanupAfterFailure: async ({ job, at, spawnedWorker }) => {
         if (spawnedWorker) {
           let cleanupWarnings = [];
           try {
-            cleanupWarnings = await cleanupRuntime(current);
+            cleanupWarnings = await cleanupRuntime(job);
           } catch (cleanupError) {
-            const message = `Cleanup-driven promotion teardown warning for ${current.id}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
+            const message = `Cleanup-driven promotion teardown warning for ${job.id}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
             cleanupWarnings = [message];
             await log(message).catch(() => undefined);
           }
           if (cleanupWarnings.length > 0) {
-            await mutateAnyJob(current.id, (job) => ({
-              ...job,
-              cleanupWarnings: [...(job.cleanupWarnings || []), ...cleanupWarnings],
-              lastCleanupAt: failedAt,
-              error: [job.error, ...cleanupWarnings].filter(Boolean).join("\n"),
+            await mutateAnyJob(job.id, (current) => ({
+              ...current,
+              cleanupWarnings: [...(current.cleanupWarnings || []), ...cleanupWarnings],
+              lastCleanupAt: at,
+              error: [current.error, ...cleanupWarnings].filter(Boolean).join("\n"),
             })).catch(() => undefined);
-            await log(`Stopping queued cleanup promotion after ${current.id} because teardown left ${cleanupWarnings.length} warning(s)`).catch(() => undefined);
-            break;
+            await log(`Stopping queued cleanup promotion after ${job.id} because teardown left ${cleanupWarnings.length} warning(s)`).catch(() => undefined);
+            return "break";
           }
-        } else {
-          await releaseLease(ORACLE_STATE_DIR, "conversation", current.conversationId).catch(() => undefined);
-          await releaseLease(ORACLE_STATE_DIR, "runtime", current.runtimeId).catch(() => undefined);
+          return;
         }
-      }
-    }
+
+        await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(() => undefined);
+        await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(() => undefined);
+      },
+      onDurableHandoff: async (job) => {
+        await log(`Queued promotion handoff already durable for ${job.id}; leaving active job intact`).catch(() => undefined);
+      },
+    });
   }).catch(async (error) => {
     await log(`Queued cleanup promotion warning: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
   });
