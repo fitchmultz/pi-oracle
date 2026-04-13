@@ -2,6 +2,11 @@
 
 This file contains project-specific guidance for this repository.
 
+## Single-operator ownership
+- Treat this repository as single-operator: no human or external agent is working here except the current pi agent.
+- Assume every lingering change, background process, temp file, queue entry, job directory, or other artifact was created by a prior version of you or by one of your delegated runs.
+- You own reconciliation and cleanup for that state. Do not attribute unexplained repo state to another person.
+
 ## Extension testing feedback
 - Pre-commit requirement for any code changes: always test with isolated `pi` agent sessions that load this local version of the extension.
 - Use those isolated sessions to validate the changed behavior works as expected end-to-end, not just through local unit/sanity coverage.
