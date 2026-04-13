@@ -34,7 +34,7 @@ import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationI
 export type OracleJobStatus = SharedOracleJobStatus;
 export type OracleJobPhase = SharedOracleJobPhase;
 
-export type OracleWakeupSettlementSource = "oracle_read" | "oracle_status";
+export type OracleWakeupSettlementSource = "oracle_read" | "oracle_status" | "oracle_read_command";
 
 export { ACTIVE_ORACLE_JOB_STATUSES, OPEN_ORACLE_JOB_STATUSES, TERMINAL_ORACLE_JOB_STATUSES };
 export const ORACLE_MISSING_WORKER_GRACE_MS = 30_000;

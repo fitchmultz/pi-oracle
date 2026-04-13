@@ -65,15 +65,21 @@ The extension now follows the current `pi` session lifecycle model:
   - implemented as a prompt template, not an extension command
   - asks the agent to gather context and dispatch an oracle job
   - intentionally uses native pi prompt/template queueing so submissions survive streaming and compaction
+- `/oracle-followup <job-id> <request>`
+  - implemented as a prompt template, not an extension command
+  - asks the agent to continue an earlier oracle job in the same ChatGPT thread via `followUpJobId`
+  - keeps same-thread continuation available to normal users without requiring raw tool-call syntax
 
 ### Commands
 
 - `/oracle-auth`
   - syncs ChatGPT cookies from the user’s real Chrome into the isolated oracle profile and verifies them there
+- `/oracle-read [job-id]`
+  - shows job status plus the saved response preview
 - `/oracle-status [job-id]`
-  - shows job status
-- `/oracle-cancel [job-id]`
-  - cancels a queued or active job
+  - shows job status and lists recent job ids when the caller omits an explicit id
+- `/oracle-cancel <job-id>`
+  - cancels a queued or active job by id; does not guess a default target
 - `/oracle-clean <job-id|all>`
   - removes temp files for terminal jobs only
 
@@ -454,6 +460,7 @@ Same-thread continuity is persisted as data, not runtime browser state.
 
 Approach:
 
+- expose `/oracle-followup <job-id> <request>` as the user-facing way to continue the same ChatGPT thread later
 - store `chatUrl` only after the conversation URL stabilizes
 - derive and persist `conversationId` from that URL when possible
 - for a follow-up job, resolve `followUpJobId` to the prior `chatUrl`
@@ -473,10 +480,10 @@ The extension still uses the same general `pi`-native background completion patt
 - poller scans jobs on an interval
 - completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
 - when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues bounded best-effort wake-up reminders to whichever matching session is currently live
-- those wake-ups direct the receiver to `oracle_read(jobId)` as the canonical completion-consumption path, while still surfacing saved response/artifact paths as secondary context
-- manual `oracle_read` or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened and persists provenance about which path/session settled the wake-up
+- those wake-ups direct the receiver to `/oracle-read [job-id]` as the primary completion-consumption path, while still surfacing saved response/artifact paths as secondary context; `/oracle-status` remains useful for metadata and job-id discovery, and agent callers can still use `oracle_read` when they need tool output in-turn
+- manual `oracle_read`, `/oracle-read`, or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened and persists provenance about which path/session settled the wake-up
 - manual inspection before the first wake-up attempt is recorded separately as observation metadata and does not suppress the first reminder send
-- if no wake-up lands, the job remains available via `/oracle-status`, `oracle_read`, and the saved `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` response/artifact files
+- if no wake-up lands, the job remains available via `/oracle-read`, `/oracle-status`, `oracle_read`, and the saved `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` response/artifact files
 - because completion delivery is best-effort, pruning uses explicit terminal-job age policy instead of pretending a durable session notification happened
 - recently sent wake-ups keep response/artifact files retained briefly so follow-up turns do not point at deleted paths if cleanup or pruning races with delivery
 
@@ -518,7 +525,7 @@ Implemented in code for the pivot and concurrency redesign:
 
 Retained from the earlier MVP:
 
-- `/oracle`, `/oracle-status`, `/oracle-cancel`, `/oracle-clean`
+- `/oracle`, `/oracle-followup`, `/oracle-read`, `/oracle-status`, `/oracle-cancel`, `/oracle-clean`
 - `oracle_submit`, `oracle_read`, `oracle_cancel`
 - detached background worker model
 - `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` state layout

@@ -111,11 +111,11 @@ export function buildOracleWakeupNotificationContent(job, options = {}) {
   const artifactsPath = options.artifactsPath ?? `artifacts unavailable for ${job.id}`;
   return [
     `Oracle job ${job.id} is ${job.status}.`,
-    `Use oracle_read with jobId ${job.id} to open the response and settle wake-up retries.`,
+    `Use /oracle-read ${job.id} to inspect the saved response preview. /oracle-status ${job.id} still shows saved job metadata. Agent callers can use oracle_read({ jobId: "${job.id}" }) if they need tool output in the current turn.`,
     responseLine,
     `Artifacts: ${artifactsPath}`,
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
-    job.error ? `Error: ${job.error}` : "After oracle_read, continue from the oracle output.",
+    job.error ? `Error: ${job.error}` : "After opening the saved result, continue from the oracle output.",
   ].filter(Boolean).join("\n");
 }
 

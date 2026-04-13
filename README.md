@@ -70,6 +70,12 @@ If you miss the wake-up, the result is still saved durably in the oracle job dir
 /oracle Explain the README guidance for /oracle-clean retention grace. Only archive README.md unless another file is clearly necessary.
 ```
 
+```text
+/oracle-followup <job-id> Tighten the migration plan around rollback risk, and only archive the files needed to answer that follow-up.
+```
+
+After a job finishes, use `/oracle-followup <job-id> <request>` to continue the same ChatGPT thread without hand-writing the low-level `followUpJobId` tool parameter.
+
 ## High-level flow
 
 ```mermaid
@@ -88,9 +94,11 @@ If concurrency is full, the job is queued and starts automatically later.
 
 User-facing commands:
 - `/oracle <request>` — prompt template that tells the agent to gather context and dispatch an oracle job
+- `/oracle-followup <job-id> <request>` — prompt template that continues an earlier oracle job in the same ChatGPT thread
 - `/oracle-auth` — sync ChatGPT cookies from your real Chrome profile into the isolated oracle auth profile
-- `/oracle-status [job-id]` — inspect job status
-- `/oracle-cancel [job-id]` — cancel queued or active job
+- `/oracle-read [job-id]` — inspect job status plus the saved response preview
+- `/oracle-status [job-id]` — inspect job status and list recent job ids when no explicit id is given
+- `/oracle-cancel <job-id>` — cancel a queued or active job by id
 - `/oracle-clean <job-id|all>` — remove temp files for terminal jobs; recently woken terminal jobs may stay retained briefly and return a retry-after hint
 
 Agent-facing tools:
@@ -152,7 +160,9 @@ Project config should only override safe, non-privileged settings.
 - Jobs persist their response and any artifacts under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default.
 - Jobs can queue automatically if runtime capacity is full.
 - Completion delivery into `pi` is best-effort wake-up based.
-- If you miss the wake-up, use `oracle_read(jobId)` or `/oracle-status`.
+- If you miss the wake-up, use `/oracle-read [job-id]` to inspect the saved response preview.
+- `/oracle-status [job-id]` still shows saved job metadata and lists recent job ids when you omit the id.
+- Agent callers can use `oracle_read({ jobId })`.
 - `/oracle-clean` can still refuse a terminal job briefly after a wake-up send so saved response/artifact paths survive the follow-up turn; when that guard applies, it returns the next eligible cleanup time.
 
 ## Requirements
@@ -185,7 +195,9 @@ Project config should only override safe, non-privileged settings.
 
 ### A job finished but no wake-up arrived
 
-- Use `/oracle-status [job-id]` or `oracle_read(jobId)`.
+- Use `/oracle-read [job-id]` to inspect the saved response preview.
+- Use `/oracle-status [job-id]` when you want status metadata or need help finding a job id.
+- Agent callers can use `oracle_read({ jobId })` if they need tool output in the current turn.
 - Results are still saved on disk even if the reminder turn does not land.
 
 ### `/oracle-clean` refuses a terminal job right after completion

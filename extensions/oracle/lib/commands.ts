@@ -5,6 +5,7 @@
 // Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig } from "./config.js";
@@ -26,20 +27,36 @@ import { refreshOracleStatus } from "./poller.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
 
-function summarizeJob(jobId: string): string {
+async function summarizeJob(jobId: string, options?: { responsePreview?: boolean }): Promise<string> {
   const job = readJob(jobId);
   if (!job) return `Oracle job ${jobId} not found.`;
 
   const responseAvailable = Boolean(job.responsePath && existsSync(job.responsePath));
+  let responsePreview: string | undefined;
+  if (options?.responsePreview && responseAvailable && job.responsePath) {
+    try {
+      responsePreview = (await readFile(job.responsePath, "utf8")).slice(0, 4000);
+    } catch {
+      responsePreview = undefined;
+    }
+  }
+
   return formatOracleJobSummary(job, {
     queuePosition: job.status === "queued" ? getQueuePosition(job.id) : undefined,
     artifactsPath: `${getJobDir(job.id)}/artifacts`,
     responseAvailable,
+    responsePreview,
   });
 }
 
 function getLatestJobId(cwd: string): string | undefined {
   return listJobsForCwd(cwd)[0]?.id;
+}
+
+function listRecentJobIds(cwd: string, limit = 5): string | undefined {
+  const jobs = listJobsForCwd(cwd).slice(0, limit);
+  if (jobs.length === 0) return undefined;
+  return jobs.map((job) => `${job.id} (${job.status})`).join(", ");
 }
 
 function readScopedJob(jobId: string, cwd: string) {
@@ -103,7 +120,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
   });
 
   pi.registerCommand("oracle-status", {
-    description: "Show oracle job status",
+    description: "Show oracle job status and recent job ids",
     handler: async (args, ctx) => {
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
@@ -123,12 +140,14 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
           cwd: ctx.cwd,
         });
       }
-      ctx.ui.notify(summarizeJob(job.id), "info");
+      const summary = await summarizeJob(job.id);
+      const recentJobs = !explicitJobId ? listRecentJobIds(ctx.cwd) : undefined;
+      ctx.ui.notify([summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
     },
   });
 
-  pi.registerCommand("oracle-cancel", {
-    description: "Cancel a queued or active oracle job",
+  pi.registerCommand("oracle-read", {
+    description: "Show oracle job status plus saved response preview",
     handler: async (args, ctx) => {
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
@@ -136,8 +155,32 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         ctx.ui.notify("No oracle jobs found for this project", "info");
         return;
       }
+      const job = readScopedJob(jobId, ctx.cwd);
+      if (!job) {
+        ctx.ui.notify(`Oracle job ${jobId} was not found in this project`, "warning");
+        return;
+      }
+      if (isTerminalOracleJob(job)) {
+        await markWakeupSettled(job.id, {
+          source: "oracle_read_command",
+          sessionFile: ctx.sessionManager.getSessionFile?.(),
+          cwd: ctx.cwd,
+        });
+      }
+      ctx.ui.notify(await summarizeJob(job.id, { responsePreview: true }), "info");
+    },
+  });
 
-      const job = explicitJobId ? readScopedJob(jobId, ctx.cwd) : readJob(jobId);
+  pi.registerCommand("oracle-cancel", {
+    description: "Cancel a queued or active oracle job by id",
+    handler: async (args, ctx) => {
+      const jobId = args.trim();
+      if (!jobId) {
+        ctx.ui.notify("Usage: /oracle-cancel <job-id>\nUse /oracle-status to find the job id you want to cancel.", "warning");
+        return;
+      }
+
+      const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
         ctx.ui.notify(`Oracle job ${jobId} not found in this project`, "warning");
         return;

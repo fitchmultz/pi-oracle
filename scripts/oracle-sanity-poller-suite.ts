@@ -141,7 +141,9 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   assert(deliveredJob?.responsePath, "poller notification coverage should retain the response path");
   const notificationText = sent[0]?.content;
   assert(typeof notificationText === "string", "poller should send text wake-up content");
-  assert(notificationText.includes(`Use oracle_read with jobId ${jobId}`), "poller wake-up content should direct the receiving assistant to oracle_read so reminder retries can settle");
+  assert(notificationText.includes(`Use /oracle-read ${jobId}`), "poller wake-up content should direct the receiving session to /oracle-read as the primary saved-result path");
+  assert(notificationText.includes(`/oracle-status ${jobId}`), "poller wake-up content should still mention /oracle-status as the metadata-oriented fallback path");
+  assert(notificationText.includes(`oracle_read({ jobId: \"${jobId}\" })`), "poller wake-up content should still mention oracle_read for agent callers who need tool output in-turn");
   assert(notificationText.includes(`Response file: ${deliveredJob.responsePath}`), "poller wake-up content should still include the persisted response path as secondary context");
   assert(notificationText.includes(`Artifacts: ${getJobDir(jobId)}/artifacts`), "poller wake-up content should still include the persisted artifacts directory");
   assert(!notificationText.includes("Read response:"), "poller wake-up content should not steer the receiver toward a raw response-file read as the primary action");

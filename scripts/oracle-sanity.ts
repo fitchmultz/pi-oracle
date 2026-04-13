@@ -1319,6 +1319,63 @@ async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: Oracl
   }
 }
 
+async function testOracleStatusListsRecentJobIdsWhenNoExplicitId(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-status-recent-jobs-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  const statusCommand = pi.commands.get("oracle-status");
+  assert(statusCommand, "oracle status command should register for recent-job listing coverage");
+
+  const sessionFile = `/tmp/oracle-sanity-session-status-recent-jobs-${randomUUID()}.jsonl`;
+  const firstJobId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
+  const secondJobId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
+  const ui = createUiStub();
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+
+  try {
+    await statusCommand.handler("", ctx);
+    const message = ui.notifications.at(-1)?.message;
+    assert(typeof message === "string" && message.includes("Recent jobs:"), "oracle status without an explicit id should include recent job ids so users can discover follow-up/cancel targets");
+    assert(message.includes(firstJobId) && message.includes(secondJobId), "oracle status recent-job listing should include the available project job ids");
+  } finally {
+    await cancelOracleJob(firstJobId);
+    await cancelOracleJob(secondJobId);
+    await cleanupJob(firstJobId);
+    await cleanupJob(secondJobId);
+    await rm(fakeWorkerPath, { force: true });
+  }
+}
+
+async function testOracleCancelCommandRequiresExplicitJobId(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-cancel-explicit-id-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  const cancelCommand = pi.commands.get("oracle-cancel");
+  assert(cancelCommand, "oracle cancel command should register for explicit-id validation");
+
+  const sessionFile = `/tmp/oracle-sanity-session-cancel-explicit-id-${randomUUID()}.jsonl`;
+  const queuedId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
+  const ui = createUiStub();
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+
+  try {
+    await cancelCommand.handler("", ctx);
+    const message = ui.notifications.at(-1)?.message;
+    assert(typeof message === "string" && message.includes("Usage: /oracle-cancel <job-id>"), "oracle cancel should require an explicit job id instead of silently cancelling the latest job");
+    assert(readJob(queuedId)?.status === "queued", "oracle cancel without an explicit id should leave queued jobs untouched");
+  } finally {
+    await cancelOracleJob(queuedId);
+    await cleanupJob(queuedId);
+    await rm(fakeWorkerPath, { force: true });
+  }
+}
+
 async function testOracleToolResultsExposeStructuredJobDetails(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-tool-details-${randomUUID()}-`));
@@ -1430,18 +1487,40 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
   registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
   registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
   const readTool = pi.tools.get("oracle_read");
+  const readCommand = pi.commands.get("oracle-read");
   const statusCommand = pi.commands.get("oracle-status");
   assert(readTool?.execute, "oracle read tool should register for terminal summary testing");
+  assert(readCommand, "oracle read command should register for terminal summary testing");
   assert(statusCommand, "oracle status command should register for terminal summary testing");
 
   const cwd = process.cwd();
   const sessionFile = `/tmp/oracle-sanity-session-terminal-summary-${randomUUID()}.jsonl`;
   const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const readCommandUi = createUiStub();
+  const readCommandCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], readCommandUi);
   const statusUi = createUiStub();
   const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
   const jobId = await createJobForTest(config, cwd, sessionFile);
+  let commandReadJobId: string | undefined;
 
   try {
+    commandReadJobId = await createTerminalJob(config, cwd, sessionFile, "command");
+    await writeFile(join(getJobDir(commandReadJobId), "response.md"), "Preview body from oracle-read command.\n", { encoding: "utf8", mode: 0o600 });
+    await updateJob(commandReadJobId, (job) => ({
+      ...job,
+      wakeupAttemptCount: 1,
+      wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+      wakeupSettledAt: undefined,
+      wakeupSettledSource: undefined,
+      wakeupSettledSessionFile: undefined,
+      wakeupSettledSessionKey: undefined,
+      wakeupSettledBeforeFirstAttempt: undefined,
+    }));
+    await readCommand!.handler(commandReadJobId, readCommandCtx);
+    const readCommandMessage = readCommandUi.notifications.at(-1)?.message;
+    assert(typeof readCommandMessage === "string" && readCommandMessage.includes("Preview body from oracle-read command."), "oracle-read should surface the saved response preview in the user-facing command output");
+    assert(readJob(commandReadJobId)?.wakeupSettledSource === "oracle_read_command", "oracle-read should settle further wake-up retries through its own command provenance");
+
     const failedAt = "2026-01-01T00:00:20.000Z";
     const wakeupRequestedAt = "2026-01-01T00:00:25.000Z";
     await updateJob(jobId, (job) => noteOracleJobWakeupRequested(transitionOracleJobPhase(job, "failed", {
@@ -1471,6 +1550,7 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
     assert(statusMessage.includes("wakeup-event:") && !statusMessage.includes(`response: ${String(readJob(jobId)?.responsePath)}`), "oracle status should separate wake-up bookkeeping and hide unavailable response paths from failed-job summaries");
   } finally {
     await rm(fakeWorkerPath, { force: true });
+    if (commandReadJobId) await cleanupJob(commandReadJobId);
     await cleanupJob(jobId);
   }
 }
@@ -2687,6 +2767,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
   const supportSource = await readFile(new URL("./oracle-sanity-support.ts", import.meta.url), "utf8");
   const promptSource = await readFile(new URL("../prompts/oracle.md", import.meta.url), "utf8");
+  const followUpPromptSource = await readFile(new URL("../prompts/oracle-followup.md", import.meta.url), "utf8");
   const designSource = await readFile(new URL("../docs/ORACLE_DESIGN.md", import.meta.url), "utf8");
   const recoveryDrillSource = await readFile(new URL("../docs/ORACLE_RECOVERY_DRILL.md", import.meta.url), "utf8");
   const readmeSource = await readFile(new URL("../README.md", import.meta.url), "utf8");
@@ -2717,6 +2798,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
 
   assert(!commandsSource.includes('registerCommand("oracle"'), "/oracle should not be registered as an extension command");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle prompt template should contain the oracle dispatch instructions");
+  assert(followUpPromptSource.includes("You are preparing an `/oracle-followup` job."), "/oracle-followup prompt template should contain follow-up dispatch instructions");
+  assert(followUpPromptSource.includes("Call `oracle_preflight` immediately"), "/oracle-followup prompt should require an immediate oracle_preflight guard");
+  assert(followUpPromptSource.includes("Usage: /oracle-followup <job-id> <request>"), "/oracle-followup prompt should document the required usage contract for job id plus follow-up request");
+  assert(followUpPromptSource.includes("followUpJobId"), "/oracle-followup prompt should explicitly route the parsed job id through oracle_submit.followUpJobId");
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, or prepare archive inputs first"), "/oracle prompt should forbid expensive prep before preflight passes");
   assert(promptSource.includes("Gather only the smallest repo context needed"), "/oracle prompt should bias toward minimal pre-submit context gathering");
@@ -2743,6 +2828,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
   assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
+  assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up prompt template");
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
   assert(designSource.includes("gather only the smallest repo context needed"), "design doc should describe the minimal-context /oracle flow for narrow requests");
   assert(designSource.includes("biases toward omitting `preset` and using the configured default"), "design doc should explain the default-preset bias for /oracle prompt ergonomics");
@@ -2765,12 +2851,19 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("matching human-readable preset labels are normalized automatically"), "oracle tool guidance should mention preset label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
   assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
+  assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
+  assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
   assert(readmeSource.includes("For explicitly narrow requests, `/oracle` should gather only minimal context"), "README should explain the minimal-context bias for narrow /oracle requests");
   assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
   assert(readmeSource.includes("Only archive README.md unless another file is clearly necessary"), "README should include a narrow /oracle example that biases toward minimal archive scope");
   assert(readmeSource.includes("Agent preflights, then gathers only the needed repo context"), "README high-level flow should reflect the minimal-context /oracle path");
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
+  assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
+  assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");
+  assert(readmeSource.includes("Agent callers can use `oracle_read({ jobId })`"), "README should frame oracle_read as the agent-facing fallback instead of the primary user-facing wake-up path");
+  assert(readmeSource.includes("list recent job ids when no explicit id is given"), "README should explain that oracle-status helps users discover job ids for follow-up and cancel flows");
+  assert(!readmeSource.includes("oracle_read(jobId)"), "README should no longer document the old raw oracle_read(jobId) user-facing wording");
   assert(readmeSource.includes("/oracle-clean <job-id|all>"), "README should document the oracle-clean command");
   assert(readmeSource.includes("recently woken terminal jobs may stay retained briefly"), "README command summary should explain that oracle-clean can briefly retain terminal jobs after wake-up delivery");
   assert(readmeSource.includes("returns the next eligible cleanup time"), "README should explain that oracle-clean returns a retry-after hint when post-send retention grace blocks cleanup");
@@ -2830,7 +2923,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!toolsSource.includes("details: {\n            jobId:"), "oracle submit should no longer expose legacy top-level detail fields like jobId instead of details.job");
   assert(toolsSource.includes("artifactsPath: `${getJobDir(current.id)}/artifacts`"), "oracle read should derive artifact paths from the configured jobs dir instead of hard-coding /tmp");
   assert(toolsSource.includes("source: \"oracle_read\""), "oracle read should pass explicit settlement provenance when a terminal job has been manually read");
+  assert(commandsSource.includes('registerCommand("oracle-read"'), "oracle commands should register a user-facing oracle-read command");
   assert(commandsSource.includes("source: \"oracle_status\""), "oracle status should pass explicit settlement provenance when a terminal job has been manually inspected");
+  assert(commandsSource.includes("source: \"oracle_read_command\""), "oracle-read should settle further wake-up retries through explicit command provenance");
+  assert(commandsSource.includes("Recent jobs:"), "oracle-status should help users discover job ids when no explicit id is given");
+  assert(commandsSource.includes("Usage: /oracle-cancel <job-id>"), "oracle cancel command should require an explicit job id instead of silently cancelling the latest job");
   assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
   assert(toolsSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle tool guidance should describe whole-repo auto-pruning when archives are still too large");
@@ -2882,7 +2979,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("requestWakeupTurn(pi, deliverableAfterNote)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent(job"), "poller wake-up turns should include durable response/artifact paths from job state via the shared observability helper");
   assert(pollerSource.includes("responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath))"), "poller wake-up turns should hide missing response paths when no response file was actually written");
-  assert(sharedObservabilitySource.includes("Use oracle_read with jobId"), "poller wake-up content should direct receivers to oracle_read so reminder retries settle through the canonical path");
+  assert(sharedObservabilitySource.includes("Use /oracle-read"), "poller wake-up content should direct receivers to /oracle-read as the primary saved-result path");
+  assert(sharedObservabilitySource.includes("/oracle-status"), "poller wake-up content should still mention /oracle-status as the metadata-oriented fallback path");
+  assert(sharedObservabilitySource.includes("oracle_read({ jobId:"), "poller wake-up content should still mention oracle_read for agent callers who need tool output in-turn");
   assert(!pollerSource.includes("Read response:"), "poller wake-up content should no longer steer receivers toward raw response-file reads as the primary action");
   assert(pollerSource.includes("getJobDir(job.id)"), "poller wake-up content should derive artifact/response paths from the configured oracle jobs dir instead of hard-coding /tmp");
   assert(pollerSource.includes("beforeNotificationPersist"), "poller should support a last-moment revalidation hook before wake-up delivery for regression coverage");
@@ -3669,7 +3768,7 @@ function testSharedObservabilityHelpers(): void {
     responseAvailable: true,
     artifactsPath: "/tmp/artifacts",
   });
-  assert(wakeupContent.includes("Use oracle_read with jobId job-observe") && wakeupContent.includes("Last event:") && wakeupContent.includes("Response file: /tmp/response.md"), "shared observability helpers should include both the oracle_read guidance and the persisted response path when a response file exists");
+  assert(wakeupContent.includes("Use /oracle-read job-observe") && wakeupContent.includes("/oracle-status job-observe") && wakeupContent.includes("oracle_read({ jobId: \"job-observe\" })") && wakeupContent.includes("Last event:") && wakeupContent.includes("Response file: /tmp/response.md"), "shared observability helpers should include both the /oracle-read guidance, /oracle-status fallback, agent-facing oracle_read hint, and the persisted response path when a response file exists");
 
   const failedWakeupContent = buildOracleWakeupNotificationContent(transitionOracleJobPhase(job, "failed", {
     at: "2026-01-01T00:00:20.000Z",
@@ -4137,6 +4236,8 @@ async function main() {
   await testWorkspaceRootProjectIdentityCoversSubdirectories(config);
   await testWorkspaceRootFallsBackToProjectMarkersWithoutGit();
   await testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config);
+  await testOracleStatusListsRecentJobIdsWhenNoExplicitId(config);
+  await testOracleCancelCommandRequiresExplicitJobId(config);
   await testOracleToolResultsExposeStructuredJobDetails(config);
   await testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config);
   await testOracleToolErrorsExposeStructuredMetadata();
