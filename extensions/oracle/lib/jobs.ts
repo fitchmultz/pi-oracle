@@ -728,8 +728,10 @@ export async function releaseNotificationClaim(jobId: string, claimedBy: string)
 export async function noteWakeupRequested(jobId: string, at = new Date().toISOString()): Promise<OracleJob | undefined> {
   try {
     return await updateJob(jobId, (job) => noteOracleJobWakeupRequested(job, { at, source: "oracle:poller" }));
-  } catch {
-    return readJob(jobId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("Oracle job not found:")) return undefined;
+    throw error;
   }
 }
 
@@ -927,7 +929,16 @@ export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: 
 
   const realCwd = realpathSync(cwd);
   return files.map((file) => {
+    if (!file.trim()) {
+      throw new Error("Archive input must be a non-empty project-relative path");
+    }
+    if (file.trim() === "." && file !== ".") {
+      throw new Error("Archive input must use '.' exactly for a whole-repo archive");
+    }
     const absolute = resolve(cwd, file);
+    if (absolute === cwd && file !== ".") {
+      throw new Error("Archive input must use '.' exactly for a whole-repo archive");
+    }
     const relative = absolute.startsWith(`${cwd}/`) ? absolute.slice(cwd.length + 1) : absolute === cwd ? "." : "";
     if (!relative) {
       throw new Error(`Archive input must be inside the project cwd: ${file}`);

@@ -58,7 +58,11 @@ import {
 
 const ORACLE_SUBMIT_PARAMS = Type.Object({
   prompt: Type.String({ description: "Prompt text to send to ChatGPT web." }),
-  files: Type.Array(Type.String({ description: "Project-relative file or directory path to include in the archive." }), {
+  files: Type.Array(Type.String({
+    description: "Project-relative file or directory path to include in the archive.",
+    minLength: 1,
+    pattern: ".*\\S.*",
+  }), {
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
   }),
@@ -712,11 +716,73 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if (message.startsWith("Configured oracle browser executable does not exist: ")) {
+    return {
+      code: "browser_executable_missing",
+      message,
+      rejectedValue: message.replace(/^Configured oracle browser executable does not exist: /, "").replace(/\. Fix browser\.executablePath or install Chrome there\.$/, ""),
+      suggestedNextStep: "Fix browser.executablePath or install Chrome at that path, then retry.",
+    };
+  }
+
+  if (message.startsWith("Configured oracle browser executable is not executable: ")) {
+    return {
+      code: "browser_executable_not_executable",
+      message,
+      rejectedValue: message.replace(/^Configured oracle browser executable is not executable: /, "").replace(/\. Fix browser\.executablePath permissions or point it at a runnable Chrome binary\.$/, ""),
+      suggestedNextStep: "Fix browser.executablePath permissions or point it at a runnable Chrome binary, then retry.",
+    };
+  }
+
+  if (message.startsWith("Oracle prerequisite not found on PATH: ")) {
+    const rejectedValue = message.replace(/^Oracle prerequisite not found on PATH: /, "").replace(/\. Install .*$/, "");
+    return {
+      code: "local_dependency_missing",
+      message,
+      rejectedValue,
+      suggestedNextStep: `Install ${rejectedValue || "the missing dependency"} and retry.`,
+    };
+  }
+
+  if (message.startsWith("Oracle runtime profiles directory is not writable: ")) {
+    return {
+      code: "runtime_profiles_dir_unwritable",
+      message,
+      rejectedValue: message.replace(/^Oracle runtime profiles directory is not writable: /, "").replace(/\. Fix its permissions or configure a writable path, then retry\.$/, ""),
+      suggestedNextStep: "Fix browser.runtimeProfilesDir permissions or configure a writable directory, then retry.",
+    };
+  }
+
+  if (message.startsWith("Oracle jobs directory is not writable: ")) {
+    return {
+      code: "jobs_dir_unwritable",
+      message,
+      rejectedValue: message.replace(/^Oracle jobs directory is not writable: /, "").replace(/\. Fix its permissions or configure a writable path, then retry\.$/, ""),
+      suggestedNextStep: "Fix PI_ORACLE_JOBS_DIR permissions or point it at a writable directory, then retry.",
+    };
+  }
+
   if (toolName === "oracle_submit" && message === "oracle_submit requires at least one file or directory to archive") {
     return {
       code: "archive_input_required",
       message,
       suggestedNextStep: "Pass at least one project-relative file or directory in files.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message === "Archive input must be a non-empty project-relative path") {
+    return {
+      code: "archive_input_blank",
+      message,
+      suggestedNextStep: "Retry with a non-empty project-relative file or directory path. Use '.' only when you intentionally want a whole-repo archive.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && message === "Archive input must use '.' exactly for a whole-repo archive") {
+    return {
+      code: "archive_input_whole_repo_sentinel_invalid",
+      message,
+      suggestedNextStep: "If you want a whole-repo archive, pass '.' exactly. Otherwise pass an exact project-relative path without extra padding.",
     };
   }
 
@@ -815,7 +881,13 @@ function buildOracleToolErrorResult(
 ) {
   const errorDetails = buildOracleToolErrorDetails(toolName, error, params);
   return {
-    content: [{ type: "text" as const, text: errorDetails.message }],
+    content: [{
+      type: "text" as const,
+      text: [
+        errorDetails.message,
+        errorDetails.suggestedNextStep ? `Suggested next step: ${errorDetails.suggestedNextStep}` : undefined,
+      ].filter(Boolean).join("\n"),
+    }],
     details: {
       job: options?.job ? redactJobDetails(options.job, options.jobDetails) : undefined,
       error: errorDetails,
@@ -887,15 +959,16 @@ async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePrefligh
   try {
     await assertOracleSubmitPrerequisites(config);
   } catch (error) {
+    const errorDetails = buildOracleToolErrorDetails("oracle_preflight", error, {});
     return {
       ready: false,
       session: { persisted: true, sessionFile },
       config: { ready: true },
       auth: {
-        ready: false,
+        ready: !["auth_seed_profile_missing", "auth_seed_profile_unreadable", "auth_seed_profile_invalid_type"].includes(errorDetails.code),
         seedProfileDir: config.browser.authSeedProfileDir,
       },
-      error: buildOracleToolErrorDetails("oracle_preflight", error, {}),
+      error: errorDetails,
     };
   }
 
@@ -961,18 +1034,19 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const config = loadOracleConfig(ctx.cwd);
+        const projectCwd = getProjectId(ctx.cwd);
+        const config = loadOracleConfig(projectCwd);
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
-        const projectId = getProjectId(ctx.cwd);
+        const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);
         const presetId = typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : config.defaults.preset;
         const selection = resolveOracleSubmitPreset(presetId);
-        const followUp = resolveFollowUp(params.followUpJobId, ctx.cwd);
+        const followUp = resolveFollowUp(params.followUpJobId, projectCwd);
         // Validate caller-specified archive paths before surfacing unrelated local setup failures such as a missing auth seed profile.
-        resolveArchiveInputs(ctx.cwd, params.files);
+        resolveArchiveInputs(projectCwd, params.files);
         await assertOracleSubmitPrerequisites(config);
         try {
-          await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: ctx.cwd }, async () => {
+          await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: projectCwd }, async () => {
             await reconcileStaleOracleJobs();
             await pruneTerminalOracleJobs();
           });
@@ -993,7 +1067,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
         let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
 
         try {
-          archive = await createArchive(ctx.cwd, params.files, tempArchivePath);
+          archive = await createArchive(projectCwd, params.files, tempArchivePath);
           const currentArchive = archive;
           await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
             await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
@@ -1036,7 +1110,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
                   chatUrl: followUp.chatUrl,
                   requestSource: "tool",
                 },
-                ctx.cwd,
+                projectCwd,
                 originSessionFile,
                 config,
                 runtime,
@@ -1079,7 +1153,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
                 chatUrl: followUp.chatUrl,
                 requestSource: "tool",
               },
-              ctx.cwd,
+              projectCwd,
               originSessionFile,
               config,
               runtime,

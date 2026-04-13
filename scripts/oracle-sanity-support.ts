@@ -299,9 +299,9 @@ export type PollerTestContext = ExtensionContext & {
   hasPendingMessages: () => boolean;
 };
 
-export function createPollerCtx(sessionManager: SessionManager): PollerTestContext {
+export function createPollerCtx(sessionManager: SessionManager, cwd = process.cwd()): PollerTestContext {
   return {
-    cwd: process.cwd(),
+    cwd,
     sessionManager,
     hasUI: true,
     ui: createUiStub(),
@@ -373,18 +373,26 @@ export function createPiHarness(): PiHarness {
   } as unknown as PiHarness;
 }
 
-export function createCommandCtx(sessionManager: ExtensionCommandContext["sessionManager"], ui = createUiStub()): ExtensionCommandContext {
+export function createCommandCtx(
+  sessionManager: ExtensionCommandContext["sessionManager"],
+  ui = createUiStub(),
+  cwd = process.cwd(),
+): ExtensionCommandContext {
   return {
-    cwd: process.cwd(),
+    cwd,
     hasUI: true,
     sessionManager,
     ui,
   } as unknown as ExtensionCommandContext;
 }
 
-export function createExtensionCtx(sessionManager: ExtensionContext["sessionManager"], ui = createUiStub()): ExtensionContext {
+export function createExtensionCtx(
+  sessionManager: ExtensionContext["sessionManager"],
+  ui = createUiStub(),
+  cwd = process.cwd(),
+): ExtensionContext {
   return {
-    cwd: process.cwd(),
+    cwd,
     hasUI: true,
     sessionManager,
     ui,

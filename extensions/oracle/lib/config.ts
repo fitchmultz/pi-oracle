@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
+import { getProjectId } from "./runtime.js";
 
 export const MODEL_FAMILIES = ["instant", "thinking", "pro"] as const;
 export type OracleModelFamily = (typeof MODEL_FAMILIES)[number];
@@ -270,8 +271,9 @@ export interface OracleConfigLoadDetails {
 
 export function getOracleConfigLoadDetails(cwd: string): OracleConfigLoadDetails {
   const agentDir = getAgentDir();
+  const projectRoot = getProjectId(cwd);
   const agentConfigPath = join(agentDir, "extensions", "oracle.json");
-  const projectConfigPath = join(cwd, ".pi", "extensions", "oracle.json");
+  const projectConfigPath = join(projectRoot, ".pi", "extensions", "oracle.json");
   return {
     agentDir,
     agentConfigPath,

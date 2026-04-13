@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
 import type { OracleConfig } from "./config.js";
@@ -21,6 +21,14 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
 ) || "agent-browser";
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
+const WORKSPACE_ROOT_MARKERS = [
+  ".pi/extensions/oracle.json",
+] as const;
+const REQUIRED_ORACLE_DEPENDENCIES = [
+  { name: "agent-browser", command: AGENT_BROWSER_BIN },
+  { name: "tar", command: "tar" },
+  { name: "zstd", command: "zstd" },
+] as const;
 
 export interface OracleRuntimeLeaseMetadata {
   jobId: string;
@@ -51,12 +59,32 @@ export interface OracleConversationLeaseAttempt {
   blocker?: OracleConversationLeaseMetadata;
 }
 
-export function getProjectId(cwd: string): string {
+function resolveRealCwd(cwd: string): string {
   try {
     return realpathSync(cwd);
   } catch {
     return cwd;
   }
+}
+
+function hasWorkspaceRootMarker(path: string): boolean {
+  return WORKSPACE_ROOT_MARKERS.some((marker) => existsSync(join(path, marker)));
+}
+
+function resolveWorkspaceRoot(realCwd: string): string {
+  let current = realCwd;
+  let nearestMarkerRoot: string | undefined;
+  while (true) {
+    if (existsSync(join(current, ".git"))) return current;
+    if (!nearestMarkerRoot && hasWorkspaceRootMarker(current)) nearestMarkerRoot = current;
+    const parent = dirname(current);
+    if (parent === current) return nearestMarkerRoot ?? realCwd;
+    current = parent;
+  }
+}
+
+export function getProjectId(cwd: string): string {
+  return resolveWorkspaceRoot(resolveRealCwd(cwd));
 }
 
 export function hasPersistedSessionFile(originSessionFile: string | undefined): originSessionFile is string {
@@ -110,6 +138,99 @@ function unreadableAuthSeedProfileMessage(seedDir: string): string {
   return `Oracle auth seed profile is not readable: ${seedDir}. Fix its permissions or rerun /oracle-auth.`;
 }
 
+function missingBrowserExecutableMessage(executablePath: string): string {
+  return `Configured oracle browser executable does not exist: ${executablePath}. Fix browser.executablePath or install Chrome there.`;
+}
+
+function nonExecutableBrowserMessage(executablePath: string): string {
+  return `Configured oracle browser executable is not executable: ${executablePath}. Fix browser.executablePath permissions or point it at a runnable Chrome binary.`;
+}
+
+function missingLocalDependencyMessage(name: string): string {
+  return `Oracle prerequisite not found on PATH: ${name}. Install ${name} and retry.`;
+}
+
+function unwritableOracleDirectoryMessage(label: "runtime profiles" | "jobs", path: string): string {
+  return `Oracle ${label} directory is not writable: ${path}. Fix its permissions or configure a writable path, then retry.`;
+}
+
+async function resolveExecutableOnPath(command: string): Promise<string | undefined> {
+  if (!command) return undefined;
+  if (command.includes("/")) {
+    try {
+      await access(command, fsConstants.X_OK);
+      return command;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const pathValue = process.env.PATH ?? "";
+  for (const segment of pathValue.split(delimiter)) {
+    if (!segment) continue;
+    const candidate = join(segment, command);
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+async function assertConfiguredBrowserExecutableReady(executablePath: string | undefined): Promise<void> {
+  if (!executablePath) return;
+  let executableStats;
+  try {
+    executableStats = await stat(executablePath);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT") throw new Error(missingBrowserExecutableMessage(executablePath));
+    if (code === "EACCES" || code === "EPERM") throw new Error(nonExecutableBrowserMessage(executablePath));
+    throw new Error(`Failed to inspect configured oracle browser executable ${executablePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!executableStats.isFile()) {
+    throw new Error(nonExecutableBrowserMessage(executablePath));
+  }
+
+  try {
+    await access(executablePath, fsConstants.X_OK);
+  } catch {
+    throw new Error(nonExecutableBrowserMessage(executablePath));
+  }
+}
+
+async function assertRequiredLocalDependencyReady(name: string, command: string): Promise<void> {
+  const resolved = await resolveExecutableOnPath(command);
+  if (!resolved) throw new Error(missingLocalDependencyMessage(name));
+}
+
+async function assertWritableDirectory(path: string, label: "runtime profiles" | "jobs"): Promise<void> {
+  try {
+    await mkdir(path, { recursive: true, mode: 0o700 });
+  } catch {
+    throw new Error(unwritableOracleDirectoryMessage(label, path));
+  }
+
+  let directoryStats;
+  try {
+    directoryStats = await stat(path);
+  } catch {
+    throw new Error(unwritableOracleDirectoryMessage(label, path));
+  }
+  if (!directoryStats.isDirectory()) {
+    throw new Error(unwritableOracleDirectoryMessage(label, path));
+  }
+
+  try {
+    await access(path, fsConstants.W_OK | fsConstants.X_OK);
+  } catch {
+    throw new Error(unwritableOracleDirectoryMessage(label, path));
+  }
+}
+
 export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Promise<void> {
   const seedDir = config.browser.authSeedProfileDir;
   let seedStats;
@@ -135,6 +256,12 @@ export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Pr
 
 export async function assertOracleSubmitPrerequisites(config: OracleConfig): Promise<void> {
   await assertOracleAuthSeedProfileReady(config);
+  await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
+  for (const dependency of REQUIRED_ORACLE_DEPENDENCIES) {
+    await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
+  }
+  await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");
+  await assertWritableDirectory(ORACLE_JOBS_DIR, "jobs");
 }
 
 export function getSeedGeneration(config: OracleConfig): string | undefined {

@@ -17,6 +17,7 @@ import {
   formatOracleAuthConfigRemediation,
   formatOracleAuthConfigSummary,
   getOracleConfigLoadDetails,
+  loadOracleConfig,
   ORACLE_SUBMIT_PRESETS,
   resolveOracleSubmitPreset,
   type OracleConfig,
@@ -1050,6 +1051,42 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     const readyAuth = asRecord(readyDetails?.auth);
     assert(readyDetails?.ready === true, "oracle preflight should report ready=true once persisted session and auth seed prerequisites are satisfied");
     assert(readyAuth?.ready === true && readyAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the ready auth seed path");
+
+    const missingExecutablePath = join(fixtureDir, "missing-chrome");
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, executablePath: missingExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const missingExecutableResult = await preflightTool.execute!("oracle-preflight-missing-executable", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const missingExecutableDetails = asRecord(missingExecutableResult.details);
+    const missingExecutableError = asRecord(missingExecutableDetails?.error);
+    const missingExecutableAuth = asRecord(missingExecutableDetails?.auth);
+    assert(missingExecutableDetails?.ready === false, "oracle preflight should report ready=false when a configured browser executable is missing");
+    assert(missingExecutableError?.code === "browser_executable_missing", "oracle preflight should surface browser_executable_missing for a missing configured browser path");
+    assert(missingExecutableAuth?.ready === true && missingExecutableAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should keep auth marked ready when a later deterministic prerequisite blocks submission");
+
+    const nonExecutablePath = join(fixtureDir, "non-executable-chrome");
+    await writeFile(nonExecutablePath, "not executable\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, executablePath: nonExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const nonExecutableResult = await preflightTool.execute!("oracle-preflight-non-executable-browser", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const nonExecutableError = asRecord(asRecord(nonExecutableResult.details)?.error);
+    assert(nonExecutableError?.code === "browser_executable_not_executable", "oracle preflight should surface browser_executable_not_executable for a configured browser path without execute permission");
+
+    const runtimeProfilesFile = join(fixtureDir, "runtime-profiles-file");
+    await writeFile(runtimeProfilesFile, "not a directory\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, runtimeProfilesDir: runtimeProfilesFile } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const runtimeProfilesResult = await preflightTool.execute!("oracle-preflight-runtime-profiles-file", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const runtimeProfilesError = asRecord(asRecord(runtimeProfilesResult.details)?.error);
+    assert(runtimeProfilesError?.code === "runtime_profiles_dir_unwritable", "oracle preflight should surface runtime_profiles_dir_unwritable when runtimeProfilesDir cannot be prepared as a directory");
+
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = "";
+      await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      const missingDependencyResult = await preflightTool.execute!("oracle-preflight-missing-dependency", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+      const missingDependencyError = asRecord(asRecord(missingDependencyResult.details)?.error);
+      assert(missingDependencyError?.code === "local_dependency_missing", "oracle preflight should surface local_dependency_missing when required local executables are unavailable on PATH");
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
@@ -1113,7 +1150,169 @@ async function testOracleSubmitPreflightRejectsKnownAuthSeedFailures(): Promise<
       await chmod(unreadableSeedDir, 0o700).catch(() => undefined);
     }
     assert(listOracleJobDirs().length === jobDirCountBefore, "unreadable auth seed preflight should not create oracle job dirs");
+
+    const validSeedDir = join(fixtureDir, "valid-seed");
+    const missingExecutablePath = join(fixtureDir, "missing-chrome");
+    await mkdir(validSeedDir, { recursive: true, mode: 0o700 });
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: validSeedDir, executablePath: missingExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const missingExecutableResult = await submit() as { details?: unknown };
+    const missingExecutableError = asRecord(asRecord(missingExecutableResult.details)?.error);
+    assert(missingExecutableError?.code === "browser_executable_missing", "oracle submit should return a structured missing-browser-executable error code");
+    assert(missingExecutableError?.rejectedValue === missingExecutablePath, "missing browser executable errors should report the configured browser path");
+    assert(listOracleJobDirs().length === jobDirCountBefore, "missing browser executable preflight should not create oracle job dirs");
   } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testWorkspaceRootProjectIdentityCoversSubdirectories(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-workspace-root-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  const readTool = pi.tools.get("oracle_read");
+  const statusCommand = pi.commands.get("oracle-status");
+  const cancelCommand = pi.commands.get("oracle-cancel");
+  assert(readTool?.execute, "oracle read tool should register for workspace-root scope testing");
+  assert(statusCommand, "oracle status command should register for workspace-root scope testing");
+  assert(cancelCommand, "oracle cancel command should register for workspace-root scope testing");
+
+  const rootCwd = process.cwd();
+  const subdirCwd = join(rootCwd, "extensions", "oracle");
+  assert(getProjectId(rootCwd) === getProjectId(subdirCwd), "project identity should collapse subdirectories onto the same workspace root");
+
+  const sessionManager = createPersistedSessionManager("workspace-root");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "workspace-root scope test should persist a session file");
+  const queuedId = await createJobForTest(config, rootCwd, sessionFile, { initialState: "queued" });
+  const readCtx = createExtensionCtx(sessionManager, createUiStub(), subdirCwd);
+  const statusUi = createUiStub();
+  const statusCtx = createCommandCtx(sessionManager, statusUi, subdirCwd);
+  const cancelUi = createUiStub();
+  const cancelCtx = createCommandCtx(sessionManager, cancelUi, subdirCwd);
+
+  try {
+    const readResult = await readTool.execute!("oracle-read-workspace-root-test", { jobId: queuedId }, undefined, () => { }, readCtx) as { details?: unknown };
+    const readJobDetails = asRecord(asRecord(readResult.details)?.job);
+    assert(readJobDetails?.id === queuedId, "oracle read should find jobs from the same repo when invoked from a subdirectory");
+
+    await statusCommand.handler("", statusCtx);
+    const statusMessage = statusUi.notifications.at(-1)?.message;
+    assert(typeof statusMessage === "string" && statusMessage.includes(`job: ${queuedId}`), "oracle status should resolve the latest job for the repo even from a subdirectory cwd");
+
+    await cancelCommand.handler(queuedId, cancelCtx);
+    const cancelMessage = cancelUi.notifications.at(-1)?.message;
+    assert(typeof cancelMessage === "string" && cancelMessage.includes(`Cancelled oracle job ${queuedId}`), "oracle cancel should cancel repo-scoped jobs from a subdirectory cwd");
+  } finally {
+    await rm(fakeWorkerPath, { force: true });
+    await cleanupJob(queuedId);
+  }
+}
+
+async function testWorkspaceRootFallsBackToProjectMarkersWithoutGit(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-workspace-root-markers-${randomUUID()}-`));
+  const projectRoot = join(fixtureDir, "workspace");
+  const subdirCwd = join(projectRoot, "packages", "app");
+  const outerRoot = join(fixtureDir, "outer");
+  const innerRoot = join(outerRoot, "inner");
+  const innerSubdir = join(innerRoot, "src");
+
+  try {
+    await mkdir(join(projectRoot, ".pi", "extensions"), { recursive: true, mode: 0o700 });
+    await mkdir(subdirCwd, { recursive: true, mode: 0o700 });
+    await writeFile(join(projectRoot, "package.json"), '{"name":"workspace-root-markers"}\n', { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(projectRoot, "README.md"), "# workspace markers\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(projectRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_light" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    const workspaceRoot = getProjectId(subdirCwd);
+    assert(workspaceRoot === getProjectId(projectRoot), "workspace-root detection should fall back to shared project markers when no git root exists");
+    assert(getOracleConfigLoadDetails(subdirCwd).projectConfigPath === join(workspaceRoot, ".pi", "extensions", "oracle.json"), "config loading without git should still resolve the workspace-root project config path from subdirectories");
+    assert(loadOracleConfig(subdirCwd).defaults.preset === "thinking_light", "config loading without git should still honor workspace-root project overrides from subdirectories");
+    assert(resolveArchiveInputs(workspaceRoot, ["README.md"])[0]?.relative === "README.md", "archive input resolution without git should still allow workspace-root files from the derived project root");
+    assert(resolveArchiveInputs(workspaceRoot, ["."])[0]?.relative === ".", "archive input resolution without git should still preserve '.' as the explicit whole-workspace sentinel");
+
+    await mkdir(join(innerRoot, ".pi", "extensions"), { recursive: true, mode: 0o700 });
+    await mkdir(innerSubdir, { recursive: true, mode: 0o700 });
+    await writeFile(join(outerRoot, "package.json"), '{"name":"outer-workspace"}\n', { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(innerRoot, "package.json"), '{"name":"inner-workspace"}\n', { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(innerRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_heavy" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    assert(getProjectId(innerSubdir) === getProjectId(innerRoot), "workspace-root detection without git should prefer the nearest project markers so nested non-git projects do not widen to parent workspaces");
+    assert(loadOracleConfig(innerSubdir).defaults.preset === "thinking_heavy", "nested non-git subdirectories should load the nearest project config instead of an outer marker tree");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-submit-workspace-root-${randomUUID()}-`));
+  const projectRoot = join(fixtureDir, "repo");
+  const subdirCwd = join(projectRoot, "packages", "app");
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const seedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
+  const runtimeProfilesDir = join(agentExtensionsDir, "oracle-runtime-profiles");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(join(projectRoot, ".git"), { recursive: true, mode: 0o700 });
+  await mkdir(join(projectRoot, ".pi", "extensions"), { recursive: true, mode: 0o700 });
+  await mkdir(subdirCwd, { recursive: true, mode: 0o700 });
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await mkdir(seedDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(projectRoot, "README.md"), "# workspace root\n", { encoding: "utf8", mode: 0o600 });
+  await writeFile(join(subdirCwd, "nested.txt"), "nested\n", { encoding: "utf8", mode: 0o600 });
+  await writeFile(join(projectRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_light" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({ browser: { authSeedProfileDir: seedDir, runtimeProfilesDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  const submitTool = pi.tools.get("oracle_submit");
+  assert(submitTool?.execute, "oracle submit tool should register for workspace-root submit testing");
+
+  const sessionFile = `/tmp/oracle-sanity-session-submit-workspace-root-${randomUUID()}.jsonl`;
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub(), subdirCwd);
+  let jobId: string | undefined;
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const workspaceRoot = getProjectId(subdirCwd);
+    const configLoad = getOracleConfigLoadDetails(subdirCwd);
+    assert(configLoad.projectConfigPath === join(workspaceRoot, ".pi", "extensions", "oracle.json"), "config loading from a subdirectory should resolve the project config at the workspace root");
+    assert(configLoad.projectConfigPath !== join(subdirCwd, ".pi", "extensions", "oracle.json"), "config loading from a subdirectory should not look for a nested per-subdirectory project config path");
+    assert(loadOracleConfig(subdirCwd).defaults.preset === "thinking_light", "oracle submit should load project config defaults from the workspace root when invoked from a subdirectory");
+
+    const submitResult = await submitTool.execute!(
+      "oracle-submit-workspace-root-test",
+      { prompt: "sanity", files: ["."] },
+      undefined,
+      () => { },
+      ctx,
+    ) as { details?: unknown };
+    const submittedJob = asRecord(asRecord(submitResult.details)?.job);
+    jobId = typeof submittedJob?.id === "string" ? submittedJob.id : undefined;
+    assert(jobId, "oracle submit should still return a structured job id when invoked from a subdirectory cwd");
+
+    const persistedJob = readJob(jobId);
+    assert(persistedJob?.projectId === workspaceRoot, "oracle submit should persist the workspace root as the project id when invoked from a subdirectory cwd");
+    assert(persistedJob?.selection.preset === "thinking_light", "oracle submit should honor workspace-root project config defaults when invoked from a subdirectory cwd");
+
+    const archiveEntries = execFileSync("sh", ["-c", `zstd -dc ${shellQuote(persistedJob.archivePath)} | tar -tf -`], { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+    assert(archiveEntries.includes("README.md"), "whole-repo archive selection from a subdirectory should still include workspace-root files");
+    assert(archiveEntries.includes("packages/app/nested.txt"), "whole-repo archive selection from a subdirectory should still include nested project files");
+  } finally {
+    if (jobId) {
+      const persistedJob = readJob(jobId);
+      await releaseConversationLease(persistedJob?.conversationId);
+      await releaseRuntimeLease(persistedJob?.runtimeId);
+      await cleanupJob(jobId);
+    }
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
     await rm(fixtureDir, { recursive: true, force: true });
@@ -1309,7 +1508,9 @@ async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
       ctx,
     )) as { details?: unknown; content?: unknown };
     const invalidPresetError = asRecord(asRecord(invalidPresetResult.details)?.error);
+    const invalidPresetText = (invalidPresetResult.content as Array<{ text?: string }> | undefined)?.[0]?.text;
     assert(invalidPresetError?.code === "invalid_preset", "oracle submit should return a structured invalid_preset error code");
+    assert(typeof invalidPresetText === "string" && invalidPresetText.includes("Suggested next step:"), "oracle tool errors should surface the structured retry hint in visible tool text as well as details.error metadata");
     assert(invalidPresetError?.rejectedValue === "not-a-real-preset", "oracle submit should report the rejected preset value");
     const allowedValues = invalidPresetError?.allowedValues;
     assert(Array.isArray(allowedValues) && allowedValues.includes("instant") && allowedValues.includes("thinking_standard"), "oracle submit should report canonical preset ids as allowedValues");
@@ -1323,6 +1524,26 @@ async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
       isError: false,
     }, ctx);
     assert(asRecord(invalidPresetPatch)?.isError === true, "oracle tool_result hook should preserve isError for structured oracle tool errors");
+
+    const blankArchiveResult = await (submitTool.execute!(
+      "oracle-submit-blank-archive-test",
+      { prompt: "sanity", files: ["   "] },
+      undefined,
+      () => { },
+      ctx,
+    )) as { details?: unknown };
+    const blankArchiveError = asRecord(asRecord(blankArchiveResult.details)?.error);
+    assert(blankArchiveError?.code === "archive_input_blank", "oracle submit should return a structured archive_input_blank error code when execute-time callers bypass schema validation with whitespace-only paths");
+
+    const paddedWholeRepoResult = await (submitTool.execute!(
+      "oracle-submit-padded-whole-repo-test",
+      { prompt: "sanity", files: [" . "] },
+      undefined,
+      () => { },
+      ctx,
+    )) as { details?: unknown };
+    const paddedWholeRepoError = asRecord(asRecord(paddedWholeRepoResult.details)?.error);
+    assert(paddedWholeRepoError?.code === "archive_input_whole_repo_sentinel_invalid", "oracle submit should require '.' exactly when callers request a whole-repo archive");
 
     const missingJobResult = await readTool.execute!("oracle-read-missing-job-test", { jobId: "missing-job" }, undefined, () => { }, ctx) as { details?: unknown };
     const missingJobError = asRecord(asRecord(missingJobResult.details)?.error);
@@ -2581,13 +2802,26 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     !Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: 123 }),
     "oracle_submit tool-call validation should reject non-string preset values",
   );
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["   "] }),
+    "oracle_submit tool-call validation should reject blank archive input strings instead of widening them to whole-repo archives",
+  );
   assert(!("modelFamily" in submitProperties), "oracle submit tool schema should not expose legacy modelFamily input");
   assert(!("effort" in submitProperties), "oracle submit tool schema should not expose legacy effort input");
   assert(!("autoSwitchToThinking" in submitProperties), "oracle submit tool schema should not expose legacy autoSwitchToThinking input");
   assert(runtimeSource.includes("Oracle requires a persisted pi session"), "runtime should surface a clear error when oracle is used without a persisted session identity");
   assert(!runtimeSource.includes("ephemeral:"), "runtime should no longer collapse no-session oracle contexts onto a shared project-level ephemeral session identity");
+  assert(runtimeSource.includes("resolveWorkspaceRoot"), "runtime should derive project identity from a stable workspace root instead of the raw current working directory");
+  assert(runtimeSource.includes("Configured oracle browser executable does not exist"), "runtime submit preflight should surface missing configured browser executables clearly");
+  assert(runtimeSource.includes("Oracle prerequisite not found on PATH"), "runtime submit preflight should surface missing local dependencies clearly");
+  assert(runtimeSource.includes('await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles")'), "runtime submit preflight should validate runtime profile directory writability before submit");
+  assert(runtimeSource.includes('await assertWritableDirectory(ORACLE_JOBS_DIR, "jobs")'), "runtime submit preflight should validate jobs directory writability before submit");
   assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
   assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
+  assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
+  assert(toolsSource.includes("loadOracleConfig(projectCwd)"), "oracle submit should load config from the stable workspace-root cwd");
+  assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
+  assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath)"), "oracle submit should build archives from the stable workspace-root cwd");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
   assert(toolsSource.includes("await assertOracleSubmitPrerequisites(config);"), "oracle submit should preflight locally knowable blockers before archiving or persisting jobs");
   assert(toolsSource.includes("buildOracleToolErrorResult"), "oracle tools should centralize structured error payload creation");
@@ -2640,10 +2874,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
   assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
   assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
-  assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck immediately before the wake-up send path");
+  assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("await noteWakeupRequested(jobId)"), "poller should perform the final live-target recheck before persisting a wake-up attempt");
+  assert(pollerSource.indexOf("await noteWakeupRequested(jobId)") < pollerSource.indexOf("requestWakeupTurn(pi, deliverableAfterNote)"), "poller should durably record a wake-up attempt before the best-effort wake-up send path");
   assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
-  assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
-  assert(pollerSource.includes("requestWakeupTurn(pi, deliverable)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
+  assert(pollerSource.includes("const deliverableAfterNote = notedWakeup ?? readJob(jobId);"), "poller should re-read the job after persisting the wake-up attempt so the send path uses durable state");
+  assert(pollerSource.includes("if (!deliverableAfterNote || shouldPruneTerminalJob(deliverableAfterNote, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable after persisting the wake-up attempt");
+  assert(pollerSource.includes("requestWakeupTurn(pi, deliverableAfterNote)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent(job"), "poller wake-up turns should include durable response/artifact paths from job state via the shared observability helper");
   assert(pollerSource.includes("responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath))"), "poller wake-up turns should hide missing response paths when no response file was actually written");
   assert(sharedObservabilitySource.includes("Use oracle_read with jobId"), "poller wake-up content should direct receivers to oracle_read so reminder retries settle through the canonical path");
@@ -2904,6 +3140,48 @@ async function testArchiveDefaultExclusions(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(excludedOnlyDir, { recursive: true, force: true });
+  }
+}
+
+function testArchiveRejectsBlankInputs(): void {
+  assertThrows(
+    () => resolveArchiveInputs(process.cwd(), [""]),
+    "archive input resolution should reject empty strings instead of widening to a whole-repo archive",
+    "non-empty project-relative path",
+  );
+  assertThrows(
+    () => resolveArchiveInputs(process.cwd(), ["   "]),
+    "archive input resolution should reject whitespace-only strings instead of widening to a whole-repo archive",
+    "non-empty project-relative path",
+  );
+  assertThrows(
+    () => resolveArchiveInputs(process.cwd(), [" . "]),
+    "archive input resolution should reject padded whole-repo sentinels so '.' remains the only explicit whole-repo archive selector",
+    "must use '.' exactly",
+  );
+  assertThrows(
+    () => resolveArchiveInputs(process.cwd(), ["./"]),
+    "archive input resolution should reject './' so '.' remains the only explicit whole-repo archive selector",
+    "must use '.' exactly",
+  );
+  assertThrows(
+    () => resolveArchiveInputs(process.cwd(), ["extensions/.."]),
+    "archive input resolution should reject aliases that normalize back to the project root so '.' remains the only explicit whole-repo archive selector",
+    "must use '.' exactly",
+  );
+  const repoInputs = resolveArchiveInputs(process.cwd(), ["."]);
+  assert(repoInputs.length === 1 && repoInputs[0]?.relative === ".", "archive input resolution should keep '.' as the explicit whole-repo sentinel");
+}
+
+async function testArchiveResolutionPreservesSignificantWhitespace(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-whitespace-"));
+  const spacedFile = " leading-space.md";
+  try {
+    await writeFile(join(fixtureDir, spacedFile), "notes\n", { encoding: "utf8", mode: 0o600 });
+    const inputs = resolveArchiveInputs(fixtureDir, [spacedFile]);
+    assert(inputs.length === 1 && inputs[0]?.relative === spacedFile, "archive input resolution should preserve exact path strings for real files with significant leading whitespace");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
   }
 }
 
@@ -3856,6 +4134,9 @@ async function main() {
   await testOracleSubmitPresetGuardrails();
   await testOraclePreflightReportsBlockingReadinessStates();
   await testOracleSubmitPreflightRejectsKnownAuthSeedFailures();
+  await testWorkspaceRootProjectIdentityCoversSubdirectories(config);
+  await testWorkspaceRootFallsBackToProjectMarkersWithoutGit();
+  await testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config);
   await testOracleToolResultsExposeStructuredJobDetails(config);
   await testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config);
   await testOracleToolErrorsExposeStructuredMetadata();
@@ -3891,6 +4172,8 @@ async function main() {
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
   await testArchiveDefaultExclusions();
+  testArchiveRejectsBlankInputs();
+  await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();

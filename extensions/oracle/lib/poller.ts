@@ -245,8 +245,14 @@ async function scan(pi: ExtensionAPI, ctx: ExtensionContext, workerPath: string,
         continue;
       }
 
-      requestWakeupTurn(pi, deliverable);
-      await noteWakeupRequested(jobId).catch(() => undefined);
+      const notedWakeup = await noteWakeupRequested(jobId);
+      const deliverableAfterNote = notedWakeup ?? readJob(jobId);
+      if (!deliverableAfterNote || shouldPruneTerminalJob(deliverableAfterNote, Date.now())) {
+        await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
+        continue;
+      }
+
+      requestWakeupTurn(pi, deliverableAfterNote);
       if (ctx.hasUI) {
         ctx.ui.notify(`Oracle job ${claimed.id} is ${claimed.status}.`, "info");
       }
