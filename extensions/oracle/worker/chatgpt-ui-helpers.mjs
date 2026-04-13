@@ -26,6 +26,11 @@ const MODEL_FAMILY_PREFIX = {
 };
 
 const AUTO_SWITCH_LABEL = "Auto-switch to Thinking";
+const THINKING_EFFORT_COMBOBOX_LABEL = "Thinking effort";
+const PRO_THINKING_EFFORT_COMBOBOX_LABEL = "Pro thinking effort";
+const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
+const PRO_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?pro(?:, click to remove)?$/i;
+const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"]);
 
 /**
  * @param {string | undefined} url
@@ -99,26 +104,101 @@ export function requestedEffortLabel(selection) {
 }
 
 /**
- * @param {string} snapshot
- * @param {string | undefined} effortLabel
- * @returns {boolean}
+ * @param {string | undefined} label
+ * @returns {string}
  */
+function normalizeChipLabel(label) {
+  return normalizeText(label).replace(/, click to remove$/i, "").trim();
+}
+
+function parseComposerChipSelection(label) {
+  const normalized = normalizeChipLabel(label).toLowerCase();
+  if (!normalized) return undefined;
+
+  const thinkingMatch = normalized.match(THINKING_CHIP_PATTERN);
+  if (thinkingMatch) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("thinking"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ ((thinkingMatch[1] || "standard").toLowerCase()),
+    };
+  }
+
+  const proMatch = normalized.match(PRO_CHIP_PATTERN);
+  if (proMatch) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ ((proMatch[1] || "standard").toLowerCase()),
+    };
+  }
+
+  return undefined;
+}
+
+function detectComposerChipSelection(entries) {
+  for (const entry of entries) {
+    if (entry.disabled || entry.kind !== "button") continue;
+    const selection = parseComposerChipSelection(entry.label);
+    if (selection) return selection;
+  }
+  return undefined;
+}
+
+function checkedState(entry) {
+  const line = String(entry?.line || "");
+  if (/\bchecked=true\b/.test(line) || /\bselected\b/.test(line)) return true;
+  if (/\bchecked=false\b/.test(line)) return false;
+  return undefined;
+}
+
+function detectSelectedModelFamily(entries) {
+  for (const entry of entries) {
+    if (entry.disabled || !MODEL_FAMILY_CONTROL_KINDS.has(entry.kind || "") || checkedState(entry) !== true) continue;
+    for (const family of /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])) {
+      if (matchesModelFamilyLabel(entry.label, family)) return family;
+    }
+  }
+
+  const hasProEffortCombobox = entries.some(
+    (entry) => !entry.disabled && entry.kind === "combobox" && normalizeText(entry.label).toLowerCase() === PRO_THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase(),
+  );
+  if (hasProEffortCombobox) return "pro";
+
+  const hasAutoSwitchControl = entries.some((entry) => {
+    if (entry.disabled || !["button", "switch"].includes(entry.kind || "")) return false;
+    const controlText = normalizeText([entry.label, entry.value, entry.line].filter(Boolean).join(" "));
+    return controlText.toLowerCase().includes(AUTO_SWITCH_LABEL.toLowerCase());
+  });
+  if (hasAutoSwitchControl) return "instant";
+
+  const hasThinkingEffortCombobox = entries.some(
+    (entry) => !entry.disabled && entry.kind === "combobox" && normalizeText(entry.label).toLowerCase() === THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase(),
+  );
+  if (hasThinkingEffortCombobox) return "thinking";
+
+  return undefined;
+}
+
+function selectionMatchesChipSelection(selection, chipSelection) {
+  if (!chipSelection || chipSelection.modelFamily !== selection.modelFamily) return false;
+  if (selection.modelFamily === "thinking" || selection.modelFamily === "pro") {
+    return chipSelection.effort === (selection.effort || "standard");
+  }
+  return selection.autoSwitchToThinking !== true;
+}
+
 export function effortSelectionVisible(snapshot, effortLabel) {
   if (!effortLabel) return true;
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  const normalizedEffort = effortLabel.toLowerCase();
   return entries.some((entry) => {
     if (entry.disabled) return false;
-    if (entry.kind === "combobox" && entry.value === effortLabel) return true;
+    if (entry.kind === "combobox" && normalizeText(entry.value).toLowerCase() === normalizedEffort) return true;
+    const chipSelection = entry.kind === "button" ? parseComposerChipSelection(entry.label) : undefined;
+    if (chipSelection?.effort === normalizedEffort) return true;
     if (entry.kind !== "button") return false;
-    const label = String(entry.label || "").toLowerCase();
-    const normalizedEffort = effortLabel.toLowerCase();
-    return (
-      label === normalizedEffort ||
-      label === `${normalizedEffort} thinking` ||
-      label === `${normalizedEffort}, click to remove` ||
-      label === `${normalizedEffort} thinking, click to remove`
-    );
+    const label = normalizeChipLabel(entry.label).toLowerCase();
+    return label === normalizedEffort || label === `${normalizedEffort} thinking` || label === `${normalizedEffort} pro`;
   });
 }
 
@@ -166,7 +246,9 @@ export function autoSwitchToThinkingSelectionVisible(snapshot) {
     if (!controlText.toLowerCase().includes(AUTO_SWITCH_LABEL.toLowerCase())) continue;
     foundControl = true;
 
-    if (/\b(?:checked|selected|enabled|on|active)\b/i.test(controlText)) return true;
+    if (/\bchecked=true\b/i.test(String(entry.line || ""))) return true;
+    if (/\bchecked=false\b/i.test(String(entry.line || ""))) return false;
+    if (/\b(?:selected|enabled|on|active)\b/i.test(controlText)) return true;
     if (/\b(?:unchecked|not checked|disabled|off)\b/i.test(controlText)) return false;
     if (typeof entry.label === "string" && /click to remove/i.test(entry.label)) return true;
   }
@@ -181,16 +263,9 @@ export function autoSwitchToThinkingSelectionVisible(snapshot) {
  */
 export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
   if (!snapshotStronglyMatchesRequestedModel(snapshot, selection)) return false;
-
-  if (selection.modelFamily === "thinking" || selection.modelFamily === "pro") {
-    const effortLabel = requestedEffortLabel(selection);
-    if (effortLabel && !effortSelectionVisible(snapshot, effortLabel)) return false;
-  }
-
   if (selection.modelFamily === "instant" && selection.autoSwitchToThinking) {
     return autoSwitchToThinkingSelectionVisible(snapshot) === true;
   }
-
   return true;
 }
 
@@ -202,23 +277,19 @@ export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
 export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const familyMatched = entries.some((entry) => !entry.disabled && matchesModelFamilyLabel(entry.label, selection.modelFamily));
-  if (!familyMatched) return false;
+  const chipSelection = detectComposerChipSelection(entries);
+  if (chipSelection) return selectionMatchesChipSelection(selection, chipSelection);
 
-  const configurationUiVisible = snapshotHasModelConfigurationUi(snapshot);
-  const effortLabel = requestedEffortLabel(selection);
+  const selectedModelFamily = detectSelectedModelFamily(entries);
+  if (!selectedModelFamily || selectedModelFamily !== selection.modelFamily) return false;
 
   if (selection.modelFamily === "thinking" || selection.modelFamily === "pro") {
-    if (!effortLabel) return true;
-    if (effortSelectionVisible(snapshot, effortLabel)) return true;
-    return !configurationUiVisible;
+    return effortSelectionVisible(snapshot, requestedEffortLabel(selection));
   }
 
   if (selection.modelFamily === "instant") {
     const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
-    if (selection.autoSwitchToThinking) {
-      return autoSwitchState === true || (!configurationUiVisible && autoSwitchState === undefined);
-    }
+    if (selection.autoSwitchToThinking) return autoSwitchState === true;
     return autoSwitchState !== true;
   }
 
@@ -233,24 +304,18 @@ export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
 export function snapshotWeaklyMatchesRequestedModel(snapshot, selection) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const familyMatched = entries.some((entry) => !entry.disabled && matchesModelFamilyLabel(entry.label, selection.modelFamily));
+  const chipSelection = detectComposerChipSelection(entries);
+  if (chipSelection) return selectionMatchesChipSelection(selection, chipSelection);
 
-  if (selection.modelFamily === "thinking") {
-    return familyMatched || effortSelectionVisible(snapshot, requestedEffortLabel(selection));
-  }
-
-  if (!familyMatched) return false;
-
-  if (selection.modelFamily === "pro") {
-    return !thinkingChipVisible(snapshot);
-  }
+  const selectedModelFamily = detectSelectedModelFamily(entries);
+  if (!selectedModelFamily || selectedModelFamily !== selection.modelFamily) return false;
 
   if (selection.modelFamily === "instant") {
     const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
     return selection.autoSwitchToThinking ? autoSwitchState !== false : autoSwitchState !== true;
   }
 
-  return false;
+  return true;
 }
 
 /**

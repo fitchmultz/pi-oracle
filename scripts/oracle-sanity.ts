@@ -1094,6 +1094,42 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
   }
 }
 
+async function testOracleAuthToolRefreshesSeedProfile(): Promise<void> {
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-auth-tool-${randomUUID()}-`));
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const fakeAuthWorkerPath = join(fixtureDir, "fake-auth-worker.mjs");
+  const seedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
+  const configPath = join(agentExtensionsDir, "oracle.json");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await mkdir(seedDir, { recursive: true, mode: 0o700 });
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+  await writeFile(fakeAuthWorkerPath, "process.stdout.write('Auth refreshed via fake worker\\n');\n", { encoding: "utf8", mode: 0o600 });
+  await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: seedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeAuthWorkerPath);
+  const authTool = pi.tools.get("oracle_auth");
+  assert(authTool?.execute, "oracle auth tool should register for stale-auth recovery testing");
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const result = await authTool.execute!("oracle-auth-refresh", {}, undefined, () => { }, createExtensionCtx({ getSessionFile: () => undefined } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub())) as { content?: unknown; details?: unknown };
+    const text = Array.isArray(result.content) ? asRecord(result.content[0])?.text : undefined;
+    const details = asRecord(result.details);
+    assert(typeof text === "string" && text.includes("Auth refreshed via fake worker"), "oracle auth tool should return the shared auth-bootstrap worker output");
+    assert(details?.refreshed === true, "oracle auth tool should report a successful auth refresh in its details payload");
+    assert(details?.authSeedProfileDir === seedDir, "oracle auth tool should expose the configured auth seed directory in its details payload");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testOracleSubmitPreflightRejectsKnownAuthSeedFailures(): Promise<void> {
   await resetOracleStateDir();
   const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-submit-preflight-${randomUUID()}-`));
@@ -2782,12 +2818,16 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const pi = createPiHarness();
   registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
   const preflightTool = pi.tools.get("oracle_preflight");
+  const authTool = pi.tools.get("oracle_auth");
   const submitTool = pi.tools.get("oracle_submit");
   assert(preflightTool, "oracle preflight tool should register for schema inspection");
+  assert(authTool, "oracle auth tool should register for schema inspection");
   assert(submitTool, "oracle submit tool should register for schema inspection");
   const preflightProperties = asRecord(asRecord(preflightTool.parameters)?.properties);
+  const authProperties = asRecord(asRecord(authTool.parameters)?.properties);
   const submitProperties = asRecord(asRecord(submitTool.parameters)?.properties);
   assert(preflightProperties !== undefined, "oracle preflight tool should expose an object schema");
+  assert(authProperties !== undefined, "oracle auth tool should expose an object schema");
   assert(submitProperties, "oracle submit tool should expose an object schema");
   const representativePresetAliases: [string, OracleSubmitPresetId][] = [
     ["Pro-standard", "pro_standard"],
@@ -2803,10 +2843,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(followUpPromptSource.includes("Usage: /oracle-followup <job-id> <request>"), "/oracle-followup prompt should document the required usage contract for job id plus follow-up request");
   assert(followUpPromptSource.includes("followUpJobId"), "/oracle-followup prompt should explicitly route the parsed job id through oracle_submit.followUpJobId");
   assert(followUpPromptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle-followup prompt should prefer context-rich archives within the configured upload ceiling");
+  assert(followUpPromptSource.includes("call `oracle_auth` once"), "/oracle-followup prompt should tell agents to refresh auth once before retrying a stale-auth follow-up failure");
   assert(followUpPromptSource.includes("nearby files, tests, docs, configs, and adjacent modules"), "/oracle-followup prompt should preserve relevant surrounding context for narrow follow-up requests");
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, or prepare archive inputs first"), "/oracle prompt should forbid expensive prep before preflight passes");
   assert(promptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle prompt should bias toward context-rich pre-submit context gathering within the upload ceiling");
+  assert(promptSource.includes("call `oracle_auth` once"), "/oracle prompt should tell agents to refresh auth once before retrying a stale-auth failure");
   assert(promptSource.includes("If the user scope is explicit and narrow"), "/oracle prompt should recognize explicit narrow requests before broad repo exploration");
   assert(promptSource.includes("Do not keep exploring once you already have enough context to submit well"), "/oracle prompt should bias toward dispatch once enough context is in hand");
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
@@ -2831,6 +2873,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("still exceeds the upload limit after default exclusions and automatic generic generated-output-dir pruning"), "/oracle prompt should distinguish submit-time oversize failures after auto-pruning");
   assert(promptSource.includes("If `oracle_submit` returns a queued job instead of an immediately dispatched one, treat that as success"), "/oracle prompt should explain queued oracle submissions as successful waits");
   assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
+  assert(designSource.includes("`oracle_auth`"), "design doc should document the agent-facing oracle_auth tool");
   assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up prompt template");
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
   assert(designSource.includes("bias toward context-rich archives when they fit within the 250 MB ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
@@ -2845,7 +2888,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
+  assert(toolsSource.includes("call oracle_auth once before retrying the submission"), "oracle submit tool guidance should tell agents to refresh auth once before retrying stale-auth failures");
   assert(toolsSource.includes("Prefer context-rich archives up to the 250 MB ceiling"), "oracle tool guidance should tell agents to use the available archive budget generously when it helps");
+  assert(toolsSource.includes('name: "oracle_auth"'), "oracle tools should register an agent-facing oracle_auth tool");
   assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
   assert(toolsSource.includes("Do not default to a one-file archive"), "oracle tool guidance should preserve surrounding context for narrowly described asks when the archive budget allows it");
   assert(toolsSource.includes("resolveOracleSubmitPreset"), "oracle submit should resolve preset via config helper");
@@ -2864,6 +2909,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
   assert(readmeSource.includes("Agent preflights, then gathers a context-rich relevant repo slice"), "README high-level flow should reflect the context-rich /oracle path");
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
+  assert(readmeSource.includes("`oracle_auth`"), "README should document the oracle_auth agent-facing tool");
+  assert(readmeSource.includes("oracle_auth({})"), "README should explain that agent callers can refresh stale oracle auth through oracle_auth before retrying once");
   assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
   assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");
   assert(readmeSource.includes("Agent callers can use `oracle_read({ jobId })`"), "README should frame oracle_read as the agent-facing fallback instead of the primary user-facing wake-up path");
@@ -2882,9 +2929,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
   }
   const preflightSchema = preflightTool.parameters as import("@sinclair/typebox").TSchema;
+  const authSchema = authTool.parameters as import("@sinclair/typebox").TSchema;
   const submitSchema = submitTool.parameters as import("@sinclair/typebox").TSchema;
   assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
+  assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
   assert(Object.keys(preflightProperties ?? {}).length === 0, "oracle_preflight should not require caller arguments");
+  assert(Object.keys(authProperties ?? {}).length === 0, "oracle_auth should not require caller arguments");
   assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
   for (const [presetAlias, presetId] of representativePresetAliases) {
     assert(
@@ -3049,7 +3099,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(commandsSource.includes("cleanup blockers or warnings"), "oracle-clean summary should not mislabel retention blockers as cleanup warnings only");
   assert(commandsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel command should only promote queued jobs after a clean cancellation");
   assert(commandsSource.includes("Refusing to remove non-terminal oracle job"), "oracle clean should refuse queued jobs");
-  assert(commandsSource.includes("getOracleConfigLoadDetails"), "oracle auth bootstrap should pass effective config-load metadata into the auth worker");
+  assert(commandsSource.includes("runOracleAuthBootstrap"), "oracle commands should delegate auth refresh through the shared auth-bootstrap helper");
   assert(jobsSource.includes("report.attempted.push(\"queuedArchive\")"), "cleanup retry should treat queued archive deletion as a first-class cleanup target");
   assert(jobsSource.includes("Failed to remove queued archive"), "queued cleanup retries should preserve warnings when archive deletion keeps failing");
   assert(jobsSource.includes("if (cleanupReport.warnings.length > 0)"), "terminal cleanup should retain job state when cleanup reports warnings");
@@ -3069,6 +3119,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
+  const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
   assert(workerSource.includes("querySelectorAll('button, a')"), "worker should scan both button and link artifact controls");
@@ -3089,8 +3140,13 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("jobBlocksAdmission"), "worker queued-promotion admission should delegate blocking checks to the shared job coordination helper");
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
   assert(workerSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "worker should use the shared ChatGPT UI helper module for model/origin/completion logic");
+  assert(workerSource.includes('["button", "radio", "menuitemradio"].includes(candidate.kind || "")'), "worker should accept radio-style model family controls in addition to button controls");
+  assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
+  assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
+  assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
+  assert(uiHelpersSource.includes("selectionMatchesChipSelection"), "ChatGPT UI helpers should recognize composer chips like Heavy thinking or Extended Pro as durable preset indicators");
   assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
   assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
   assert(authBootstrapSource.includes("from \"./auth-flow-helpers.mjs\""), "auth bootstrap should use the extracted auth flow helper module for probe normalization and page classification");
@@ -3797,37 +3853,101 @@ function testChatGptUiHelpers(): void {
   ].join("\n");
   assert(
     snapshotStronglyMatchesRequestedModel(closedThinkingSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
-    "closed thinking snapshots should still verify the thinking family when effort is hidden after configuration closes",
+    "closed standard-thinking chips should strongly verify the standard thinking preset",
   );
   assert(
-    !snapshotCanSafelySkipModelConfiguration(closedThinkingSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
-    "closed thinking snapshots should not skip reopening model configuration when the requested effort is hidden",
+    snapshotCanSafelySkipModelConfiguration(closedThinkingSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed standard-thinking chips should safely skip model reconfiguration because the chip encodes the preset",
   );
 
-  const proWithStandardSnapshot = [
-    '- button "Pro" [ref=e210]',
-    '- combobox [ref=e211]: Standard',
+  const closedExtendedThinkingSnapshot = [
+    '- button "Extended thinking, click to remove" [ref=e120]',
+    '- button "Extended thinking" [expanded=false, ref=e121]',
   ].join("\n");
   assert(
-    !snapshotStronglyMatchesRequestedModel(proWithStandardSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
-    "thinking presets should not verify on effort alone when the selected family is Pro",
+    snapshotStronglyMatchesRequestedModel(closedExtendedThinkingSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "closed extended-thinking chips should strongly verify the extended thinking preset",
   );
   assert(
-    snapshotStronglyMatchesRequestedModel(proWithStandardSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
-    "pro presets should still verify when the matching family and effort are visible",
+    !snapshotStronglyMatchesRequestedModel(closedExtendedThinkingSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "thinking chips should not verify pro presets that reuse the same effort label",
+  );
+
+  const configureThinkingHeavySnapshot = [
+    '- radio "Instant" [checked=false, ref=e130]',
+    '- radio "Thinking" [checked=false, ref=e131]',
+    '- radio "Pro" [checked=false, ref=e132]',
+    '- combobox "Thinking effort" [expanded=false, ref=e133]: Heavy',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(configureThinkingHeavySnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "thinking configure modals should verify heavy thinking even when the family radio itself is not marked checked in the snapshot",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(configureThinkingHeavySnapshot, { modelFamily: "pro", effort: "heavy", autoSwitchToThinking: false }),
+    "thinking configure modals should not misclassify the visible thinking effort combobox as a pro preset",
+  );
+
+  const closedExtendedProSnapshot = [
+    '- button "Extended Pro, click to remove" [ref=e210]',
+    '- button "Extended Pro" [expanded=false, ref=e211]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(closedExtendedProSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "closed extended-pro chips should strongly verify the extended pro preset",
+  );
+  assert(
+    snapshotCanSafelySkipModelConfiguration(closedExtendedProSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "closed extended-pro chips should safely skip model reconfiguration because the chip encodes the preset",
+  );
+
+  const topMenuProSnapshot = [
+    '- menuitemradio "Instant" [checked=false, ref=e220]',
+    '- menuitemradio "Thinking" [checked=false, ref=e221]',
+    '- menuitemradio "Pro" [checked=true, ref=e222]',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(topMenuProSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "top-level family menus alone should not strongly verify effort-sensitive pro presets before the configure modal reveals the effort selector",
+  );
+  assert(
+    snapshotWeaklyMatchesRequestedModel(topMenuProSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "top-level family menus should still weakly verify the selected family while the configure modal is settling",
+  );
+  assert(
+    !snapshotWeaklyMatchesRequestedModel(topMenuProSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "top-level family menus should not weakly verify the wrong family just because multiple family labels are visible",
   );
 
   const instantAutoSwitchOnSnapshot = [
-    '- button "Instant, click to remove" [ref=e310]',
-    '- button "Auto-switch to Thinking, checked" [ref=e311]',
+    '- radio "Instant" [checked=true, ref=e310]',
+    '- radio "Thinking" [checked=false, ref=e311]',
+    '- radio "Pro" [checked=false, ref=e312]',
+    '- combobox "Thinking effort" [expanded=false, ref=e313]: Standard',
+    '- switch "Auto-switch to Thinking" [checked=true, ref=e314]',
   ].join("\n");
   assert(
     snapshotStronglyMatchesRequestedModel(instantAutoSwitchOnSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
-    "instant auto-switch presets should verify only when the toggle is visibly enabled",
+    "instant auto-switch presets should verify only when the switch is visibly enabled in the configure modal",
   );
   assert(
     !snapshotStronglyMatchesRequestedModel(instantAutoSwitchOnSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
-    "plain instant presets should not verify when auto-switch is visibly enabled",
+    "plain instant presets should not verify when the auto-switch control is enabled",
+  );
+
+  const instantAutoSwitchOffSnapshot = [
+    '- radio "Instant" [checked=true, ref=e320]',
+    '- radio "Thinking" [checked=false, ref=e321]',
+    '- radio "Pro" [checked=false, ref=e322]',
+    '- switch "Auto-switch to Thinking" [checked=false, ref=e323]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(instantAutoSwitchOffSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "plain instant presets should verify when the instant radio is selected and auto-switch is visibly disabled",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(instantAutoSwitchOffSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
+    "instant auto-switch presets should not verify when the switch is visibly disabled",
   );
 
   const closedProSnapshot = '- button "Model selector" [ref=e410]';
@@ -3948,6 +4068,23 @@ function testAuthFlowHelpers(): void {
     logPath: "/tmp/oracle-auth.log",
   });
   assert(readyState.state === "authenticated_and_ready", "auth classification should accept fully ready ChatGPT shells on allowed origins");
+
+  const extendedChipReadyState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: [
+      '- textbox "Chat with ChatGPT" [ref=e10]',
+      '- button "Add files and more" [ref=e11]',
+      '- button "Extended Pro, click to remove" [ref=e12]',
+      '- button "Extended Pro" [ref=e13]',
+    ].join("\n"),
+    body: "",
+    probe: normalizedProbe,
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(extendedChipReadyState.state === "authenticated_and_ready", "auth classification should treat extended model chips as valid ready-state model controls");
 
   const redirectedState = classifyChatAuthPage({
     url: "https://example.com/login",
@@ -4237,6 +4374,7 @@ async function main() {
   await testJobCreationPersistsSelectionSnapshot(config);
   await testOracleSubmitPresetGuardrails();
   await testOraclePreflightReportsBlockingReadinessStates();
+  await testOracleAuthToolRefreshesSeedProfile();
   await testOracleSubmitPreflightRejectsKnownAuthSeedFailures();
   await testWorkspaceRootProjectIdentityCoversSubdirectories(config);
   await testWorkspaceRootFallsBackToProjectMarkersWithoutGit();

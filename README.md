@@ -103,6 +103,7 @@ User-facing commands:
 
 Agent-facing tools:
 - `oracle_preflight`
+- `oracle_auth`
 - `oracle_submit`
 - `oracle_read`
 - `oracle_cancel`
@@ -163,6 +164,7 @@ Project config should only override safe, non-privileged settings.
 - If you miss the wake-up, use `/oracle-read [job-id]` to inspect the saved response preview.
 - `/oracle-status [job-id]` still shows saved job metadata and lists recent job ids when you omit the id.
 - Agent callers can use `oracle_read({ jobId })`.
+- If a prior oracle run failed because ChatGPT login was required or the worker explicitly said to rerun `/oracle-auth`, agent callers can run `oracle_auth({})` once and then retry the submission once.
 - `/oracle-clean` can still refuse a terminal job briefly after a wake-up send so saved response/artifact paths survive the follow-up turn; when that guard applies, it returns the next eligible cleanup time.
 
 ## Requirements

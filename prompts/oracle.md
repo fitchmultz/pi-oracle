@@ -7,7 +7,7 @@ Do not answer the user's request directly yet.
 
 Required workflow:
 1. Call `oracle_preflight` immediately.
-2. If `oracle_preflight` reports `ready: false`, stop immediately and report the blocking issue plus the suggested next step. Do not read files, search the codebase, or prepare archive inputs first.
+2. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, or prepare archive inputs first. If the blocker is an auth seed or stale-auth issue that `oracle_auth` can repair, call `oracle_auth` once, rerun `oracle_preflight`, and continue only if it becomes `ready: true`. Otherwise stop immediately and report the blocking issue plus the suggested next step.
 3. Understand the request and decide whether it is explicitly narrow or genuinely broad.
 4. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the 250 MB archive ceiling.
 5. If the user scope is explicit and narrow, start from the directly relevant area but still include nearby files, tests, docs, configs, and adjacent modules when they may improve answer quality. Keep the archive tightly minimal only when the user explicitly asks for that, privacy/sensitivity requires it, or size pressure forces it.
@@ -26,6 +26,7 @@ Oracle model (`oracle_submit`):
 
 Rules:
 - Use `oracle_preflight` before any expensive `/oracle` preparation so missing persisted-session or local auth/config blockers fail fast.
+- If the immediately preceding oracle run for this request failed because ChatGPT login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, call `oracle_auth` once and then retry the oracle submission once. Do not loop auth refreshes.
 - Always include an archive. Do not submit without context files.
 - By default, prefer context-rich archives up to the 250 MB ceiling because more relevant context is usually better than less. For broad or unclear requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
 - Only limit file selection if the user explicitly requests a tight archive, if privacy/sensitivity requires it, or if the archive would otherwise exceed the size limit after exclusions/pruning.

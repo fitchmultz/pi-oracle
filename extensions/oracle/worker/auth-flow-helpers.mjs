@@ -69,7 +69,7 @@ export function classifyChatAuthPage(args) {
   const hasAddFiles = args.snapshot.includes(`button "${addFilesLabel}"`);
   const hasModelControl =
     args.snapshot.includes('button "Model selector"') ||
-    /button "(Instant|Thinking|Pro)(?: [^"]*)?"/.test(args.snapshot);
+    /button "(?:Instant|(?:(?:Light|Standard|Extended|Heavy) )?Thinking|(?:(?:Light|Standard|Extended|Heavy) )?Pro)(?:, click to remove)?"/i.test(args.snapshot);
 
   const challengePatterns = [
     /just a moment/i,

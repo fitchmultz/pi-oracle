@@ -3,12 +3,11 @@
 // Scope: Command-facing orchestration only; durable lifecycle mutations live in jobs/runtime/tools modules and browser execution stays in worker scripts.
 // Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi.
 // Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
-import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig } from "./config.js";
+import { runOracleAuthBootstrap } from "./auth.js";
 import {
   cancelOracleJob,
   getJobDir,
@@ -16,7 +15,6 @@ import {
   isTerminalOracleJob,
   listJobsForCwd,
   markWakeupSettled,
-  pruneTerminalOracleJobs,
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
@@ -65,53 +63,13 @@ function readScopedJob(jobId: string, cwd: string) {
   return job;
 }
 
-async function runAuthBootstrap(authWorkerPath: string, cwd: string): Promise<string> {
-  const config = loadOracleConfig(cwd);
-  const configLoad = getOracleConfigLoadDetails(cwd);
-  const authConfigGuidance = {
-    ...configLoad,
-    remediation: formatOracleAuthConfigRemediation(configLoad),
-    summary: formatOracleAuthConfigSummary(configLoad),
-  };
-  try {
-    await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_auth", cwd }, async () => {
-      await reconcileStaleOracleJobs();
-      await pruneTerminalOracleJobs();
-    });
-  } catch (error) {
-    if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
-  }
-
-  return await new Promise<string>((resolve, reject) => {
-    const child = spawn(process.execPath, [authWorkerPath, JSON.stringify({ config, configLoad: authConfigGuidance })], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (data) => {
-      stdout += String(data);
-    });
-    child.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    child.on("error", (error) => reject(error));
-    child.on("close", (code) => {
-      const message = stdout.trim() || stderr.trim() || "Oracle auth bootstrap finished with no output.";
-      if (code === 0) resolve(message);
-      else reject(new Error(message));
-    });
-  });
-}
-
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT cookies from real Chrome into the oracle auth seed profile",
     handler: async (_args, ctx) => {
       ctx.ui.notify("Syncing ChatGPT cookies from real Chrome into the oracle auth seed profile…", "info");
       try {
-        const result = await runAuthBootstrap(authWorkerPath, ctx.cwd);
+        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd);
         ctx.ui.notify(result, "info");
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");

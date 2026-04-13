@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
+import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
@@ -572,7 +573,7 @@ function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
   };
 }
 
-type OracleToolName = "oracle_submit" | "oracle_read" | "oracle_cancel";
+type OracleToolName = "oracle_auth" | "oracle_submit" | "oracle_read" | "oracle_cancel";
 type OracleToolErrorSource = OracleToolName | "oracle_preflight";
 type OracleQueueSnapshot = { queued: boolean; position?: number; depth?: number };
 type OracleToolErrorDetails = {
@@ -591,7 +592,7 @@ type OracleToolJobDetailsOptions = {
   responseAvailable?: boolean;
 };
 
-const ORACLE_TOOL_NAMES = new Set<OracleToolName>(["oracle_submit", "oracle_read", "oracle_cancel"]);
+const ORACLE_TOOL_NAMES = new Set<OracleToolName>(["oracle_auth", "oracle_submit", "oracle_read", "oracle_cancel"]);
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -686,7 +687,7 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
       code: "auth_seed_profile_missing",
       message,
       rejectedValue: message.replace(/^Oracle auth seed profile not found: /, "").replace(/\. Run \/oracle-auth first\.$/, ""),
-      suggestedNextStep: "Run /oracle-auth first, then retry the oracle tool call.",
+      suggestedNextStep: "Call oracle_auth or run /oracle-auth once, then retry the oracle tool call.",
     };
   }
 
@@ -695,7 +696,7 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
       code: "auth_seed_profile_unreadable",
       message,
       rejectedValue: message.replace(/^Oracle auth seed profile is not readable: /, "").replace(/\. Fix its permissions or rerun \/oracle-auth\.$/, ""),
-      suggestedNextStep: "Fix the auth seed profile permissions or rerun /oracle-auth, then retry.",
+      suggestedNextStep: "Fix the auth seed profile permissions or call oracle_auth / rerun /oracle-auth once, then retry.",
     };
   }
 
@@ -704,7 +705,7 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
       code: "auth_seed_profile_invalid_type",
       message,
       rejectedValue: message.replace(/^Oracle auth seed profile is not a directory: /, "").replace(/\. Remove the invalid path or rerun \/oracle-auth\.$/, ""),
-      suggestedNextStep: "Remove the invalid auth seed path or rerun /oracle-auth to recreate it.",
+      suggestedNextStep: "Remove the invalid auth seed path or call oracle_auth / rerun /oracle-auth once to recreate it.",
     };
   }
 
@@ -983,7 +984,7 @@ async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePrefligh
   };
 }
 
-export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void {
+export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWorkerPath = workerPath): void {
   pi.on("tool_result", async (event) => {
     if (!ORACLE_TOOL_NAMES.has(event.toolName as OracleToolName)) return;
     if (event.isError) return;
@@ -1013,6 +1014,34 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
   });
 
   pi.registerTool({
+    name: "oracle_auth",
+    label: "Oracle Auth",
+    description: "Refresh the shared oracle auth seed profile by importing ChatGPT cookies from your configured real Chrome profile.",
+    promptSnippet: "Refresh oracle auth before retrying a login-required oracle run.",
+    promptGuidelines: [
+      "Call oracle_auth when an oracle run failed because ChatGPT login is required, the worker said to rerun /oracle-auth, or stale auth appears to be blocking submission execution.",
+      "At most once per user request, refresh auth and then retry the blocked oracle submission.",
+      "If oracle_auth itself fails, stop and report the failure instead of looping.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      try {
+        const projectCwd = getProjectId(ctx.cwd);
+        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd);
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: {
+            refreshed: true,
+            authSeedProfileDir: loadOracleConfig(projectCwd).browser.authSeedProfileDir,
+          },
+        };
+      } catch (error) {
+        return buildOracleToolErrorResult("oracle_auth", error, {});
+      }
+    },
+  });
+
+  pi.registerTool({
     name: "oracle_submit",
     label: "Oracle Submit",
     description:
@@ -1021,6 +1050,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string): void 
     promptSnippet: "Dispatch a background ChatGPT web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
+      "If the immediately preceding oracle run failed because ChatGPT login is required or the worker explicitly said to rerun /oracle-auth, call oracle_auth once before retrying the submission. Do not loop auth refreshes.",
       "Prefer context-rich archives up to the 250 MB ceiling because more relevant surrounding context is usually better than less.",
       "By default, archive the whole repo by passing '.' for broad or unclear requests; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and nested secrets directories anywhere in the repo.",
       "For narrower asks, still include nearby tests, docs, configs, and adjacent modules when they may improve answer quality. Only narrow aggressively when the user explicitly asks, privacy/sensitivity requires it, or size pressure forces it.",

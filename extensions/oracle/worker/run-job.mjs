@@ -679,8 +679,17 @@ function findLastEntry(snapshot, predicate) {
   return undefined;
 }
 
-function matchesModelFamilyButton(candidate, family) {
-  return candidate.kind === "button" && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
+function matchesModelFamilyControl(candidate, family) {
+  return ["button", "radio", "menuitemradio"].includes(candidate.kind || "") && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
+}
+
+function matchesModelConfigurationOpener(candidate) {
+  if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
+  const label = String(candidate.label || "");
+  return candidate.label === "Model selector"
+    || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
+    || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
+    || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
 }
 
 function composerControlsVisible(snapshot) {
@@ -698,7 +707,7 @@ async function clickAutoSwitchToThinkingControl(job) {
   const snapshot = await snapshotText(job);
   const entry = findEntry(
     snapshot,
-    (candidate) => candidate.kind === "button" && typeof candidate.label === "string" && candidate.label.startsWith(CHATGPT_LABELS.autoSwitchToThinking) && !candidate.disabled,
+    (candidate) => ["button", "switch"].includes(candidate.kind || "") && typeof candidate.label === "string" && candidate.label.startsWith(CHATGPT_LABELS.autoSwitchToThinking) && !candidate.disabled,
   );
   if (!entry) throw new Error(`Could not find ${CHATGPT_LABELS.autoSwitchToThinking} control`);
   await clickRef(job, entry.ref);
@@ -780,7 +789,7 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
   const hasComposer = snapshot.includes(`textbox "${CHATGPT_LABELS.composer}"`);
   const hasAddFiles = snapshot.includes(`button "${CHATGPT_LABELS.addFiles}"`);
-  const hasModelControl = snapshot.includes('button "Model selector"') || /button "(Instant|Thinking|Pro)(?: [^"]*)?"/.test(snapshot);
+  const hasModelControl = snapshot.includes('button "Model selector"') || /button "(?:Instant|(?:(?:Light|Standard|Extended|Heavy) )?Thinking|(?:(?:Light|Standard|Extended|Heavy) )?Pro)(?:, click to remove)?"/i.test(snapshot);
 
   if (probe?.status === 401 || probe?.status === 403) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
@@ -978,15 +987,10 @@ async function clickSend(job) {
 }
 
 async function openModelConfiguration(job) {
-  const openerPredicates = [
-    (candidate) => candidate.kind === "button" && candidate.label === "Model selector" && !candidate.disabled,
-    (candidate) => candidate.kind === "button" && ["Instant", "Thinking", "Pro"].includes(candidate.label || "") && !candidate.disabled,
-  ];
-
   const initialSnapshot = await snapshotText(job);
   if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
 
-  for (const predicate of openerPredicates) {
+  for (const predicate of [matchesModelConfigurationOpener]) {
     const snapshot = await snapshotText(job);
     const entry = findEntry(snapshot, predicate);
     if (!entry) continue;
@@ -1071,11 +1075,11 @@ async function configureModel(job) {
   let verificationSnapshot = familySnapshot;
 
   const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
-  let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.selection.modelFamily));
+  let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
   if (alreadyConfiguredInUi) {
     await log("Model configuration UI opened with requested settings already selected");
   } else if (!familyEntry) {
-    throw new Error(`Could not find model family button for ${job.selection.modelFamily}`);
+    throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
   }
 
   if (!alreadyConfiguredInUi && familyEntry) {
@@ -1083,7 +1087,7 @@ async function configureModel(job) {
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
     verificationSnapshot = familySnapshot;
-    familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyButton(candidate, job.selection.modelFamily));
+    familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
     if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
       throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
     }

@@ -7,7 +7,7 @@ Do not answer the user's request directly yet.
 
 Required workflow:
 1. Call `oracle_preflight` immediately.
-2. If `oracle_preflight` reports `ready: false`, stop immediately and report the blocking issue plus the suggested next step. Do not read files, search the codebase, or prepare archive inputs first.
+2. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, or prepare archive inputs first. If the blocker is an auth seed or stale-auth issue that `oracle_auth` can repair, call `oracle_auth` once, rerun `oracle_preflight`, and continue only if it becomes `ready: true`. Otherwise stop immediately and report the blocking issue plus the suggested next step.
 3. Parse the user request as `<job-id> <follow-up request>`.
 4. If the request does not include both a prior oracle job id and a follow-up request, stop and report: `Usage: /oracle-followup <job-id> <request>. Find the job id in the earlier oracle response or via /oracle-status.`
 5. Treat the parsed job id as `followUpJobId` for `oracle_submit`.
@@ -29,6 +29,7 @@ Oracle model (`oracle_submit`):
 
 Rules:
 - Use `oracle_preflight` before any expensive `/oracle-followup` preparation so missing persisted-session or local auth/config blockers fail fast.
+- If the immediately preceding oracle run for this follow-up failed because ChatGPT login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, call `oracle_auth` once and then retry the follow-up submission once. Do not loop auth refreshes.
 - This prompt exists so normal users can continue the same ChatGPT thread without manually constructing `followUpJobId` tool calls.
 - Always include an archive. Do not submit without context files.
 - By default, prefer context-rich archives up to the 250 MB ceiling because more relevant context is usually better than less. For broad or unclear follow-up requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.

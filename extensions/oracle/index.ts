@@ -21,7 +21,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   const authWorkerPath = join(extensionDir, "worker", "auth-bootstrap.mjs");
 
   registerOracleCommands(pi, authWorkerPath, workerPath);
-  registerOracleTools(pi, workerPath);
+  registerOracleTools(pi, workerPath, authWorkerPath);
 
   async function runStartupMaintenance(ctx: ExtensionContext): Promise<void> {
     try {

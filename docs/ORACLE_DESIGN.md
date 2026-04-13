@@ -88,6 +88,8 @@ The extension now follows the current `pi` session lifecycle model:
 - `oracle_preflight`
   - lightweight agent-facing readiness check for persisted-session and local oracle prerequisites
   - intended to run before expensive `/oracle` context gathering
+- `oracle_auth`
+  - agent-facing auth refresh tool that mirrors `/oracle-auth` for stale-auth recovery before a retry
 - `oracle_submit`
   - low-level agent-facing dispatch tool
   - creates archive and launches a detached worker
@@ -109,12 +111,13 @@ Instead it instructs the agent to:
 1. call `oracle_preflight` immediately
 2. stop right away if preflight reports the session or local oracle setup is not ready
 3. understand whether the request is explicitly narrow or genuinely broad
-4. gather enough repo context to submit well and bias toward context-rich archives when they fit within the 250 MB ceiling
-5. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
-6. if the request is broad/repo-wide, gather broader context and usually archive `.`
-7. craft the oracle prompt
-8. call `oracle_submit`
-9. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
+4. if the immediately preceding oracle run failed because ChatGPT login is required or the worker explicitly said to rerun `/oracle-auth`, call `oracle_auth` once before retrying
+5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the 250 MB ceiling
+6. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
+7. if the request is broad/repo-wide, gather broader context and usually archive `.`
+8. craft the oracle prompt
+9. call `oracle_submit`
+10. stop and wait for the completion wake-up (best-effort; durable oracle response/artifact state is already persisted outside session history)
 
 ### `/oracle-auth`
 
@@ -526,7 +529,7 @@ Implemented in code for the pivot and concurrency redesign:
 Retained from the earlier MVP:
 
 - `/oracle`, `/oracle-followup`, `/oracle-read`, `/oracle-status`, `/oracle-cancel`, `/oracle-clean`
-- `oracle_submit`, `oracle_read`, `oracle_cancel`
+- `oracle_auth`, `oracle_submit`, `oracle_read`, `oracle_cancel`
 - detached background worker model
 - `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` state layout
 - shell-safe archive creation using `tar` piped to `zstd`

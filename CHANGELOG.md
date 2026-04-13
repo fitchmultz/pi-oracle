@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-04-13
+
+### Added
+- `oracle_auth`, an agent-facing tool that mirrors `/oracle-auth` so oracle runs can refresh the shared ChatGPT auth seed profile before a single retry when stale auth blocks execution
+
 ### Changed
-- `/oracle` now follows a stricter preflight-first flow, biases toward context-rich archive selection up to the 250 MB ceiling, and prefers the configured default model unless a different preset is clearly needed
+- `/oracle` and `/oracle-followup` now follow a stricter preflight-first flow, bias toward context-rich archive selection up to the 250 MB ceiling, and explicitly allow one `oracle_auth` refresh before retrying stale-auth/login-required failures
+- package metadata now follows the current pi package dependency guidance by publishing `@mariozechner/pi-coding-agent` and `@sinclair/typebox` as peer dependencies while keeping local typechecking/dev resolution intact
 
 ### Fixed
 - `/oracle` no-session and missing-seed flows now stop before unnecessary repo exploration, and prompt-template guidance keeps relevant surrounding archive context instead of over-optimizing for minimal slices when extra context still fits
+- oracle model selection now recognizes ChatGPT family controls exposed as radios/menu items plus durable closed-chip states like `Extended thinking` and `Extended Pro`, so remembered new-chat defaults no longer derail preset configuration or ready-state detection
+- authenticated ready-state detection now accepts extended closed-chip model controls during auth/bootstrap verification, preventing false login/setup failures when ChatGPT remembers a non-default preset
 
 ## 0.5.0 - 2026-04-12
 
