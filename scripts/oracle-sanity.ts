@@ -115,7 +115,7 @@ import {
   tryAcquireConversationLease,
   tryAcquireRuntimeLease,
 } from "../extensions/oracle/lib/runtime.ts";
-import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
+import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, mergeArchiveEntryGroupsForTesting, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
@@ -3303,6 +3303,15 @@ async function testArchiveDefaultExclusions(): Promise<void> {
   }
 }
 
+function testArchiveEntryGroupMergeHandlesLargeArrays(): void {
+  const firstGroup = Array.from({ length: 120_000 }, (_value, index) => `alpha/${index.toString(36)}`);
+  const secondGroup = Array.from({ length: 120_000 }, (_value, index) => `beta/${index.toString(36)}`);
+  const merged = mergeArchiveEntryGroupsForTesting([firstGroup, secondGroup]);
+  assert(merged.length === firstGroup.length + secondGroup.length, "archive entry-group merging should preserve every entry even for very large groups");
+  assert(merged[0] === firstGroup[0] && merged[firstGroup.length] === secondGroup[0], "archive entry-group merging should preserve group ordering for large merges");
+  assert(merged.at(-1) === secondGroup.at(-1), "archive entry-group merging should preserve the tail entry for large merges");
+}
+
 function testArchiveRejectsBlankInputs(): void {
   assertThrows(
     () => resolveArchiveInputs(process.cwd(), [""]),
@@ -4416,6 +4425,7 @@ async function main() {
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
   await testArchiveDefaultExclusions();
+  testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();

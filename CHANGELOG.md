@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-04-13
+
+### Fixed
+- whole-repo archive expansion now merges very large entry groups iteratively instead of using spread/flat patterns that can overflow the JavaScript call stack during `oracle_submit`
+- oracle sanity coverage now guards the large-entry merge path so broad archive submissions regress to a real archive/env error instead of `Maximum call stack size exceeded`
+
 ## 0.6.0 - 2026-04-13
 
 ### Added

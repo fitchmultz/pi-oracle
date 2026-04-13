@@ -155,6 +155,20 @@ type ArchiveCreationResult = {
   includedEntries: string[];
 };
 
+function appendArchiveEntries(target: string[], source: Iterable<string>): void {
+  for (const entry of source) target.push(entry);
+}
+
+function mergeArchiveEntryGroups(groups: Iterable<Iterable<string>>): string[] {
+  const merged: string[] = [];
+  for (const group of groups) appendArchiveEntries(merged, group);
+  return merged;
+}
+
+export function mergeArchiveEntryGroupsForTesting(groups: Iterable<Iterable<string>>): string[] {
+  return mergeArchiveEntryGroups(groups);
+}
+
 function pathContainsSequence(relativePath: string, sequence: readonly string[]): boolean {
   const segments = relativePath.split("/").filter(Boolean);
   if (sequence.length === 0 || segments.length < sequence.length) return false;
@@ -268,7 +282,7 @@ async function expandArchiveEntries(cwd: string, relativePath: string, options?:
     for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
       const childRelative = child.name;
       if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child)) continue;
-      if (child.isDirectory()) results.push(...await expandArchiveEntries(cwd, childRelative));
+      if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative));
       else results.push(childRelative);
     }
     return results;
@@ -284,7 +298,7 @@ async function expandArchiveEntries(cwd: string, relativePath: string, options?:
   for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
     const childRelative = posix.join(normalized, child.name);
     if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child, { forceInclude: options?.forceIncludeSubtree })) continue;
-    if (child.isDirectory()) results.push(...await expandArchiveEntries(cwd, childRelative, { forceIncludeSubtree: options?.forceIncludeSubtree }));
+    if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative, { forceIncludeSubtree: options?.forceIncludeSubtree }));
     else results.push(childRelative);
   }
   return results;
@@ -294,11 +308,12 @@ async function resolveExpandedArchiveEntriesFromInputs(
   cwd: string,
   entries: Array<{ absolute: string; relative: string }>,
 ): Promise<string[]> {
-  return Array.from(new Set((await Promise.all(entries.map(async (entry) => {
+  const expandedGroups = await Promise.all(entries.map(async (entry) => {
     const statEntry = await lstat(entry.absolute);
     const forceIncludeSubtree = statEntry.isDirectory() && entry.relative !== "." && shouldExcludeArchivePath(entry.relative, true);
     return expandArchiveEntries(cwd, entry.relative, { forceIncludeSubtree });
-  }))).flat())).sort();
+  }));
+  return Array.from(new Set(mergeArchiveEntryGroups(expandedGroups))).sort();
 }
 
 export async function resolveExpandedArchiveEntries(cwd: string, files: string[]): Promise<string[]> {
