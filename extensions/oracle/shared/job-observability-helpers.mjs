@@ -46,6 +46,69 @@ function formatAutoPrunedArchiveMessage(autoPrunedPrefixes) {
   return `Archive auto-pruned generic generated-output-name dirs to fit size limit: ${autoPrunedPrefixes.map((entry) => `${entry.relativePath}/ (${formatBytes(entry.bytes)})`).join(", ")}`;
 }
 
+const ACTIVE_SUMMARY_STATUSES = new Set(["preparing", "submitted", "waiting"]);
+const DEFAULT_ORACLE_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+
+/**
+ * @param {string | undefined} value
+ * @returns {number | undefined}
+ */
+function parseTimestamp(value) {
+  if (!value) return undefined;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/**
+ * @param {number} elapsedMs
+ * @returns {string}
+ */
+function formatElapsed(elapsedMs) {
+  const totalSeconds = Math.max(0, Math.round(elapsedMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (totalMinutes < 60) return seconds === 0 ? `${totalMinutes}m` : `${totalMinutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+/**
+ * @param {OracleJobSummaryLike} job
+ * @param {OracleJobSummaryOptions} [options]
+ * @returns {string | undefined}
+ */
+function formatHeartbeatFreshness(job, options = {}) {
+  if (!ACTIVE_SUMMARY_STATUSES.has(job.status)) return undefined;
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const staleMs = Number.isFinite(options.heartbeatStaleMs) ? options.heartbeatStaleMs : DEFAULT_ORACLE_HEARTBEAT_STALE_MS;
+  const heartbeatMs = parseTimestamp(job.heartbeatAt);
+  if (heartbeatMs !== undefined) {
+    const elapsedMs = Math.max(0, nowMs - heartbeatMs);
+    return `heartbeat: ${elapsedMs > staleMs ? "likely stale" : "fresh"} (${formatElapsed(elapsedMs)} ago)`;
+  }
+
+  const submittedMs = parseTimestamp(job.submittedAt);
+  const createdMs = parseTimestamp(job.createdAt);
+  const baselineMs = submittedMs ?? createdMs;
+  if (baselineMs === undefined) return "heartbeat: unavailable";
+
+  const elapsedMs = Math.max(0, nowMs - baselineMs);
+  const freshness = elapsedMs > staleMs ? "waiting for first worker update; likely stale" : "waiting for first worker update";
+  return `heartbeat: ${freshness} (${formatElapsed(elapsedMs)} ${submittedMs !== undefined ? "since submit" : "since create"})`;
+}
+
+/**
+ * @param {{ id: string; status: string }} job
+ * @returns {string}
+ */
+export function formatOracleCancelOutcome(job) {
+  if (job.status === "cancelled") return `Cancelled oracle job ${job.id}.`;
+  if (job.status === "failed") return `Oracle job ${job.id} failed during cancellation.`;
+  return `Oracle job ${job.id} finished as ${job.status} before cancellation completed.`;
+}
+
 /**
  * @param {OracleJobSummaryLike} job
  * @param {OracleJobSummaryOptions} [options]
@@ -78,6 +141,7 @@ export function formatOracleJobSummary(job, options = {}) {
     options.queuePosition ? `queue-position: ${options.queuePosition.position} of ${options.queuePosition.depth} global` : undefined,
     `project: ${job.projectId}`,
     `session: ${job.sessionId}`,
+    formatHeartbeatFreshness(job, options),
     job.completedAt ? `completed: ${job.completedAt}` : undefined,
     job.followUpToJobId ? `follow-up-to: ${job.followUpToJobId}` : undefined,
     job.chatUrl ? `chat: ${job.chatUrl}` : undefined,

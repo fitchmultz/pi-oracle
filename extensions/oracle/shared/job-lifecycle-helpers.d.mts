@@ -34,6 +34,8 @@ export interface OracleLifecycleTrackedJobLike {
   submittedAt?: string;
   completedAt?: string;
   heartbeatAt?: string;
+  cancelRequestedAt?: string;
+  cancelReason?: string;
   lifecycleEvents?: OracleJobLifecycleEvent[];
   cleanupPending?: boolean;
   cleanupWarnings?: string[];

@@ -167,7 +167,11 @@ export function transitionOracleJobPhase(job, phase, options = {}) {
       ? { submittedAt: patch.submittedAt ?? job.submittedAt ?? at }
       : {}),
     ...(TERMINAL_ORACLE_JOB_STATUSES.includes(status)
-      ? { completedAt: patch.completedAt ?? job.completedAt ?? at }
+      ? {
+        completedAt: patch.completedAt ?? job.completedAt ?? at,
+        cancelRequestedAt: undefined,
+        cancelReason: undefined,
+      }
       : { completedAt: patch.completedAt ?? job.completedAt }),
     ...(options.clearNotificationClaim
       ? { notifyClaimedAt: undefined, notifyClaimedBy: undefined }

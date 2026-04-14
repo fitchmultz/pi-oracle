@@ -8,6 +8,7 @@ export interface OracleJobSummaryLike {
   queuedAt?: string;
   submittedAt?: string;
   completedAt?: string;
+  heartbeatAt?: string;
   projectId: string;
   sessionId: string;
   followUpToJobId?: string;
@@ -35,6 +36,8 @@ export interface OracleJobSummaryOptions {
   responseAvailable?: boolean;
   includeLatestEvent?: boolean;
   includeWorkerLogPath?: boolean;
+  nowMs?: number;
+  heartbeatStaleMs?: number;
 }
 
 export interface OracleSubmitResponseOptions {
@@ -51,6 +54,7 @@ export interface OracleStatusCounts {
 
 export declare function formatBytes(bytes: number): string;
 export declare function formatOracleLifecycleEvent(event: OracleJobLifecycleEvent | undefined): string | undefined;
+export declare function formatOracleCancelOutcome(job: { id: string; status: string }): string;
 export declare function formatOracleJobSummary(job: OracleJobSummaryLike, options?: OracleJobSummaryOptions): string;
 export declare function buildOracleWakeupNotificationContent(
   job: OracleJobSummaryLike,

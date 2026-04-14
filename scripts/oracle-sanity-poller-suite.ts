@@ -22,7 +22,7 @@ import {
   updateJob,
 } from "../extensions/oracle/lib/jobs.ts";
 import { getLeasesDir, getOracleStateDir, listLeaseMetadata, releaseLease, writeLeaseMetadata } from "../extensions/oracle/lib/locks.ts";
-import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
+import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession, waitForAllPollersToQuiesce } from "../extensions/oracle/lib/poller.ts";
 import { promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
 import { getProjectId, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
@@ -606,7 +606,7 @@ async function testPollerNotificationAdoptsOrphanedSessionJobs(config: OracleCon
   const ctx = createExtensionCtx(liveSessionManager);
 
   startPoller(pi as unknown as ExtensionAPI, ctx, 50, "/tmp/fake-oracle-worker.mjs");
-  await sleep(250);
+  await waitForCondition(() => (sent.length >= 1 ? true : undefined), { timeoutMs: 1_500, description: "orphaned-job wake-up adoption" });
   stopPollerForSession(liveSessionFile, ctx.cwd);
 
   assert(!findNotificationEntry(SessionManager.open(submitterSessionFile, undefined, process.cwd()), jobId), "adopted orphaned jobs should not append a durable completion message into the original target session under the wake-up-only model");
@@ -654,7 +654,7 @@ async function testPollerDoesNotStealNotificationFromLiveSessionTarget(config: O
 
   try {
     startPoller(pi as unknown as ExtensionAPI, ctx, 50, "/tmp/fake-oracle-worker.mjs");
-    await sleep(250);
+    await waitForAllPollersToQuiesce();
     stopPollerForSession(liveSessionFile, ctx.cwd);
 
     assert(sent.length === 0, `expected no notification theft while the original session target is live, saw ${sent.length}`);

@@ -83,6 +83,19 @@ export function hasPersistedOriginSession(
   return typeof job.originSessionFile === "string" && job.originSessionFile.length > 0 && job.sessionId === job.originSessionFile;
 }
 
+function hasActiveCancelIntent(job: Pick<OracleJob, "status" | "cancelRequestedAt">): boolean {
+  return !isTerminalOracleJob(job) && typeof job.cancelRequestedAt === "string" && job.cancelRequestedAt.length > 0;
+}
+
+function markCancelRequested(job: OracleJob, reason: string, at: string): OracleJob {
+  if (hasActiveCancelIntent(job)) return job;
+  return {
+    ...job,
+    cancelRequestedAt: at,
+    cancelReason: reason,
+  };
+}
+
 export function isWorkerProcessAlive(pid: number | undefined, startedAt?: string): boolean {
   return isTrackedProcessAlive(pid, startedAt);
 }
@@ -113,6 +126,8 @@ export interface OracleJob {
   submittedAt?: string;
   completedAt?: string;
   heartbeatAt?: string;
+  cancelRequestedAt?: string;
+  cancelReason?: string;
   cwd: string;
   projectId: string;
   sessionId: string;
@@ -595,6 +610,7 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
       const currentStaleReason = getStaleOracleJobReason(current, now);
       if (!currentStaleReason) return;
 
+      const cancelRequested = hasActiveCancelIntent(current);
       terminated = await terminateWorkerPid(current.workerPid, current.workerStartedAt);
       transitioned = true;
       const suffix = current.workerPid
@@ -602,19 +618,31 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
           ? ` Terminated stale worker PID ${current.workerPid}.`
           : ` Failed to terminate stale worker PID ${current.workerPid}.`
         : "";
-      repairedJob = transitionOracleJobPhase(current, "failed", {
-        at: recoveredAt,
-        source: "oracle:reconcile",
-        message: `Recovered stale job: ${currentStaleReason}.${suffix}`.trim(),
-        clearNotificationClaim: true,
-        patch: {
-          heartbeatAt: recoveredAt,
-          cleanupPending: terminated,
-          error: current.error
-            ? `${current.error}\nRecovered stale job: ${currentStaleReason}.${suffix}`.trim()
-            : `Recovered stale job: ${currentStaleReason}.${suffix}`.trim(),
-        },
-      });
+      repairedJob = cancelRequested && terminated
+        ? transitionOracleJobPhase(current, "cancelled", {
+          at: recoveredAt,
+          source: "oracle:reconcile",
+          message: `Recovered requested cancellation: ${currentStaleReason}.${suffix}`.trim(),
+          clearNotificationClaim: true,
+          patch: {
+            heartbeatAt: recoveredAt,
+            cleanupPending: true,
+            error: current.cancelReason ?? current.error ?? "Cancelled by user",
+          },
+        })
+        : transitionOracleJobPhase(current, "failed", {
+          at: recoveredAt,
+          source: "oracle:reconcile",
+          message: `Recovered stale job: ${currentStaleReason}.${suffix}`.trim(),
+          clearNotificationClaim: true,
+          patch: {
+            heartbeatAt: recoveredAt,
+            cleanupPending: terminated,
+            error: current.error
+              ? `${current.error}\nRecovered stale job: ${currentStaleReason}.${suffix}`.trim()
+              : `Recovered stale job: ${currentStaleReason}.${suffix}`.trim(),
+          },
+        });
       await writeJobUnlocked(repairedJob);
     });
 
@@ -803,30 +831,48 @@ export async function cancelOracleJob(id: string, reason = "Cancelled by user"):
       }));
     }
 
-    const terminated = await terminateWorkerPid(current.workerPid, current.workerStartedAt);
+    let cancelTarget: Pick<OracleJob, "workerPid" | "workerStartedAt"> | undefined;
+    await withJobLock(id, { processPid: process.pid, action: "markCancelRequested", jobId: id }, async () => {
+      const latest = readJob(id);
+      if (!latest || isTerminalOracleJob(latest) || latest.status === "queued") return;
+      cancelTarget = { workerPid: latest.workerPid, workerStartedAt: latest.workerStartedAt };
+      const next = markCancelRequested(latest, reason, now);
+      if (next !== latest) {
+        await writeJobUnlocked(next);
+      }
+    });
+
+    const terminated = await terminateWorkerPid(cancelTarget?.workerPid, cancelTarget?.workerStartedAt);
     let transitioned = false;
-    const cancelled = await updateJob(id, (job) => {
-      if (isTerminalOracleJob(job)) return job;
+    let cancelled: OracleJob | undefined;
+    await withJobLock(id, { processPid: process.pid, action: "finalizeCancelOracleJob", jobId: id }, async () => {
+      const latest = readJob(id);
+      if (!latest) throw new Error(`Oracle job not found: ${id}`);
+      if (isTerminalOracleJob(latest)) {
+        cancelled = latest;
+        return;
+      }
       transitioned = true;
-      return transitionOracleJobPhase(job, terminated ? "cancelled" : "failed", {
+      cancelled = transitionOracleJobPhase(latest, terminated ? "cancelled" : "failed", {
         at: now,
         source: "oracle:cancel",
         message: terminated
-          ? `Job cancelled: ${reason}`
-          : `Job cancellation failed because worker PID ${job.workerPid ?? "unknown"} did not exit.`,
+          ? `Job cancelled: ${latest.cancelReason ?? reason}`
+          : `Job cancellation failed because worker PID ${latest.workerPid ?? "unknown"} did not exit.`,
         clearNotificationClaim: true,
         patch: {
           heartbeatAt: now,
           cleanupPending: terminated,
-          error: terminated ? reason : `${reason}; worker PID ${job.workerPid ?? "unknown"} did not exit`,
+          error: terminated ? latest.cancelReason ?? reason : `${latest.cancelReason ?? reason}; worker PID ${latest.workerPid ?? "unknown"} did not exit`,
         },
       });
+      await writeJobUnlocked(cancelled);
     });
-    if (!transitioned) return cancelled;
+    if (!cancelled || !transitioned) return cancelled ?? readJob(id)!;
 
     if (!terminated) {
       const cleanupWarnings = [
-        `Oracle runtime cleanup is blocked because worker PID ${current.workerPid ?? "unknown"} could not be terminated safely.`,
+        `Oracle runtime cleanup is blocked because worker PID ${cancelled.workerPid ?? cancelTarget?.workerPid ?? "unknown"} could not be terminated safely.`,
       ];
       return updateJob(id, (job) => applyOracleJobCleanupWarnings(job, cleanupWarnings, {
         at: now,

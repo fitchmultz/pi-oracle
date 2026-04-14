@@ -537,6 +537,23 @@ async function waitForProcessStartedAtValue(pid: number | undefined, timeoutMs =
   return readProcessStartedAt(pid);
 }
 
+async function waitForJobState(
+  jobId: string,
+  predicate: (job: NonNullable<ReturnType<typeof readJob>>) => boolean,
+  timeoutMs = 5_000,
+): Promise<NonNullable<ReturnType<typeof readJob>>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = readJob(jobId);
+    if (job && predicate(job)) return job;
+    await sleep(50);
+  }
+
+  const last = readJob(jobId);
+  if (last && predicate(last)) return last;
+  throw new Error(`Timed out waiting for oracle job ${jobId} to reach the expected state`);
+}
+
 async function testCleanupPendingRecoveryUnblocksAdmission(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const cwd = process.cwd();
@@ -1611,6 +1628,62 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
   }
 }
 
+async function testOracleReadSummaryShowsHeartbeatFreshness(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-heartbeat-summary-worker-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  const readTool = pi.tools.get("oracle_read");
+  const statusCommand = pi.commands.get("oracle-status");
+  assert(readTool?.execute, "oracle read tool should register for heartbeat-summary testing");
+  assert(statusCommand, "oracle status command should register for heartbeat-summary testing");
+
+  const cwd = process.cwd();
+  const sessionFile = `/tmp/oracle-sanity-session-heartbeat-summary-${randomUUID()}.jsonl`;
+  const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const statusUi = createUiStub();
+  const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
+  const staleId = await createJobForTest(config, cwd, sessionFile);
+  const waitingId = await createJobForTest(config, cwd, sessionFile);
+
+  try {
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await updateJob(staleId, (job) => ({
+      ...job,
+      ...withJobPhase("awaiting_response", {
+        status: "waiting",
+        submittedAt: staleAt,
+        heartbeatAt: staleAt,
+      }, staleAt),
+    }));
+
+    const waitingAt = new Date(Date.now() - 45_000).toISOString();
+    await updateJob(waitingId, (job) => ({
+      ...job,
+      ...withJobPhase("submitted", {
+        status: "submitted",
+        submittedAt: waitingAt,
+        heartbeatAt: undefined,
+      }, waitingAt),
+    }));
+
+    const readResult = await readTool.execute!("oracle-read-heartbeat-summary-test", { jobId: staleId }, undefined, () => { }, readCtx) as { content?: Array<{ text?: string }> };
+    const readText = readResult.content?.[0]?.text;
+    assert(typeof readText === "string" && readText.includes("heartbeat: likely stale"), "oracle read should surface likely-stale heartbeat freshness for active jobs");
+
+    await statusCommand.handler(waitingId, statusCtx);
+    const statusMessage = statusUi.notifications.at(-1)?.message;
+    assert(typeof statusMessage === "string" && statusMessage.includes("heartbeat: waiting for first worker update"), "oracle status should surface first-heartbeat waiting state for active jobs");
+  } finally {
+    await rm(fakeWorkerPath, { force: true });
+    await cleanupJob(staleId);
+    await cleanupJob(waitingId);
+  }
+}
+
 async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
   await resetOracleStateDir();
   const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-tool-errors-${randomUUID()}-`));
@@ -1939,6 +2012,46 @@ async function testActiveCancellationDoesNotOverwriteCompletion(config: OracleCo
   await cleanupJob(activeId);
 }
 
+async function testCancelReconcileRacePreservesIntentionalCancellation(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const cwd = process.cwd();
+  const sessionId = "/tmp/oracle-sanity-session-cancel-reconcile-race.jsonl";
+  const activeId = await createJobForTest(config, cwd, sessionId);
+  const worker = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 500)); setInterval(() => {}, 1000);"]);
+  const workerPid = worker.pid;
+  assert(workerPid !== undefined, "cancel-reconcile race worker should expose a pid");
+  const workerStartedAt = await waitForProcessStartedAtValue(workerPid);
+  const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  await updateJob(activeId, (job) => ({
+    ...job,
+    workerPid,
+    workerStartedAt,
+    heartbeatAt: staleAt,
+    submittedAt: staleAt,
+  }));
+
+  try {
+    const cancelPromise = cancelOracleJob(activeId);
+    const cancelRequested = await waitForJobState(activeId, (job) => typeof job.cancelRequestedAt === "string" && job.cancelReason === "Cancelled by user");
+    assert(cancelRequested.status === "submitted", "active cancellation should record durable cancel intent before terminal transition");
+
+    const repaired = await reconcileStaleOracleJobs();
+    const cancelled = await cancelPromise;
+    assert(repaired.some((job) => job.id === activeId && job.status === "cancelled"), "reconcile should preserve cancelled semantics when it races an intentional cancel");
+    assert(cancelled.status === "cancelled", "intentional cancel/reconcile races should resolve as cancelled instead of failed");
+
+    const finalJob = readJob(activeId);
+    assert(finalJob?.status === "cancelled", "intentional cancel/reconcile races should persist cancelled as the final durable status");
+    const followUpRepair = await reconcileStaleOracleJobs();
+    assert(!followUpRepair.some((job) => job.id === activeId && job.status === "failed"), "follow-up reconcile should not reclassify intentionally cancelled jobs as failed");
+    assert(readJob(activeId)?.status === "cancelled", "follow-up reconcile should keep intentionally cancelled jobs in the cancelled state");
+  } finally {
+    if (isPidAlive(workerPid)) process.kill(workerPid, "SIGKILL");
+    await waitForPidExit(workerPid);
+    await cleanupJob(activeId);
+  }
+}
+
 async function testQueueAdmissionPromotionAndCancellation(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const cwd = process.cwd();
@@ -2233,6 +2346,95 @@ async function testQueuedArchivePressureCountsRetainedCancelledPreSubmitArchives
     await cancelOracleJob(queuedId).catch(() => undefined);
     await cleanupJob(queuedId);
     await cleanupJob(strandedId);
+  }
+}
+
+async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig): Promise<void> {
+  await resetOracleStateDir();
+  const cwd = process.cwd();
+  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-cancel-message-worker-${randomUUID()}.mjs`);
+  await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+
+  const cancelTool = pi.tools.get("oracle_cancel");
+  const cancelCommand = pi.commands.get("oracle-cancel");
+  assert(cancelTool?.execute, "oracle cancel tool should register for message testing");
+  assert(cancelCommand, "oracle cancel command should register for message testing");
+
+  const runCancelledCase = async (kind: "tool" | "command") => {
+    const sessionFile = `/tmp/oracle-sanity-session-cancel-message-cancelled-${kind}-${randomUUID()}.jsonl`;
+    const queuedId = await createJobForTest(config, cwd, sessionFile, { initialState: "queued" });
+    const ui = createUiStub();
+    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+    (ctx as { hasUI: boolean }).hasUI = false;
+
+    try {
+      const message = kind === "tool"
+        ? (await cancelTool.execute!("oracle-cancel-message-cancelled-test", { jobId: queuedId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
+        : (await cancelCommand.handler(queuedId, ctx), ui.notifications.at(-1)?.message);
+      assert(message === `Cancelled oracle job ${queuedId}.`, `${kind} cancel messaging should say cancelled only when the final status is cancelled`);
+    } finally {
+      await cleanupJob(queuedId);
+    }
+  };
+
+  const runFailedCase = async (kind: "tool" | "command") => {
+    const sessionFile = `/tmp/oracle-sanity-session-cancel-message-failed-${kind}-${randomUUID()}.jsonl`;
+    const activeId = await createJobForTest(config, cwd, sessionFile);
+    const activeJob = readJob(activeId);
+    assert(activeJob, "active cancellation message test job should exist");
+    await acquireRuntimeLease(config, {
+      jobId: activeJob.id,
+      runtimeId: activeJob.runtimeId,
+      runtimeSessionName: activeJob.runtimeSessionName,
+      runtimeProfileDir: activeJob.runtimeProfileDir,
+      projectId: activeJob.projectId,
+      sessionId: activeJob.sessionId,
+      createdAt: new Date().toISOString(),
+    });
+
+    const stuckWorker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    stuckWorker.unref();
+    const stuckWorkerPid = stuckWorker.pid;
+    assert(stuckWorkerPid !== undefined, `${kind} cancel message test worker should expose a pid`);
+
+    await updateJob(activeId, (job) => ({
+      ...job,
+      workerPid: stuckWorkerPid,
+      workerStartedAt: "mismatched-start-time",
+    }));
+
+    const ui = createUiStub();
+    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+    (ctx as { hasUI: boolean }).hasUI = false;
+
+    try {
+      const message = kind === "tool"
+        ? (await cancelTool.execute!("oracle-cancel-message-failed-test", { jobId: activeId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
+        : (await cancelCommand.handler(activeId, ctx), ui.notifications.at(-1)?.message);
+      assert(readJob(activeId)?.status === "failed", `${kind} cancel message test should drive the job into failed status when worker termination is unsafe`);
+      assert(message === `Oracle job ${activeId} failed during cancellation.`, `${kind} cancel messaging should describe failed outcomes explicitly instead of claiming cancellation succeeded`);
+    } finally {
+      if (isPidAlive(stuckWorkerPid)) process.kill(stuckWorkerPid, "SIGKILL");
+      await waitForPidExit(stuckWorkerPid);
+      await releaseRuntimeLease(activeJob.runtimeId);
+      await cleanupJob(activeId);
+    }
+  };
+
+  try {
+    await runCancelledCase("tool");
+    await runCancelledCase("command");
+    await runFailedCase("tool");
+    await runFailedCase("command");
+  } finally {
+    await rm(fakeWorkerPath, { force: true });
   }
 }
 
@@ -3138,6 +3340,13 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("if (cleanupReport.warnings.length > 0)"), "terminal cleanup should retain job state when cleanup reports warnings");
   assert(jobsSource.includes("cleanupPending: terminated"), "terminal cancellation/recovery should mark cleanup pending until teardown finishes");
   assert(jobsSource.includes("markOracleJobCreated"), "job creation should register durable lifecycle breadcrumbs through the shared lifecycle helper");
+  assert(jobsSource.includes("cancelRequestedAt"), "oracle jobs should persist durable cancel intent before reconciling worker teardown");
+  assert(jobsSource.includes("Recovered requested cancellation"), "reconcile should preserve requested-cancel semantics instead of always failing stale active jobs");
+  assert(toolsSource.includes("zstd.stdin.on(\"error\", handlePipeError)"), "oracle archive creation should guard the zstd stdin pipe so downstream early exits do not crash the host process");
+  assert(sharedObservabilitySource.includes("heartbeat:"), "shared observability helpers should surface heartbeat freshness in active job summaries");
+  assert(sharedObservabilitySource.includes("formatOracleCancelOutcome"), "shared observability helpers should centralize truthful cancel outcome messaging");
+  assert(commandsSource.includes("formatOracleCancelOutcome"), "oracle cancel command should use the shared truthful cancel outcome formatter");
+  assert(toolsSource.includes("formatOracleCancelOutcome"), "oracle cancel tool should use the shared truthful cancel outcome formatter");
 }
 
 async function testResponseTimeoutGuard(): Promise<void> {
@@ -3457,6 +3666,59 @@ while :; do sleep 1; done
     assert(Number.isFinite(zstdPid), "archive timeout test should record a zstd pid");
     assert(await waitForPidExit(tarPid), "archive timeout should terminate the hung tar process");
     assert(await waitForPidExit(zstdPid), "archive timeout should terminate the hung zstd process");
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
+  }
+}
+
+async function testArchiveBrokenPipeRejectsCleanly(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-broken-pipe-"));
+  const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-broken-pipe-bin-"));
+  const archivePath = join(tmpdir(), `oracle-archive-broken-pipe-${randomUUID()}.tar.zst`);
+  const tarPidPath = join(binDir, "tar.pid");
+  const zstdPidPath = join(binDir, "zstd.pid");
+  const originalPath = process.env.PATH ?? "";
+
+  try {
+    await mkdir(join(fixtureDir, "src"), { recursive: true });
+    await writeFile(join(fixtureDir, "src", "main.ts"), "export const main = true;\n");
+    await writeExecutableScript(
+      join(binDir, "tar"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(tarPidPath)}
+python3 - <<'PY'
+import os, sys
+block = b'x' * 65536
+for _ in range(1024):
+    os.write(sys.stdout.fileno(), block)
+PY
+`,
+    );
+    await writeExecutableScript(
+      join(binDir, "zstd"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(zstdPidPath)}
+echo 'fake zstd failure' >&2
+exit 1
+`,
+    );
+    process.env.PATH = `${binDir}:${originalPath}`;
+
+    await assertRejects(
+      () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 5_000 }),
+      "archive creation should reject cleanly when zstd closes the pipe early",
+      "fake zstd failure",
+    );
+
+    const tarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
+    const zstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
+    assert(Number.isFinite(tarPid), "broken-pipe archive test should record a tar pid");
+    assert(Number.isFinite(zstdPid), "broken-pipe archive test should record a zstd pid");
+    assert(await waitForPidExit(tarPid), "broken-pipe archive test should clean up the tar process after downstream pipe failure");
+    assert(await waitForPidExit(zstdPid), "broken-pipe archive test should observe the early zstd exit");
   } finally {
     process.env.PATH = originalPath;
     await rm(fixtureDir, { recursive: true, force: true });
@@ -3867,6 +4129,25 @@ function testSharedObservabilityHelpers(): void {
   });
   assert(summary.includes("queue-position: 2 of 3 global") && summary.includes("last-event:"), "shared observability helpers should include queue position and latest lifecycle breadcrumbs in non-terminal job summaries");
   assert(summary.includes("worker-log: /tmp/worker.log") && summary.includes("Preview body") && summary.includes("response: /tmp/response.md"), "shared observability helpers should include worker log paths, visible response paths, and optional response previews");
+
+  const freshHeartbeatSummary = formatOracleJobSummary(transitionOracleJobPhase(job, "awaiting_response", {
+    at: "2026-01-01T00:00:05.000Z",
+    source: "oracle:test",
+    message: "Waiting on oracle response.",
+    patch: { heartbeatAt: "2026-01-01T00:00:45.000Z" },
+  }), {
+    nowMs: Date.parse("2026-01-01T00:01:15.000Z"),
+  });
+  assert(freshHeartbeatSummary.includes("heartbeat: fresh (30s ago)"), "shared observability helpers should label recent active heartbeats as fresh");
+
+  const waitingForFirstHeartbeatSummary = formatOracleJobSummary(transitionOracleJobPhase(job, "submitted", {
+    at: "2026-01-01T00:00:05.000Z",
+    source: "oracle:test",
+    message: "Submitted observability fixture.",
+  }), {
+    nowMs: Date.parse("2026-01-01T00:04:35.000Z"),
+  });
+  assert(waitingForFirstHeartbeatSummary.includes("heartbeat: waiting for first worker update; likely stale (4m 30s since submit)"), "shared observability helpers should distinguish waiting-for-first-heartbeat jobs from recently refreshed active jobs");
 
   const failedSummary = formatOracleJobSummary(markOracleJobWakeupSettled(transitionOracleJobPhase(job, "failed", {
     at: "2026-01-01T00:00:20.000Z",
@@ -4451,11 +4732,13 @@ async function main() {
   await testOracleCancelCommandRequiresExplicitJobId(config);
   await testOracleToolResultsExposeStructuredJobDetails(config);
   await testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(config);
+  await testOracleReadSummaryShowsHeartbeatFreshness(config);
   await testOracleToolErrorsExposeStructuredMetadata();
   await testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config);
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
   await testActiveCancellationDoesNotOverwriteCompletion(config);
+  await testCancelReconcileRacePreservesIntentionalCancellation(config);
   await testQueueAdmissionPromotionAndCancellation(config);
   await testQueuedPromotionUsesPersistedConfigSnapshot(config);
   await testQueuedPromotionRequiresArchiveReadiness(config);
@@ -4463,6 +4746,7 @@ async function main() {
   await testCancelCleanupWarningsDoNotPromoteQueuedJobs(config);
   await testQueuedCleanupWarningsRetryArchiveDeletion(config);
   await testQueuedArchivePressureCountsRetainedCancelledPreSubmitArchives(config);
+  await testCancelToolAndCommandMessagesAreTruthful(config);
   await testCancelFailureDoesNotPromoteQueuedJobs(config);
   await testQueuedPromotionPersistsCleanupWarningsOnTeardownFailure(config);
   await testQueuedPromotionKillsWorkerWhenMetadataWriteFails(config);
@@ -4490,6 +4774,7 @@ async function main() {
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
+  await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testArchiveOversizeErrorExplainsRetryPlan();

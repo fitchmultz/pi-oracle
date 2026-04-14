@@ -6,7 +6,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
+import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
 import {
   cancelOracleJob,
@@ -14,6 +14,7 @@ import {
   isOpenOracleJob,
   isTerminalOracleJob,
   listJobsForCwd,
+  ORACLE_STALE_HEARTBEAT_MS,
   markWakeupSettled,
   readJob,
   reconcileStaleOracleJobs,
@@ -44,6 +45,7 @@ async function summarizeJob(jobId: string, options?: { responsePreview?: boolean
     artifactsPath: `${getJobDir(job.id)}/artifacts`,
     responseAvailable,
     responsePreview,
+    heartbeatStaleMs: ORACLE_STALE_HEARTBEAT_MS,
   });
 }
 
@@ -153,10 +155,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         await promoteQueuedJobs({ workerPath, source: "oracle_cancel_command" });
       }
       refreshOracleStatus(ctx);
-      const message = cancelled.status === "cancelled" || cancelled.status === "failed"
-        ? `Cancelled oracle job ${cancelled.id}`
-        : `Oracle job ${cancelled.id} was already ${cancelled.status}`;
-      ctx.ui.notify(message, "info");
+      ctx.ui.notify(formatOracleCancelOutcome(cancelled), "info");
     },
   });
 

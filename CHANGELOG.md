@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.4 - 2026-04-14
+
+### Changed
+- bumped the local development and release toolchain to the latest published pi packages and current TypeScript/esbuild/Node type definitions so release verification now runs against the same pi generation shipping on this machine
+
+### Fixed
+- `oracle_submit` archive creation now handles downstream `zstd` pipe failures as normal tool errors instead of crashing the host `pi` process with an unhandled `write EPIPE` on newer Node runtimes
+- sanity coverage now exercises the broken-pipe archive path so early downstream compressor exits regress to a clean rejection instead of a process-level crash
+
 ## 0.6.3 - 2026-04-13
 
 ### Fixed

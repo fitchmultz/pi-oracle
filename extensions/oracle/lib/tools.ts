@@ -10,7 +10,7 @@ import { basename, join, posix } from "node:path";
 import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
+import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
 import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
@@ -31,6 +31,7 @@ import {
   isTerminalOracleJob,
   listOracleJobDirs,
   markWakeupSettled,
+  ORACLE_STALE_HEARTBEAT_MS,
   readJob,
   pruneTerminalOracleJobs,
   reconcileStaleOracleJobs,
@@ -89,6 +90,7 @@ const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
 const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = MAX_ARCHIVE_BYTES;
 const ARCHIVE_COMMAND_TIMEOUT_MS = 120_000;
 const ARCHIVE_COMMAND_KILL_GRACE_MS = 2_000;
+const ARCHIVE_PIPE_FAILURE_ERROR_CODES = new Set(["EPIPE", "ERR_STREAM_DESTROYED"]);
 
 const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".git",
@@ -157,6 +159,12 @@ type ArchiveCreationResult = {
 
 function appendArchiveEntries(target: string[], source: Iterable<string>): void {
   for (const entry of source) target.push(entry);
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 function mergeArchiveEntryGroups(groups: Iterable<Iterable<string>>): string[] {
@@ -415,6 +423,18 @@ async function writeArchiveFile(
       else rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}, zstd=${zstdCode})`));
     };
 
+    const handlePipeError = (error: unknown) => {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      if (ARCHIVE_PIPE_FAILURE_ERROR_CODES.has(getErrorCode(normalized) ?? "")) {
+        stderr = `${stderr}${stderr ? "\n" : ""}${normalized.message}`;
+        tar.stdout.unpipe(zstd.stdin);
+        terminateChildren();
+        finish();
+        return;
+      }
+      finish(normalized);
+    };
+
     const commandTimeoutMs = options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS;
     if (commandTimeoutMs > 0) {
       timeout = setTimeout(() => {
@@ -433,6 +453,8 @@ async function writeArchiveFile(
     });
     tar.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
     zstd.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
+    tar.stdout.on("error", handlePipeError);
+    zstd.stdin.on("error", handlePipeError);
     tar.on("close", (code) => {
       tarCode = code;
       finish();
@@ -1378,6 +1400,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                 artifactsPath: `${getJobDir(current.id)}/artifacts`,
                 responsePreview,
                 responseAvailable,
+                heartbeatStaleMs: ORACLE_STALE_HEARTBEAT_MS,
               }),
             },
           ],
@@ -1419,7 +1442,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         }
         if (ctx.hasUI) refreshOracleStatus(ctx);
         return {
-          content: [{ type: "text", text: cancelled.status === "cancelled" || cancelled.status === "failed" ? `Cancelled oracle job ${cancelled.id}.` : `Oracle job ${cancelled.id} was already ${cancelled.status}.` }],
+          content: [{ type: "text", text: formatOracleCancelOutcome(cancelled) }],
           details: { job: redactJobDetails(cancelled, { queue: buildOracleQueueSnapshot(cancelled, cancelled.status === "queued" ? getQueuePosition(cancelled.id) : undefined) }) },
         };
       } catch (error) {
