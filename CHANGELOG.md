@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.6.5 - 2026-04-15
+
+### Changed
+- pinned `packageManager` metadata to `npm@11.12.1` and refreshed the release lockfile against the current stable pi toolchain so `verify:oracle` resolves reproducibly across machines
+- kept the published oracle runtime surface unchanged while moving local development dependencies to the current stable pi/TypeScript/Node typing baseline
+
 ## 0.6.4 - 2026-04-14
 
 ### Changed
