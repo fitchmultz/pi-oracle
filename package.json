@@ -55,7 +55,6 @@
     "@steipete/sweet-cookie": "^0.2.0"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
   },
   "overrides": {
