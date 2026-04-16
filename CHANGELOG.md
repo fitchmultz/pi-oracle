@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.67.4`
+- aligned `packageManager` metadata to `npm@10.9.8`, the latest stable npm line compatible with the declared Node runtime floor
+
 ## 0.6.5 - 2026-04-15
 
 ### Changed

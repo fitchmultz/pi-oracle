@@ -62,8 +62,8 @@
     "basic-ftp": "^5.2.2"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.67.2",
-    "@mariozechner/pi-coding-agent": "^0.67.2",
+    "@mariozechner/pi-ai": "^0.67.4",
+    "@mariozechner/pi-coding-agent": "^0.67.4",
     "@sinclair/typebox": "^0.34.49",
     "@types/node": "^25.6.0",
     "esbuild": "^0.28.0",
@@ -76,5 +76,5 @@
   "os": [
     "darwin"
   ],
-  "packageManager": "npm@11.12.1"
+  "packageManager": "npm@10.9.8"
 }
