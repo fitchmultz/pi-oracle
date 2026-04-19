@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.6.7 - 2026-04-18
+
+### Changed
+- bumped the local pi development baseline to `@mariozechner/pi-ai` / `@mariozechner/pi-coding-agent` `0.67.68` and `typescript` `6.0.3`
+- refreshed the release lockfile against the current stable pi patch line
+
+### Fixed
+- pinned the transitive `basic-ftp` dependency to `5.3.0` and `protobufjs` to `7.5.5` to clear the current audit findings without introducing peer conflicts
+- updated the release sanity guard to enforce the patched override versions during future publishes
+
 ## 0.6.6 - 2026-04-16
 
 ### Changed

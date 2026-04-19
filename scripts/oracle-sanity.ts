@@ -3035,7 +3035,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     engines?: { node?: string };
     os?: string[];
     scripts?: { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
-    overrides?: { "basic-ftp"?: string };
+    overrides?: { "basic-ftp"?: string; protobufjs?: string };
   };
   const pi = createPiHarness();
   registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
@@ -3327,7 +3327,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
-  assert(pkg.overrides?.["basic-ftp"] === "^5.2.2", "package.json should override basic-ftp to a patched version");
+  assert(pkg.overrides?.["basic-ftp"] === "5.3.0", "package.json should override basic-ftp to the latest patched stable version");
+  assert(pkg.overrides?.protobufjs === "7.5.5", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
   assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
