@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.10 - 2026-04-23
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-coding-agent` `0.70.0`
+- regenerated the npm lockfile against the current stable dependency graph
+
+### Compatibility
+- reviewed the pi `0.70.0` changelog and confirmed the oracle extension does not depend on the changed terminal progress defaults or the new `--no-builtin-tools` behavior
+
 ## 0.6.9 - 2026-04-23
 
 ### Changed
