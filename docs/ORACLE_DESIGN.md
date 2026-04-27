@@ -246,15 +246,20 @@ Browser/auth settings are global-only because they control local privileged brow
     "chatUrl": "https://chatgpt.com/",
     "authUrl": "https://chatgpt.com/auth/login",
     "runMode": "headless",
-    "executablePath": "<optional absolute path to Chrome executable>",
+    "executablePath": "<optional absolute path to Chrome/Chromium executable>",
     "userAgent": "<optional real-Chrome UA override>",
     "args": ["--disable-blink-features=AutomationControlled"]
   },
   "auth": {
     "pollMs": 1000,
     "bootstrapTimeoutMs": 600000,
-    "chromeProfile": "<optional Chrome profile name>",
-    "chromeCookiePath": "<optional absolute path to Chrome Cookies DB>"
+    "chromeProfile": "<optional Chrome/Chromium profile name>",
+    "chromeCookiePath": "<optional absolute path to Chromium Cookies DB>",
+    "chromiumKeychain": {
+      "account": "<optional macOS Keychain account for non-built-in Chromium browsers>",
+      "services": ["<safe-storage service name>"],
+      "label": "<optional human-readable label>"
+    }
   },
   "worker": {
     "pollMs": 5000,

@@ -1,8 +1,8 @@
-// Purpose: Bootstrap isolated oracle browser auth by importing real Chrome cookies and validating ChatGPT session readiness.
+// Purpose: Bootstrap isolated oracle browser auth by importing real Chromium-family cookies and validating ChatGPT session readiness.
 // Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
 // Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
-// Invariants/Assumptions: Runs against a local macOS Chrome profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
+// Invariants/Assumptions: Runs against a local macOS Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -11,6 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
+import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 
@@ -91,11 +92,11 @@ function authConfigRemediation() {
   if (typeof configLoad?.remediation === "string" && configLoad.remediation) return configLoad.remediation;
   if (typeof configLoad?.projectConfigPath === "string" && configLoad.projectConfigPath && configLoad.projectConfigExists) {
     return (
-      `Set auth.chromeProfile / auth.chromeCookiePath in ${effectiveAuthConfigPath()}. ` +
+      `Set auth.chromeProfile / auth.chromeCookiePath / auth.chromiumKeychain in ${effectiveAuthConfigPath()}. ` +
       `Project overrides are also read from ${configLoad.projectConfigPath}, but auth.* is loaded from ${effectiveAuthConfigPath()}.`
     );
   }
-  return `Set auth.chromeProfile / auth.chromeCookiePath in ${effectiveAuthConfigPath()}.`;
+  return `Set auth.chromeProfile / auth.chromeCookiePath / auth.chromiumKeychain in ${effectiveAuthConfigPath()}.`;
 }
 
 function authConfigSummary() {
@@ -463,14 +464,24 @@ function cookieSource() {
 }
 
 function cookieSourceLabel() {
+  if (config.auth.chromeCookiePath && config.auth.chromiumKeychain) return `Chromium cookie DB ${config.auth.chromeCookiePath}`;
   return config.auth.chromeCookiePath
     ? `Chrome cookie DB ${config.auth.chromeCookiePath}`
     : `Chrome profile ${config.auth.chromeProfile}`;
 }
 
-async function readSourceCookies() {
-  await log(`Reading ChatGPT cookies from ${cookieSourceLabel()}`);
-  const { cookies, warnings } = await getCookies({
+async function readRawSourceCookies() {
+  if (config.auth.chromeCookiePath && config.auth.chromiumKeychain) {
+    return await getCookiesFromConfiguredChromiumSource({
+      dbPath: config.auth.chromeCookiePath,
+      keychain: config.auth.chromiumKeychain,
+      origins: cookieOrigins(),
+      profile: config.auth.chromeProfile,
+      timeoutMs: 5_000,
+    });
+  }
+
+  return await getCookies({
     url: config.browser.chatUrl,
     origins: cookieOrigins(),
     browsers: ["chrome"],
@@ -478,6 +489,11 @@ async function readSourceCookies() {
     chromeProfile: cookieSource(),
     timeoutMs: 5_000,
   });
+}
+
+async function readSourceCookies() {
+  await log(`Reading ChatGPT cookies from ${cookieSourceLabel()}`);
+  const { cookies, warnings } = await readRawSourceCookies();
 
   if (warnings.length) {
     await log(`sweet-cookie warnings: ${warnings.join(" | ")}`);
@@ -501,7 +517,7 @@ async function readSourceCookies() {
 
   if (!hasSessionToken) {
     throw new Error(
-      `No ChatGPT session-token cookies were found in ${cookieSourceLabel()}. Make sure ChatGPT is logged into that Chrome profile. ${authConfigRemediation()}`,
+      `No ChatGPT session-token cookies were found in ${cookieSourceLabel()}. Make sure ChatGPT is logged into that browser profile. ${authConfigRemediation()}`,
     );
   }
 
@@ -828,7 +844,7 @@ async function run() {
 
 run().catch((error) => {
   process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\n${authConfigSummary()}\nIf needed, ensure the configured real Chrome profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
+    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\n${authConfigSummary()}\nIf needed, ensure the configured browser profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
   );
   process.exit(1);
 });

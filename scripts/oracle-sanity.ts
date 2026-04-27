@@ -1,4 +1,5 @@
 // Purpose: Run local regression checks for the pi oracle extension.
+// @rust-exception rationale: This sanity harness imports TypeScript extension internals directly; rewriting it in Rust would lose in-process type/config coverage and block the pi package test workflow.
 // Responsibilities: Exercise config, locking, queueing, worker, tool schema, and documentation contracts without remote CI.
 // Scope: Sanity-test orchestration only; production behavior remains in extensions/oracle and prompts/docs.
 // Usage: Invoked by npm run sanity:oracle through scripts/oracle-sanity-runner.mjs.
@@ -814,6 +815,41 @@ while :; do sleep 1; done
   }
 }
 
+async function testChromiumKeychainConfigLoads(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-chromium-keychain-config-"));
+  const agentDir = join(fixtureDir, "agent");
+  const projectDir = join(fixtureDir, "project");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    await mkdir(projectDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(projectDir, "README.md"), "# chromium config fixture\n", { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
+      auth: {
+        chromeCookiePath: join(fixtureDir, "Browser", "Default", "Cookies"),
+        chromiumKeychain: {
+          account: "ExampleBrowser",
+          services: ["Example Browser Safe Storage", "Example Browser Storage Key"],
+          label: "Example Browser Safe Storage",
+        },
+      },
+    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const loaded = loadOracleConfig(projectDir);
+    assert(loaded.auth.chromeCookiePath === join(fixtureDir, "Browser", "Default", "Cookies"), "config should preserve arbitrary Chromium cookie DB paths");
+    assert(loaded.auth.chromiumKeychain?.account === "ExampleBrowser", "config should load arbitrary Chromium Keychain accounts");
+    assert(loaded.auth.chromiumKeychain?.services.length === 2, "config should load multiple Chromium Keychain service fallbacks");
+    assert(loaded.auth.chromiumKeychain?.label === "Example Browser Safe Storage", "config should load the Chromium Keychain diagnostic label");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-config-guidance-"));
   const projectDir = join(fixtureDir, "project");
@@ -868,6 +904,7 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     assert(result.stderr.includes(configLoad.effectiveAuthConfigPath), "auth bootstrap failure guidance should point at the effective agent config path for the active PI_CODING_AGENT_DIR");
     assert(result.stderr.includes(configLoad.projectConfigPath), "auth bootstrap failure guidance should mention the loaded project config path when one is present");
     assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");
+    assert(result.stderr.includes("auth.chromiumKeychain"), "auth bootstrap failure guidance should mention the generic Chromium keychain override");
     assert(!result.stderr.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap failure guidance should not hardcode the default global config path under isolated agent dirs");
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -4720,6 +4757,7 @@ async function main() {
   await testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config);
   await testRuntimeProfileCloneTimeoutKillsHungCp(config);
   await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
+  await testChromiumKeychainConfigLoads();
   await testAuthBootstrapReportsEffectiveConfigPaths(config);
   await testJobCreationPersistsSelectionSnapshot(config);
   await testOracleSubmitPresetGuardrails();
