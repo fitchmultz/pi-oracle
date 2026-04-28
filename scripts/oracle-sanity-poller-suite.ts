@@ -1,3 +1,4 @@
+// @rust-exception rationale: pi-oracle sanity coverage imports TypeScript extension modules directly; rewriting this harness in Rust would block exercising the platform-native Pi extension surface.
 // Purpose: Hold poller, wake-up, and detached-session oracle sanity coverage outside the main sanity entrypoint.
 // Responsibilities: Exercise notification claims, wake-up settlement, same-session/off-session delivery rules, and poller retry/prune behavior.
 // Scope: Test-only poller suite code for the local oracle sanity harness.
@@ -21,7 +22,7 @@ import {
   tryClaimNotification,
   updateJob,
 } from "../extensions/oracle/lib/jobs.ts";
-import { getLeasesDir, getOracleStateDir, listLeaseMetadata, releaseLease, writeLeaseMetadata } from "../extensions/oracle/lib/locks.ts";
+import { getLeasesDir, getOracleStateDir, listLeaseMetadata, releaseLease, withLock, writeLeaseMetadata } from "../extensions/oracle/lib/locks.ts";
 import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession, waitForAllPollersToQuiesce } from "../extensions/oracle/lib/poller.ts";
 import { promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
 import { getProjectId, releaseRuntimeLease } from "../extensions/oracle/lib/runtime.ts";
@@ -336,6 +337,21 @@ async function testPreSendStatusObservationDoesNotSuppressFirstWakeup(config: Or
     await cleanupJob(jobId);
     await rm(fakeWorkerPath, { force: true });
   }
+}
+
+async function testPollerSkipsContendedAdmissionPromotion(config: OracleConfig): Promise<void> {
+  const sessionManager = createPersistedSessionManager("poller-contended-admission");
+  const sessionFile = sessionManager.getSessionFile();
+  assert(sessionFile, "contended admission poller test should persist a session file");
+  const jobId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
+  const pi = createPiHarness();
+
+  await withLock("admission", "global", { processPid: process.pid, source: "oracle-sanity-contended-admission" }, async () => {
+    await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
+  });
+
+  assert(readJob(jobId)?.status === "queued", "poller should skip contended admission promotion without failing the scan");
+  await cleanupJob(jobId);
 }
 
 async function testOracleExtensionSkipsNoSessionWakeupRouting(config: OracleConfig): Promise<void> {
@@ -1374,6 +1390,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testManualReadsSettleWakeupRetries(config);
   await testPreSendStatusObservationDoesNotSuppressFirstWakeup(config);
   await testPollerNotification(config);
+  await testPollerSkipsContendedAdmissionPromotion(config);
   await testOracleExtensionSkipsNoSessionWakeupRouting(config);
   await testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config);
   await testPollerNotificationSkipsContestedSameSessionWriters(config);

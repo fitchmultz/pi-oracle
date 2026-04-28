@@ -25,6 +25,7 @@ export interface OracleQueuePosition {
 export interface PromoteQueuedJobsOptions {
   workerPath: string;
   source: string;
+  lockTimeoutMs?: number;
   spawnWorkerFn?: typeof spawnWorker;
   loadConfigFn?: typeof loadOracleConfig;
 }
@@ -141,7 +142,7 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
 export async function promoteQueuedJobs(options: PromoteQueuedJobsOptions): Promise<{ promotedJobIds: string[] }> {
   return withLock("admission", "global", { processPid: process.pid, source: options.source }, async () => {
     return promoteQueuedJobsWithinAdmissionLock(options);
-  });
+  }, { timeoutMs: options.lockTimeoutMs });
 }
 
 export async function createQueuedJob(
