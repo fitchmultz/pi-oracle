@@ -209,6 +209,11 @@ export interface OracleConfig {
     bootstrapTimeoutMs: number;
     chromeProfile: string;
     chromeCookiePath?: string;
+    chromiumKeychain?: {
+      account: string;
+      services: string[];
+      label?: string;
+    };
   };
   worker: {
     pollMs: number;
@@ -286,11 +291,12 @@ export function getOracleConfigLoadDetails(cwd: string): OracleConfigLoadDetails
 }
 
 export function formatOracleAuthConfigRemediation(details: OracleConfigLoadDetails): string {
+  const authFields = "auth.chromeProfile / auth.chromeCookiePath / auth.chromiumKeychain";
   if (!details.projectConfigExists) {
-    return `Set auth.chromeProfile / auth.chromeCookiePath in ${details.effectiveAuthConfigPath}.`;
+    return `Set ${authFields} in ${details.effectiveAuthConfigPath}.`;
   }
   return (
-    `Set auth.chromeProfile / auth.chromeCookiePath in ${details.effectiveAuthConfigPath}. ` +
+    `Set ${authFields} in ${details.effectiveAuthConfigPath}. ` +
     `Project overrides are also read from ${details.projectConfigPath}, but auth.* is loaded from ${details.effectiveAuthConfigPath}.`
   );
 }
@@ -330,6 +336,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     bootstrapTimeoutMs: 10 * 60 * 1000,
     chromeProfile: detectedChromeProfileName,
     chromeCookiePath: undefined,
+    chromiumKeychain: undefined,
   },
   worker: {
     pollMs: 5000,
@@ -439,6 +446,16 @@ function expectStringArray(value: unknown, path: string): string[] {
   return value;
 }
 
+function expectOptionalChromiumKeychain(value: unknown, path: string): OracleConfig["auth"]["chromiumKeychain"] {
+  if (value === undefined) return undefined;
+  const keychain = expectObject(value, path);
+  return {
+    account: expectString(keychain.account, `${path}.account`),
+    services: expectStringArray(keychain.services, `${path}.services`),
+    label: expectOptionalString(keychain.label, `${path}.label`),
+  };
+}
+
 function expectInteger(value: unknown, path: string, minimum: number, maximum?: number): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || (maximum !== undefined && value > maximum)) {
     const range = maximum === undefined ? `>= ${minimum}` : `between ${minimum} and ${maximum}`;
@@ -545,6 +562,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
       bootstrapTimeoutMs: expectInteger(auth.bootstrapTimeoutMs, "auth.bootstrapTimeoutMs", 1000),
       chromeProfile: expectString(auth.chromeProfile, "auth.chromeProfile"),
       chromeCookiePath: expectOptionalAbsoluteNormalizedPath(auth.chromeCookiePath, "auth.chromeCookiePath"),
+      chromiumKeychain: expectOptionalChromiumKeychain(auth.chromiumKeychain, "auth.chromiumKeychain"),
     },
     worker: {
       pollMs: expectInteger(worker.pollMs, "worker.pollMs", 100),

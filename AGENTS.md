@@ -18,3 +18,11 @@ This file contains project-specific guidance for this repository.
 - `progress.md` and `review.md` are temporary working artifacts.
 - Ignore them locally or delete them once they have been consumed and are no longer needed.
 - Do not leave them around as untracked repo noise after they are no longer useful.
+
+## Varlock exception
+- Current env/config owner: pi-oracle extension maintainers.
+- Reason: pi-oracle is a pi extension package, not an application runtime, and its tests intentionally exercise `PI_CODING_AGENT_DIR`, `PI_ORACLE_JOBS_DIR`, `PI_ORACLE_STATE_DIR`, `AGENT_BROWSER_PATH`, and timeout env overrides used by the pi harness.
+- Validation mechanism: extension config is parsed through `extensions/oracle/lib/config.ts`; worker behavior is covered by the oracle sanity suite and isolated pi smoke tests.
+- Secret-leak protection: auth code reads browser cookies only through explicit local config and diagnostics paths; tests use temporary fixture values, not committed secrets.
+- Exact migration trigger: add a Varlock schema if this package grows into a deployed service, reads app secrets, or exposes environment configuration outside local pi extension/test execution.
+- Verification command: `npm run check:oracle-extension && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle`.
