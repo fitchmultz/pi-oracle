@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.11 - 2026-04-30
+
+### Fixed
+- updated ChatGPT auth/readiness detection and model preset selection for the current ChatGPT UI, including bare effort chips like `Light` and current `Model` controls
+- restored generated artifact capture for ChatGPT's current `Download the file` behavior buttons by associating response-local filenames with generic download controls and following the JSON `download_url` indirection to the final file bytes
+- reduced false-positive artifact reporting from response text labels that look like filenames but do not have a confirmed downloadable control
+
+### Validation
+- verified live `instant`, `thinking_light`, `instant_auto_switch`, `pro_standard`, follow-up, and isolated local-extension oracle runs against the changed ChatGPT UI
+- verified byte-correct generated artifact downloads in both live and isolated local-extension runs
+
 ## 0.6.10 - 2026-04-23
 
 ### Changed
