@@ -22,6 +22,7 @@ export interface StructuralArtifactCandidateInput {
   focusableInteractiveCount?: number;
   focusableArtifactLabelCount?: number;
   focusableOtherTextLength?: number;
+  fromResponseTextLabel?: boolean;
 }
 
 export interface StructuralArtifactCandidate {

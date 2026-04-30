@@ -119,6 +119,10 @@ export function isStructuralArtifactCandidate(candidate) {
     return true;
   }
 
+  if (candidate?.fromResponseTextLabel === true && hasGenericDownloadControl(candidate?.controlLabel)) {
+    return true;
+  }
+
   return false;
 }
 

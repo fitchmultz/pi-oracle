@@ -3436,6 +3436,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
   assert(workerSource.includes("document.querySelector('main') || document.body"), "artifact capture should fall back when ChatGPT accessibility snapshots no longer expose ChatGPT-said headings");
+  assert(workerSource.includes("downloadArtifactViaBrowserEval"), "artifact capture should use a browser-eval fallback for ChatGPT behavior buttons that do not emit standard browser downloads");
 }
 
 async function testArchiveDefaultExclusions(): Promise<void> {
@@ -4648,12 +4649,28 @@ function testArtifactCandidateHeuristics(): void {
       focusableArtifactLabelCount: 1,
       focusableOtherTextLength: 0,
     },
+    {
+      label: "oracle-dogfood-artifact.txt",
+      controlLabel: "Download the file",
+      paragraphText: "Download the file",
+      listItemText: "",
+      paragraphInteractiveCount: 1,
+      paragraphArtifactLabelCount: 0,
+      paragraphOtherTextLength: 0,
+      listItemInteractiveCount: 0,
+      listItemArtifactLabelCount: 0,
+      focusableInteractiveCount: 1,
+      focusableArtifactLabelCount: 0,
+      focusableOtherTextLength: 0,
+      fromResponseTextLabel: true,
+    },
   ]);
   assert(successCandidates.some((candidate) => candidate.label === "sup-homie.txt"), "artifact heuristics should preserve real downloadable artifacts");
   assert(successCandidates.some((candidate) => candidate.label === "linked-download.txt"), "artifact heuristics should preserve link-rendered downloadable artifacts");
   assert(successCandidates.some((candidate) => candidate.label === "Attached"), "artifact heuristics should preserve generic Attached download controls");
   assert(successCandidates.some((candidate) => candidate.label === "Done"), "artifact heuristics should preserve generic Done download controls");
   assert(successCandidates.some((candidate) => candidate.label === "butterscotch.txt"), "artifact heuristics should map generic Download controls onto nearby file labels");
+  assert(successCandidates.some((candidate) => candidate.label === "oracle-dogfood-artifact.txt"), "artifact heuristics should map generic Download controls onto unique filename labels extracted from response text");
 
   const falsePositiveCandidates = filterStructuralArtifactCandidates([
     {

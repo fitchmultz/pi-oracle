@@ -1325,6 +1325,122 @@ function preferredArtifactName(label, index) {
   return `artifact-${String(index + 1).padStart(2, "0")}`;
 }
 
+async function downloadArtifactViaBrowserEval(job, selector, destinationPath) {
+  const result = await evalPage(job, toAsyncJsonScript(`
+    const selector = ${JSON.stringify(selector)};
+    const maxBytes = 25 * 1024 * 1024;
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const element = document.querySelector(selector);
+    if (!element) return { ok: false, error: 'artifact selector not found' };
+
+    const urls = [];
+    const captures = [];
+    const originalOpen = window.open;
+    const originalFetch = window.fetch?.bind(window);
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+
+    const arrayBufferToBase64 = (buffer) => {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let index = 0; index < bytes.length; index += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+      }
+      return btoa(binary);
+    };
+
+    const shouldCapture = (url, headers) => {
+      const contentDisposition = headers?.get?.('content-disposition') || '';
+      const contentType = headers?.get?.('content-type') || '';
+      const signal = [url, contentDisposition, contentType].join(' ').toLowerCase();
+      return /download|files|oaiusercontent|attachment/i.test(signal) || signal.includes('estuary/content');
+    };
+
+    const captureResponse = async (response, source) => {
+      if (!response || captures.length > 0 || !shouldCapture(response.url || '', response.headers)) return;
+      const contentLength = Number(response.headers.get('content-length') || 0);
+      if (contentLength > maxBytes) {
+        captures.push({ ok: false, error: 'artifact response too large for browser-eval fallback', url: response.url || '', source });
+        return;
+      }
+      const clone = response.clone();
+      const buffer = await clone.arrayBuffer();
+      if (buffer.byteLength > maxBytes) {
+        captures.push({ ok: false, error: 'artifact response too large for browser-eval fallback', url: response.url || '', source });
+        return;
+      }
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.toLowerCase().includes('application/json') && originalFetch) {
+        try {
+          const text = new TextDecoder().decode(buffer);
+          const payload = JSON.parse(text);
+          const downloadUrl = typeof payload?.download_url === 'string' ? payload.download_url : undefined;
+          if (downloadUrl) {
+            const fileResponse = await originalFetch(downloadUrl, { credentials: 'include' });
+            await captureResponse(fileResponse, 'download_url');
+            if (captures.length > 0) return;
+          }
+        } catch (_error) {
+          // Fall through and preserve the JSON payload as last-resort evidence.
+        }
+      }
+      captures.push({
+        ok: true,
+        url: response.url || '',
+        source,
+        contentType,
+        contentDisposition: response.headers.get('content-disposition') || '',
+        bytesBase64: arrayBufferToBase64(buffer),
+      });
+    };
+
+    try {
+      window.open = (url, ...args) => {
+        if (url) urls.push(String(url));
+        return originalOpen.call(window, url, ...args);
+      };
+      HTMLAnchorElement.prototype.click = function patchedAnchorClick() {
+        if (this.href) urls.push(this.href);
+        return originalAnchorClick.call(this);
+      };
+      if (originalFetch) {
+        window.fetch = async (...args) => {
+          const response = await originalFetch(...args);
+          const requestUrl = String(args[0]?.url || args[0] || response?.url || '');
+          if (shouldCapture(requestUrl, response?.headers) || shouldCapture(response?.url || '', response?.headers)) {
+            await captureResponse(response, 'fetch');
+          }
+          return response;
+        };
+      }
+
+      element.click();
+      await sleep(3000);
+      for (const url of urls) {
+        if (captures.length > 0 || !url || !originalFetch) continue;
+        try {
+          const response = await originalFetch(url, { credentials: 'include' });
+          await captureResponse(response, 'url');
+        } catch (_error) {
+          // Keep trying any other captured URLs.
+        }
+      }
+      return captures[0] || { ok: false, error: 'click did not expose a downloadable artifact response', urls };
+    } finally {
+      window.open = originalOpen;
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+      if (originalFetch) window.fetch = originalFetch;
+    }
+  `));
+
+  if (!result?.ok || typeof result.bytesBase64 !== "string") {
+    throw new Error(result?.error || "browser-eval artifact fallback did not capture a file");
+  }
+
+  await writeFile(destinationPath, Buffer.from(result.bytesBase64, "base64"), { mode: 0o600 });
+  return result;
+}
+
 async function collectArtifactCandidates(job, responseIndex, responseText = "") {
   const snapshot = await snapshotText(job);
   const targetSlice = assistantSnapshotSlice(snapshot, CHATGPT_LABELS.composer, responseIndex) || snapshot;
@@ -1390,6 +1506,7 @@ async function collectArtifactCandidates(job, responseIndex, responseText = "") 
         return undefined;
       };
 
+      const responseTextArtifactLabels = ${JSON.stringify(extractArtifactLabels(responseText))};
       const candidates = interactiveElements(host)
         .map((button, index) => {
           const controlLabel = normalize(button.textContent || button.getAttribute('aria-label') || button.getAttribute('title'));
@@ -1400,7 +1517,13 @@ async function collectArtifactCandidates(job, responseIndex, responseText = "") 
           const paragraphArtifactLabels = artifactLabelsForNode(paragraph);
           const listItemArtifactLabels = artifactLabelsForNode(listItem);
           const focusableArtifactLabels = artifactLabelsForNode(focusable);
-          const label = uniqueLabel(ownArtifactLabels, listItemArtifactLabels, paragraphArtifactLabels, focusableArtifactLabels);
+          const label = uniqueLabel(
+            ownArtifactLabels,
+            listItemArtifactLabels,
+            paragraphArtifactLabels,
+            focusableArtifactLabels,
+            isDownloadControl(controlLabel) && responseTextArtifactLabels.length > 0 ? [responseTextArtifactLabels.at(-1)] : [],
+          );
           if (!label && !isFileLabel(controlLabel) && !isDownloadControl(controlLabel)) return null;
           if (!label) return null;
           const marker = artifactPrefix + index;
@@ -1419,6 +1542,7 @@ async function collectArtifactCandidates(job, responseIndex, responseText = "") 
             focusableInteractiveCount: interactiveElements(focusable).length,
             focusableArtifactLabelCount: Array.from(new Set(focusableArtifactLabels)).length,
             focusableOtherTextLength: otherTextLength(focusable?.textContent, [...focusableArtifactLabels, ...interactiveLabels(focusable)]),
+            fromResponseTextLabel: responseTextArtifactLabels.includes(label),
           };
         })
         .filter(Boolean);
@@ -1546,11 +1670,17 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
       await rm(destinationPath, { force: true }).catch(() => undefined);
       try {
         await log(`Artifact "${originalCandidate.label}" download attempt ${attempt}/${ARTIFACT_DOWNLOAD_MAX_ATTEMPTS} using selector ${activeCandidate.selector}`);
-        await withHeartbeatWhile(() =>
-          agentBrowser(job, "download", activeCandidate.selector, destinationPath, {
-            timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS,
-          }),
-        );
+        try {
+          const fallback = await downloadArtifactViaBrowserEval(job, activeCandidate.selector, destinationPath);
+          await log(`Artifact "${originalCandidate.label}" captured via browser-eval fallback (${fallback.source || "unknown"}${fallback.contentType ? `, ${fallback.contentType}` : ""})`);
+        } catch (fallbackError) {
+          await log(`Artifact "${originalCandidate.label}" browser-eval fallback did not capture file: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+          await withHeartbeatWhile(() =>
+            agentBrowser(job, "download", activeCandidate.selector, destinationPath, {
+              timeoutMs: ARTIFACT_DOWNLOAD_TIMEOUT_MS,
+            }),
+          );
+        }
         await heartbeat(undefined, { force: true });
         await chmod(destinationPath, 0o600).catch(() => undefined);
         const [size, checksum, detectedType] = await Promise.all([
@@ -1588,7 +1718,8 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
   }
 
   const capturedArtifactLabels = new Set(artifacts.map((artifact) => artifact.displayName).filter(Boolean));
-  const missedArtifactLabels = suspiciousLabels.filter((label) => !capturedArtifactLabels.has(label));
+  const capturedArtifactKeys = new Set([...capturedArtifactLabels].map((label) => String(label).replace(/\s+/g, "")));
+  const missedArtifactLabels = suspiciousLabels.filter((label) => !capturedArtifactLabels.has(label) && !capturedArtifactKeys.has(String(label).replace(/\s+/g, "")));
   if (missedArtifactLabels.length > 0) {
     await log(`Marking missed artifact signals as unconfirmed: ${missedArtifactLabels.join(", ")}`);
     for (const label of missedArtifactLabels) {
