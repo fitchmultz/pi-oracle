@@ -4,6 +4,8 @@
 // Usage: Imported by auth-bootstrap.mjs and sanity tests to exercise auth classification behavior without driving a browser.
 // Invariants/Assumptions: Inputs are already captured snapshots/probe results from the live browser session; outputs are deterministic and side-effect free.
 
+import { snapshotHasUsableComposerControls } from "./chatgpt-ui-helpers.mjs";
+
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthLoginProbe} OracleAuthLoginProbe */
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthPageClassification} OracleAuthPageClassification */
 
@@ -67,9 +69,9 @@ export function classifyChatAuthPage(args) {
   const onAllowedOrigin = args.allowedOrigins.some((origin) => args.url.startsWith(origin));
   const hasComposer = args.snapshot.includes(`textbox "${composerLabel}"`);
   const hasAddFiles = args.snapshot.includes(`button "${addFilesLabel}"`);
-  const hasModelControl =
-    args.snapshot.includes('button "Model selector"') ||
-    /button "(?:Instant|(?:(?:Light|Standard|Extended|Heavy) )?Thinking|(?:(?:Light|Standard|Extended|Heavy) )?Pro)(?:, click to remove)?"/i.test(args.snapshot);
+  const hasUsableComposer = composerLabel === DEFAULT_COMPOSER_LABEL && addFilesLabel === DEFAULT_ADD_FILES_LABEL
+    ? snapshotHasUsableComposerControls(args.snapshot)
+    : hasComposer && hasAddFiles;
 
   const challengePatterns = [
     /just a moment/i,
@@ -107,7 +109,7 @@ export function classifyChatAuthPage(args) {
     return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/error page. Logs: ${args.logPath}` };
   }
 
-  if (args.probe?.status === 401 || args.probe?.status === 403) {
+  if (args.probe?.status === 401 || (args.probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer || args.probe?.domLoginCta))) {
     return {
       state: "login_required",
       message:
@@ -133,7 +135,7 @@ export function classifyChatAuthPage(args) {
     };
   }
 
-  if (onAllowedOrigin && args.probe?.status === 200 && hasComposer && hasAddFiles && hasModelControl) {
+  if (onAllowedOrigin && (args.probe?.status === 200 || args.probe?.status === 403) && hasUsableComposer) {
     if (!args.probe?.domLoginCta) {
       return {
         state: "authenticated_and_ready",
@@ -150,7 +152,7 @@ export function classifyChatAuthPage(args) {
     };
   }
 
-  if (onAllowedOrigin && args.probe?.ok && hasComposer && hasAddFiles && hasModelControl) {
+  if (onAllowedOrigin && args.probe?.ok && hasUsableComposer) {
     return {
       state: "authenticated_and_ready",
       message: `Imported ChatGPT auth from ${args.cookieSourceLabel} into the isolated oracle profile. Logs: ${args.logPath}`,

@@ -8,6 +8,7 @@ const FILE_LABEL_PATTERN = new RegExp(FILE_LABEL_PATTERN_SOURCE, "g");
 export const GENERIC_ARTIFACT_LABELS = ["ATTACHED", "DONE"];
 const GENERIC_ARTIFACT_LABEL_SET = new Set(GENERIC_ARTIFACT_LABELS);
 const GENERIC_DOWNLOAD_CONTROL_PATTERN = /(?:^|\b)(?:download|save)(?:\b|$)/i;
+const CODE_MEMBER_CALL_LABEL_PATTERN = /^[A-Za-z_$][\w$]*\.(?:catch|close|filter|join|json|map|match|open|read|slice|split|text|then|trim|write)$/;
 
 export function parseSnapshotEntries(snapshot) {
   return String(snapshot || "")
@@ -47,7 +48,7 @@ export function extractArtifactLabels(value) {
   const labels = [];
   for (const match of String(value || "").matchAll(FILE_LABEL_PATTERN)) {
     const normalized = sanitizeArtifactLabel(match[1] || match[0] || "");
-    if (!normalized || seen.has(normalized)) continue;
+    if (!normalized || CODE_MEMBER_CALL_LABEL_PATTERN.test(normalized) || seen.has(normalized)) continue;
     seen.add(normalized);
     labels.push(normalized);
   }

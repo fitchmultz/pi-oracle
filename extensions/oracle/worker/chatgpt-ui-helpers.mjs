@@ -28,6 +28,8 @@ const MODEL_FAMILY_PREFIX = {
 const AUTO_SWITCH_LABEL = "Auto-switch to Thinking";
 const THINKING_EFFORT_COMBOBOX_LABEL = "Thinking effort";
 const PRO_THINKING_EFFORT_COMBOBOX_LABEL = "Pro thinking effort";
+const EFFORT_LABELS = new Set(["Light", "Standard", "Extended", "Heavy"]);
+const BARE_EFFORT_PATTERN = /^(light|standard|extended|heavy)(?:, click to remove)?$/i;
 const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
 const PRO_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?pro(?:, click to remove)?$/i;
 const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"]);
@@ -115,6 +117,14 @@ function parseComposerChipSelection(label) {
   const normalized = normalizeChipLabel(label).toLowerCase();
   if (!normalized) return undefined;
 
+  const bareEffortMatch = normalized.match(BARE_EFFORT_PATTERN);
+  if (bareEffortMatch) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("thinking"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (bareEffortMatch[1].toLowerCase()),
+    };
+  }
+
   const thinkingMatch = normalized.match(THINKING_CHIP_PATTERN);
   if (thinkingMatch) {
     return {
@@ -157,6 +167,11 @@ function detectSelectedModelFamily(entries) {
       if (matchesModelFamilyLabel(entry.label, family)) return family;
     }
   }
+
+  const hasLatestModelCombobox = entries.some(
+    (entry) => !entry.disabled && entry.kind === "combobox" && normalizeText(entry.label).toLowerCase() === "model" && /^latest\b/i.test(normalizeText(entry.value)),
+  );
+  if (hasLatestModelCombobox) return undefined;
 
   const hasProEffortCombobox = entries.some(
     (entry) => !entry.disabled && entry.kind === "combobox" && normalizeText(entry.label).toLowerCase() === PRO_THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase(),
@@ -227,9 +242,40 @@ export function snapshotHasModelConfigurationUi(snapshot) {
   );
   const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
   const hasEffortCombobox = entries.some(
-    (entry) => entry.kind === "combobox" && ["Light", "Standard", "Extended", "Heavy"].includes(entry.value || "") && !entry.disabled,
+    (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,
   );
   return visibleFamilies.size >= 2 || hasCloseButton || hasEffortCombobox;
+}
+
+/**
+ * @param {string} snapshot
+ * @returns {boolean}
+ */
+export function snapshotHasUsableComposerControls(snapshot) {
+  /** @type {SnapshotEntry[]} */
+  const entries = parseSnapshotEntries(snapshot);
+  const hasComposer = entries.some((entry) => entry.kind === "textbox" && entry.label === "Chat with ChatGPT" && !entry.disabled);
+  const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === "Add files and more" && !entry.disabled);
+  return hasComposer && hasAddFiles;
+}
+
+/**
+ * @param {string} snapshot
+ * @returns {boolean}
+ */
+export function snapshotHasModelOpener(snapshot) {
+  /** @type {SnapshotEntry[]} */
+  const entries = parseSnapshotEntries(snapshot);
+  return entries.some((entry) => {
+    if (entry.disabled || entry.kind !== "button" || typeof entry.label !== "string") return false;
+    const label = normalizeChipLabel(entry.label);
+    return label === "Model"
+      || label === "Model selector"
+      || EFFORT_LABELS.has(label)
+      || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {OracleUiModelFamily} */ (family)))
+      || THINKING_CHIP_PATTERN.test(label)
+      || PRO_CHIP_PATTERN.test(label);
+  });
 }
 
 /**

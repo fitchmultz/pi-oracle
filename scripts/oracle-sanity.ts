@@ -30,6 +30,8 @@ import {
   buildAssistantCompletionSignature,
   deriveAssistantCompletionSignature,
   snapshotCanSafelySkipModelConfiguration,
+  snapshotHasModelOpener,
+  snapshotHasUsableComposerControls,
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
@@ -3353,6 +3355,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
 async function testResponseTimeoutGuard(): Promise<void> {
   const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
   const authBootstrapSource = await readFile(new URL("../extensions/oracle/worker/auth-bootstrap.mjs", import.meta.url), "utf8");
+  const authFlowSource = await readFile(new URL("../extensions/oracle/worker/auth-flow-helpers.mjs", import.meta.url), "utf8");
   const stateLocksSource = await readFile(new URL("../extensions/oracle/worker/state-locks.mjs", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
@@ -3386,13 +3389,17 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('["button", "radio", "menuitemradio"].includes(candidate.kind || "")'), "worker should accept radio-style model family controls in addition to button controls");
   assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
   assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
+  assert(workerSource.includes('candidate.label === "Model"'), "worker should recognize the current ChatGPT Model button as the configuration opener");
+  assert(workerSource.includes("snapshotHasUsableComposerControls"), "worker readiness should accept authenticated usable composer shells even when model labels drift");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
   assert(uiHelpersSource.includes("selectionMatchesChipSelection"), "ChatGPT UI helpers should recognize composer chips like Heavy thinking or Extended Pro as durable preset indicators");
+  assert(uiHelpersSource.includes("snapshotHasModelOpener"), "ChatGPT UI helpers should centralize current model-opener recognition for auth and worker flows");
   assert(authBootstrapSource.includes("from \"./state-locks.mjs\""), "auth bootstrap should use the shared hardened state-lock helper instead of keeping divergent auth-lock crash recovery logic inline");
   assert(authBootstrapSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "auth bootstrap should use the shared ChatGPT origin helper so runtime/auth stay aligned");
   assert(authBootstrapSource.includes("from \"./auth-flow-helpers.mjs\""), "auth bootstrap should use the extracted auth flow helper module for probe normalization and page classification");
+  assert(authFlowSource.includes("snapshotHasUsableComposerControls"), "auth classification should treat visible usable ChatGPT composer controls as ready despite model-control label drift");
   assert(!authBootstrapSource.includes('"/tmp/oracle-auth'), "auth bootstrap should not write diagnostics to fixed /tmp/oracle-auth.* paths");
   assert(authBootstrapSource.includes('mkdtemp(join(tmpdir(), "pi-oracle-auth-"))'), "auth bootstrap should isolate diagnostics in a unique private temp directory per run");
   assert(authBootstrapSource.includes("AGENT_BROWSER_COMMAND_TIMEOUT_MS"), "auth bootstrap should enforce process-level timeouts for agent-browser commands");
@@ -3428,6 +3435,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
   assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
+  assert(workerSource.includes("document.querySelector('main') || document.body"), "artifact capture should fall back when ChatGPT accessibility snapshots no longer expose ChatGPT-said headings");
 }
 
 async function testArchiveDefaultExclusions(): Promise<void> {
@@ -4306,6 +4314,44 @@ function testChatGptUiHelpers(): void {
     "closed snapshots without an explicit selected family should not weakly verify Pro",
   );
 
+  const currentBareEffortSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e21]',
+    '- textbox "Chat with ChatGPT" [ref=e19]',
+    '- button "Heavy" [expanded=false, ref=e23]',
+  ].join("\n");
+  assert(snapshotHasUsableComposerControls(currentBareEffortSnapshot), "current ChatGPT composer shell should be recognized as usable");
+  assert(snapshotHasModelOpener(currentBareEffortSnapshot), "current bare-effort model button should be recognized as a model opener");
+  assert(
+    snapshotStronglyMatchesRequestedModel(currentBareEffortSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "bare effort composer buttons should strongly verify matching thinking-effort presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(currentBareEffortSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "bare effort composer buttons should not verify plain instant presets",
+  );
+
+  const currentModelButtonSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e21]',
+    '- textbox "Chat with ChatGPT" [ref=e19]',
+    '- button "Model" [expanded=false, ref=e23]',
+  ].join("\n");
+  assert(snapshotHasModelOpener(currentModelButtonSnapshot), "current generic Model button should be recognized as a model opener");
+  assert(!snapshotCanSafelySkipModelConfiguration(currentModelButtonSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }), "generic Model button should not skip explicit model configuration");
+
+  const latestModelDialogSnapshot = [
+    '- heading "Intelligence" [level=2, ref=e3]',
+    '- button "Close" [ref=e4]',
+    '- combobox "Model" [expanded=false, ref=e1]: Latest • 5.3',
+    '- radio "Instant" [checked=false, ref=e6]',
+    '- radio "Thinking" [checked=false, ref=e7]',
+    '- radio "Pro" [checked=false, ref=e8]',
+    '- combobox "Thinking effort" [expanded=false, ref=e2]: Standard',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(latestModelDialogSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "latest-model dialogs should not infer thinking from a visible effort combobox when no family is selected",
+  );
+
   const allowedOrigins = buildAllowedChatGptOrigins("https://chatgpt.com/", "https://chatgpt.com/auth/login");
   assert(allowedOrigins.includes("https://chatgpt.com"), "allowed ChatGPT origins should include chatgpt.com");
   assert(allowedOrigins.includes("https://chat.openai.com"), "allowed ChatGPT origins should include chat.openai.com even when config uses chatgpt.com");
@@ -4368,7 +4414,7 @@ function testAuthFlowHelpers(): void {
   const readySnapshot = [
     '- textbox "Chat with ChatGPT" [ref=e1]',
     '- button "Add files and more" [ref=e2]',
-    '- button "Model selector" [ref=e3]',
+    '- button "Model" [ref=e3]',
   ].join("\n");
 
   const challengeState = classifyChatAuthPage({
@@ -4418,6 +4464,33 @@ function testAuthFlowHelpers(): void {
     logPath: "/tmp/oracle-auth.log",
   });
   assert(readyState.state === "authenticated_and_ready", "auth classification should accept fully ready ChatGPT shells on allowed origins");
+
+  const forbiddenButVisibleReadyState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: readySnapshot,
+    body: "",
+    probe: { ...normalizedProbe, ok: false, status: 403, domLoginCta: false },
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(forbiddenButVisibleReadyState.state === "authenticated_and_ready", "auth classification should not reject a visibly usable authenticated shell solely because /backend-api/me returned 403");
+
+  const noModelLabelReadyState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: [
+      '- textbox "Chat with ChatGPT" [ref=e20]',
+      '- button "Add files and more" [ref=e21]',
+    ].join("\n"),
+    body: "",
+    probe: normalizedProbe,
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(noModelLabelReadyState.state === "authenticated_and_ready", "auth classification should let model configuration handle model-label drift after composer readiness is proven");
 
   const extendedChipReadyState = classifyChatAuthPage({
     url: "https://chatgpt.com/",
@@ -4502,6 +4575,10 @@ function testArtifactCandidateHeuristics(): void {
   assert(
     JSON.stringify(extractArtifactLabels("hello\nbutterscotch.txt")) === JSON.stringify(["butterscotch.txt"]),
     "artifact label extraction should ignore surrounding prose lines",
+  );
+  assert(
+    JSON.stringify(extractArtifactLabels("f.write(\"ARTIFACT_OK\") and oracle-dogfood-artifact.txt")) === JSON.stringify(["oracle-dogfood-artifact.txt"]),
+    "artifact label extraction should ignore common code member calls that look like filenames",
   );
 
   const successCandidates = filterStructuralArtifactCandidates([

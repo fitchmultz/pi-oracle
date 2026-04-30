@@ -28,6 +28,7 @@ import {
   effortSelectionVisible,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasModelConfigurationUi,
+  snapshotHasUsableComposerControls,
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
   autoSwitchToThinkingSelectionVisible,
@@ -257,8 +258,18 @@ async function cloneSeedProfileToRuntime(job) {
   await withLock(ORACLE_STATE_DIR, "auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
-    const cloneArgs = job.config.browser.cloneStrategy === "apfs-clone" ? ["-cR", seedDir, job.runtimeProfileDir] : ["-R", seedDir, job.runtimeProfileDir];
-    await spawnCommand("cp", cloneArgs, { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+    if (job.config.browser.cloneStrategy === "apfs-clone") {
+      try {
+        await spawnCommand("/bin/cp", ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await log(`APFS clone copy failed; falling back to recursive copy: ${message}`);
+        await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
+        await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+      }
+    } else {
+      await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+    }
   }, 10 * 60 * 1000);
 
   return seedGeneration;
@@ -686,7 +697,9 @@ function matchesModelFamilyControl(candidate, family) {
 function matchesModelConfigurationOpener(candidate) {
   if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
   const label = String(candidate.label || "");
-  return candidate.label === "Model selector"
+  return candidate.label === "Model"
+    || candidate.label === "Model selector"
+    || /^(?:Light|Standard|Extended|Heavy)(?:, click to remove)?$/i.test(label)
     || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
@@ -787,11 +800,9 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   const allowedOrigins = buildAllowedChatGptOrigins(job.config.browser.chatUrl, job.config.browser.authUrl);
   const onAllowedOrigin = typeof url === "string" && allowedOrigins.some((origin) => url.startsWith(origin));
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
-  const hasComposer = snapshot.includes(`textbox "${CHATGPT_LABELS.composer}"`);
-  const hasAddFiles = snapshot.includes(`button "${CHATGPT_LABELS.addFiles}"`);
-  const hasModelControl = snapshot.includes('button "Model selector"') || /button "(?:Instant|(?:(?:Light|Standard|Extended|Heavy) )?Thinking|(?:(?:Light|Standard|Extended|Heavy) )?Pro)(?:, click to remove)?"/i.test(snapshot);
+  const hasUsableComposer = snapshotHasUsableComposerControls(snapshot);
 
-  if (probe?.status === 401 || probe?.status === 403) {
+  if (probe?.status === 401 || (probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer || probe?.domLoginCta))) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
   }
 
@@ -805,7 +816,7 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
   }
 
-  if (onAllowedOrigin && probe?.status === 200 && hasComposer && hasAddFiles && hasModelControl) {
+  if (onAllowedOrigin && (probe?.status === 200 || probe?.status === 403) && hasUsableComposer) {
     if (probe?.domLoginCta && (probe?.bodyHasId || probe?.bodyHasEmail)) {
       return {
         state: "auth_transitioning",
@@ -1316,8 +1327,7 @@ function preferredArtifactName(label, index) {
 
 async function collectArtifactCandidates(job, responseIndex, responseText = "") {
   const snapshot = await snapshotText(job);
-  const targetSlice = assistantSnapshotSlice(snapshot, CHATGPT_LABELS.composer, responseIndex);
-  if (!targetSlice) return { snapshot, targetSlice, candidates: [], suspiciousLabels: [] };
+  const targetSlice = assistantSnapshotSlice(snapshot, CHATGPT_LABELS.composer, responseIndex) || snapshot;
 
   const structural = await evalPage(
     job,
@@ -1355,7 +1365,7 @@ async function collectArtifactCandidates(job, responseIndex, responseText = "") 
       const isDownloadControl = (value) => downloadControlPattern.test(normalize(value));
       const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
         .filter((el) => normalize(el.textContent) === 'ChatGPT said:');
-      const host = headings[${responseIndex}]?.nextElementSibling;
+      const host = headings[${responseIndex}]?.nextElementSibling || document.querySelector('main') || document.body;
       if (!host) return { candidates: [] };
 
       const interactiveElements = (node) => node ? Array.from(node.querySelectorAll('button, a')) : [];
@@ -1510,12 +1520,6 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
   }
 
   let { targetSlice, candidates, suspiciousLabels } = await reopenConversationForArtifacts(job, responseIndex, responseText, "initial");
-  if (!targetSlice) {
-    await log(`No assistant response found in snapshot for response index ${responseIndex}`);
-    await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
-    await mutateJob((current) => ({ ...current, artifactPaths: [] }));
-    return [];
-  }
 
   await log(`Artifact candidates: ${candidates.map((candidate) => candidate.label).join(", ") || "(none)"}`);
   if (suspiciousLabels.length > 0) {

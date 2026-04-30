@@ -15,6 +15,8 @@ export declare function requestedEffortLabel(selection: OracleUiSelection): stri
 export declare function effortSelectionVisible(snapshot: string, effortLabel: string | undefined): boolean;
 export declare function thinkingChipVisible(snapshot: string): boolean;
 export declare function snapshotHasModelConfigurationUi(snapshot: string): boolean;
+export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
+export declare function snapshotHasModelOpener(snapshot: string): boolean;
 export declare function autoSwitchToThinkingSelectionVisible(snapshot: string): boolean | undefined;
 export declare function snapshotCanSafelySkipModelConfiguration(snapshot: string, selection: OracleUiSelection): boolean;
 export declare function snapshotStronglyMatchesRequestedModel(snapshot: string, selection: OracleUiSelection): boolean;
