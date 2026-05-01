@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.6.12 - 2026-05-01
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-coding-agent` `0.71.1` and refreshed the TypeBox development dependency
+- regenerated the npm lockfile against the current stable dependency graph
+
+### Compatibility
+- reviewed the pi `0.71.1` changelog and confirmed the oracle extension remains compatible with current extension lifecycle, package install/update, and TypeBox 1.x guidance
+
+
 ## 0.6.11 - 2026-04-30
 
 ### Fixed
