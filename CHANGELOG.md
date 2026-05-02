@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.13 - 2026-05-01
+
+### Changed
+- updated the local pi development baseline to `@mariozechner/pi-coding-agent` `0.72.0` and refreshed the TypeBox development dependency graph
+- regenerated the npm lockfile against the current stable dependency graph
+- aligned pi core peer metadata with current pi package guidance
+
+### Compatibility
+- reviewed the pi `0.72.0` changelog and confirmed the oracle extension does not define provider `compat.reasoningEffortMap` metadata and remains compatible with current extension lifecycle and package install/update guidance
+
+
 ## 0.6.12 - 2026-05-01
 
 ### Changed

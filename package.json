@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.6.12",
+  "version": "0.6.13",
   "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
@@ -55,14 +55,15 @@
     "@steipete/sweet-cookie": "^0.2.0"
   },
   "peerDependencies": {
-    "typebox": "*"
+    "typebox": "*",
+    "@mariozechner/pi-coding-agent": "*"
   },
   "overrides": {
     "basic-ftp": "5.3.0",
     "protobufjs": "7.5.5"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.71.1",
+    "@mariozechner/pi-coding-agent": "^0.72.0",
     "@types/node": "^25.6.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.21.0",
