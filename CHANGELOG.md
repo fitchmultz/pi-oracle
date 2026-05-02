@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.6.14 - 2026-05-02
+
+### Fixed
+- deduped oracle completion wake-ups by marking one-time best-effort delivery in job state before the poller sends the follow-up turn, preventing repeated identical completion notifications across poller scans
+- clarified completion wake-up guidance so agents treat the wake-up as a read/inspect prompt rather than an automatic auth refresh or resubmission instruction
+
+### Changed
+- `oracle_read` and `/oracle-status` summaries for active jobs now include elapsed time, phase elapsed time, and a poll/backoff hint so manual checks waste fewer turns
+- `oracle_submit` preset schema and prompt guidance now list the canonical preset ids directly for tool callers
+
 ## 0.6.13 - 2026-05-01
 
 ### Changed

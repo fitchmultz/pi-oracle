@@ -48,7 +48,7 @@ pi install https://github.com/fitchmultz/pi-oracle
 4. Optional: create `~/.pi/agent/extensions/oracle.json` if you want non-default settings.
 5. Run `/oracle-auth`.
 6. Run `/oracle Review the current pending changes. Include the whole repo unless a narrower archive is clearly better.`
-7. Wait for a best-effort wake-up, or check `/oracle-status`.
+7. Wait for the one-time best-effort wake-up, or check `/oracle-status`.
 
 The `/oracle` prompt now runs an early oracle preflight before it gathers repo context, so missing persisted-session or local auth/config blockers fail before the agent spends time reading files.
 
@@ -56,7 +56,7 @@ For explicitly narrow requests, `/oracle` should still prefer a context-rich rel
 
 If a local archive still exceeds the 250 MB limit after default exclusions and automatic whole-repo pruning, the agent should treat that as a retryable archive-selection failure: shrink the archive automatically, retry with a smaller relevant slice, and explain what it cut only if it still cannot fit after the allowed retry budget.
 
-If you miss the wake-up, the result is still saved durably in the oracle job directory and can be read later.
+If you miss the one-time wake-up, the result is still saved durably in the oracle job directory and can be read later.
 
 ## Example requests
 
@@ -87,7 +87,7 @@ flowchart LR
     C --> D["Detached worker starts isolated ChatGPT runtime"]
     D --> E["Archive + prompt sent to ChatGPT.com"]
     E --> F["Response/artifacts saved under oracle job dir"]
-    F --> G["Best-effort wake-up to matching pi session"]
+    F --> G["One-time best-effort wake-up to matching pi session"]
 ```
 
 If concurrency is full, the job is queued and starts automatically later.
@@ -162,7 +162,7 @@ Project config should only override safe, non-privileged settings.
 
 - Jobs persist their response and any artifacts under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default.
 - Jobs can queue automatically if runtime capacity is full.
-- Completion delivery into `pi` is best-effort wake-up based.
+- Completion delivery into `pi` is one-time best-effort wake-up based; duplicate poller scans are deduped in job state.
 - If you miss the wake-up, use `/oracle-read [job-id]` to inspect the saved response preview.
 - `/oracle-status [job-id]` still shows saved job metadata and lists recent job ids when you omit the id.
 - Agent callers can use `oracle_read({ jobId })`.

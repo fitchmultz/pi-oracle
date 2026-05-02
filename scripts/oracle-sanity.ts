@@ -3265,8 +3265,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck before sending a best-effort wake-up");
   assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
   assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
-  assert(pollerSource.indexOf("requestWakeupTurn(pi, deliverable)") < pollerSource.indexOf("await noteWakeupRequested(jobId)"), "poller should only record wake-up attempts after the best-effort send path runs");
-  assert(pollerSource.includes("if (!notedWakeup) {"), "poller should tolerate a job disappearing after the best-effort wake-up send path");
+  assert(pollerSource.indexOf("await noteWakeupRequested(jobId)") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should record wake-up intent before sending so manual reads cannot race ahead of delivery state");
+  assert(pollerSource.indexOf("await markJobNotified(jobId, notificationClaimant") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should mark one-time wake-up delivery as notified before sending so duplicate scans cannot queue repeated completion messages");
+  assert(pollerSource.includes("if (!notedWakeup) {"), "poller should tolerate a job disappearing before the wake-up send path");
   assert(pollerSource.includes("requestWakeupTurn(pi, deliverable)"), "poller should deliver completion follow-ups as best-effort wake-up turns instead of direct durable session-history writes");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent(job"), "poller wake-up turns should include durable response/artifact paths from job state via the shared observability helper");
   assert(pollerSource.includes("responseAvailable: Boolean(job.responsePath && existsSync(job.responsePath))"), "poller wake-up turns should hide missing response paths when no response file was actually written");
@@ -4099,7 +4100,7 @@ function testSharedLifecycleHelpers(): void {
     notificationSessionKey: "project::session",
     notificationSessionFile: "/repo/.pi/session.jsonl",
   });
-  assert(notified.notifiedAt === "2026-01-01T00:00:50.000Z" && notified.wakeupAttemptCount === 0 && !notified.notifyClaimedBy, "shared lifecycle helpers should clear wake-up claim/attempt state when delivery is recorded");
+  assert(notified.notifiedAt === "2026-01-01T00:00:50.000Z" && notified.wakeupAttemptCount === 1 && notified.wakeupLastRequestedAt === "2026-01-01T00:00:35.000Z" && !notified.notifyClaimedBy, "shared lifecycle helpers should clear notification claims while preserving wake-up attempt state for cleanup grace and observability");
 }
 
 function testSharedObservabilityHelpers(): void {

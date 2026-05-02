@@ -48,6 +48,7 @@ function formatAutoPrunedArchiveMessage(autoPrunedPrefixes) {
 
 const ACTIVE_SUMMARY_STATUSES = new Set(["preparing", "submitted", "waiting"]);
 const DEFAULT_ORACLE_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+const DEFAULT_ACTIVE_JOB_POLL_HINT_SECONDS = 15;
 
 /**
  * @param {string | undefined} value
@@ -100,6 +101,31 @@ function formatHeartbeatFreshness(job, options = {}) {
 }
 
 /**
+ * @param {OracleJobSummaryLike} job
+ * @param {OracleJobSummaryOptions} [options]
+ * @returns {string[]}
+ */
+function formatActiveProgressLines(job, options = {}) {
+  if (!ACTIVE_SUMMARY_STATUSES.has(job.status)) return [];
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const submittedMs = parseTimestamp(job.submittedAt);
+  const createdMs = parseTimestamp(job.createdAt);
+  const phaseMs = parseTimestamp(job.phaseAt);
+  const baselineMs = submittedMs ?? createdMs;
+  const elapsedLine = baselineMs === undefined
+    ? undefined
+    : `elapsed: ${formatElapsed(nowMs - baselineMs)} ${submittedMs !== undefined ? "since submit" : "since create"}`;
+  const phaseElapsedLine = phaseMs === undefined
+    ? undefined
+    : `phase-elapsed: ${formatElapsed(nowMs - phaseMs)} in ${job.phase}`;
+  const pollHintSeconds = Number.isFinite(options.suggestedPollAfterSeconds)
+    ? Math.max(1, Math.round(options.suggestedPollAfterSeconds))
+    : DEFAULT_ACTIVE_JOB_POLL_HINT_SECONDS;
+  const pollHint = `poll-hint: wait about ${pollHintSeconds}s before checking again, or stop and wait for the one-time completion wake-up`;
+  return [elapsedLine, phaseElapsedLine, pollHint].filter(Boolean);
+}
+
+/**
  * @param {{ id: string; status: string }} job
  * @returns {string}
  */
@@ -142,6 +168,7 @@ export function formatOracleJobSummary(job, options = {}) {
     `project: ${job.projectId}`,
     `session: ${job.sessionId}`,
     formatHeartbeatFreshness(job, options),
+    ...formatActiveProgressLines(job, options),
     job.completedAt ? `completed: ${job.completedAt}` : undefined,
     job.followUpToJobId ? `follow-up-to: ${job.followUpToJobId}` : undefined,
     job.chatUrl ? `chat: ${job.chatUrl}` : undefined,
@@ -175,7 +202,8 @@ export function buildOracleWakeupNotificationContent(job, options = {}) {
   const artifactsPath = options.artifactsPath ?? `artifacts unavailable for ${job.id}`;
   return [
     `Oracle job ${job.id} is ${job.status}.`,
-    `Use /oracle-read ${job.id} to inspect the saved response preview. /oracle-status ${job.id} still shows saved job metadata. Agent callers can use oracle_read({ jobId: "${job.id}" }) if they need tool output in the current turn.`,
+    "This is a one-time completion wake-up, not a retry instruction. Do not call oracle_auth, oracle_submit, or oracle_cancel automatically from this wake-up.",
+    `Use /oracle-read ${job.id} to inspect the saved response preview. /oracle-status ${job.id} still shows saved job metadata. Agent callers can use oracle_read({ jobId: "${job.id}" }) once if they need tool output in the current turn.`,
     responseLine,
     `Artifacts: ${artifactsPath}`,
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
@@ -199,7 +227,7 @@ export function formatOracleSubmitResponse(job, options) {
     `Response will be written to: ${job.responsePath}`,
     formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job)) ? `Last event: ${formatOracleLifecycleEvent(getLatestOracleJobLifecycleEvent(job))}` : undefined,
     options.queued ? "The job will start automatically when capacity is available." : undefined,
-    "Stop now and wait for the oracle completion wake-up.",
+    "Do not poll now; wait for the one-time oracle completion wake-up.",
   ]
     .filter(Boolean)
     .join("\n");

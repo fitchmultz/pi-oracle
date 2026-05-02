@@ -71,7 +71,8 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
   preset: Type.Optional(
     Type.String({
       description:
-        "ChatGPT model preset. Omit to use the configured default preset. Canonical ids are preferred; matching human-readable preset labels and common hyphen/space variants are normalized automatically.",
+        `ChatGPT model preset. Omit to use the configured default preset. Canonical ids: ${ORACLE_SUBMIT_PRESET_IDS.join(", ")}. ` +
+        "Matching human-readable preset labels and common hyphen/space variants are normalized automatically.",
     }),
   ),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
@@ -1101,7 +1102,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "For any other submit-time error, stop and report the error instead of retrying automatically.",
       "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
       "After a successful or queued oracle_submit, stop; do not continue the task while the oracle job is running. If oracle_submit failed with retryable archive_too_large, narrow the archive and retry first.",
-      "Use `preset` as the only model-selection parameter on oracle_submit. Canonical ids are preferred, and matching human-readable preset labels are normalized automatically. Omit preset to use the configured default.",
+      "Use `preset` as the only model-selection parameter on oracle_submit. " +
+      `Canonical ids: ${ORACLE_SUBMIT_PRESET_IDS.join(", ")}. ` +
+      "matching human-readable preset labels are normalized automatically. Omit preset to use the configured default.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

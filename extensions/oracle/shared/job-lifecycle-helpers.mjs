@@ -287,9 +287,6 @@ export function markOracleJobNotified(job, options = {}) {
     notificationEntryId: options.notificationEntryId ?? job.notificationEntryId,
     notificationSessionKey: options.notificationSessionKey ?? job.notificationSessionKey,
     notificationSessionFile: options.notificationSessionFile ?? job.notificationSessionFile,
-    wakeupAttemptCount: 0,
-    wakeupLastRequestedAt: undefined,
-    wakeupSettledAt: undefined,
     notifyClaimedAt: undefined,
     notifyClaimedBy: undefined,
   });

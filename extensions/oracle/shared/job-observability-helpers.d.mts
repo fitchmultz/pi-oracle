@@ -4,6 +4,7 @@ export interface OracleJobSummaryLike {
   id: string;
   status: string;
   phase: string;
+  phaseAt?: string;
   createdAt: string;
   queuedAt?: string;
   submittedAt?: string;
@@ -38,6 +39,7 @@ export interface OracleJobSummaryOptions {
   includeWorkerLogPath?: boolean;
   nowMs?: number;
   heartbeatStaleMs?: number;
+  suggestedPollAfterSeconds?: number;
 }
 
 export interface OracleSubmitResponseOptions {

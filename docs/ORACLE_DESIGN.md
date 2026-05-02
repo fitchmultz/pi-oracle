@@ -484,12 +484,12 @@ The extension still uses the same general `pi`-native background completion patt
 - detached worker writes `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-*` state
 - poller scans jobs on an interval
 - completed job durability lives in oracle job state plus saved response/artifact files, not in synthetic session-history assistant messages
-- when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues bounded best-effort wake-up reminders to whichever matching session is currently live
+- when a matching job reaches `complete`, `failed`, or `cancelled`, the poller issues one best-effort wake-up to whichever matching session is currently live, then records `notifiedAt` so later scans do not duplicate the completion message
 - those wake-ups direct the receiver to `/oracle-read [job-id]` as the primary completion-consumption path, while still surfacing saved response/artifact paths as secondary context; `/oracle-status` remains useful for metadata and job-id discovery, and agent callers can still use `oracle_read` when they need tool output in-turn
-- manual `oracle_read`, `/oracle-read`, or `/oracle-status` inspection settles further reminder retries once the terminal job has been opened and persists provenance about which path/session settled the wake-up
-- manual inspection before the first wake-up attempt is recorded separately as observation metadata and does not suppress the first reminder send
+- wake-up content explicitly tells agents not to treat completion as an automatic `oracle_auth`, `oracle_submit`, or `oracle_cancel` retry instruction
+- manual `oracle_read`, `/oracle-read`, or `/oracle-status` inspection after a wake-up persists provenance about which path/session settled the wake-up
 - if no wake-up lands, the job remains available via `/oracle-read`, `/oracle-status`, `oracle_read`, and the saved `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` response/artifact files
-- because completion delivery is best-effort, pruning uses explicit terminal-job age policy instead of pretending a durable session notification happened
+- because completion delivery is best-effort, pruning uses explicit terminal-job age policy plus `notifiedAt`/wakeup state instead of pretending a durable session notification was appended
 - recently sent wake-ups keep response/artifact files retained briefly so follow-up turns do not point at deleted paths if cleanup or pruning races with delivery
 
 ## What was removed by this pivot

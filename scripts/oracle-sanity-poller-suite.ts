@@ -141,13 +141,15 @@ async function testPollerNotification(config: OracleConfig): Promise<void> {
   assert(deliveredJob?.responsePath, "poller notification coverage should retain the response path");
   const notificationText = sent[0]?.content;
   assert(typeof notificationText === "string", "poller should send text wake-up content");
+  assert(notificationText.includes("not a retry instruction"), "poller wake-up content should tell agents not to treat completion wake-ups as automatic retry instructions");
+  assert(notificationText.includes("Do not call oracle_auth, oracle_submit, or oracle_cancel automatically"), "poller wake-up content should prevent automatic auth/submit/cancel actions from completion wake-ups");
   assert(notificationText.includes(`Use /oracle-read ${jobId}`), "poller wake-up content should direct the receiving session to /oracle-read as the primary saved-result path");
   assert(notificationText.includes(`/oracle-status ${jobId}`), "poller wake-up content should still mention /oracle-status as the metadata-oriented fallback path");
   assert(notificationText.includes(`oracle_read({ jobId: \"${jobId}\" })`), "poller wake-up content should still mention oracle_read for agent callers who need tool output in-turn");
   assert(notificationText.includes(`Response file: ${deliveredJob.responsePath}`), "poller wake-up content should still include the persisted response path as secondary context");
   assert(notificationText.includes(`Artifacts: ${getJobDir(jobId)}/artifacts`), "poller wake-up content should still include the persisted artifacts directory");
   assert(!notificationText.includes("Read response:"), "poller wake-up content should not steer the receiver toward a raw response-file read as the primary action");
-  assert(!readJob(jobId)?.notifiedAt, "same-session live pollers should leave jobs unnotified while completion delivery remains best-effort only");
+  assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live pollers should mark one-time completion wake-up delivery as notified");
   await cleanupJob(jobId);
 }
 
@@ -428,8 +430,8 @@ async function testPollerNotificationSkipsContestedSameSessionWriters(config: Or
 
   const deferredSession = SessionManager.open(submitterSessionFile, undefined, process.cwd());
   assert(!findNotificationEntry(deferredSession, jobId), "same-session live pollers should defer durable completion messages instead of appending directly into the active session");
-  assert(!readJob(jobId)?.notifiedAt, "same-session live pollers should leave jobs unnotified while completion delivery is best-effort only");
-  assert(sameSessionSent.length >= 1, `same-session live pollers should still request at least one best-effort wake-up, saw ${sameSessionSent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live pollers should mark one-time completion wake-up delivery as notified");
+  assert(sameSessionSent.length === 1, `same-session live pollers should request exactly one wake-up, saw ${sameSessionSent.length}`);
   stopPollerForSession(submitterSessionFile, process.cwd());
   await updateJob(jobId, (job) => ({
     ...job,
@@ -445,8 +447,8 @@ async function testPollerNotificationSkipsContestedSameSessionWriters(config: Or
 
   const reopenedSubmitterSession = SessionManager.open(submitterSessionFile, undefined, process.cwd());
   assert(!findNotificationEntry(reopenedSubmitterSession, jobId), "off-session adopters should not append durable completion messages into the target session history");
-  assert(!readJob(jobId)?.notifiedAt, "off-session adopters should still leave jobs unnotified while completion delivery is best-effort only");
-  assert(adopterSent.length >= 1, `off-session adopters should still request at least one best-effort wake-up in the adopting live session, saw ${adopterSent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "already-notified jobs should stay marked after an off-session adopter scan");
+  assert(adopterSent.length === 0, `off-session adopters should not duplicate an already-delivered wake-up, saw ${adopterSent.length}`);
   await cleanupJob(jobId);
 }
 
@@ -472,8 +474,8 @@ async function testBranchedSameSessionSkipsDurableNotification(config: OracleCon
   const reopenedSession = SessionManager.open(sessionFile, undefined, process.cwd());
   assert(reopenedSession.getEntries().some((entry) => entry.id === headEntryId), "branched same-session notification handling should preserve the on-disk head entry");
   assert(!findNotificationEntry(reopenedSession, jobId), "branched same-session notification handling should skip durable notification writes while the original session remains the live current session");
-  assert(!readJob(jobId)?.notifiedAt, "branched same-session notification handling should leave the job unnotified while completion delivery is best-effort only");
-  assert(sent.length >= 1, `branched same-session notification handling should still request a best-effort wake-up, saw ${sent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "branched same-session notification handling should mark one-time wake-up delivery as notified");
+  assert(sent.length === 1, `branched same-session notification handling should request exactly one wake-up, saw ${sent.length}`);
   await cleanupJob(jobId);
 }
 
@@ -502,8 +504,8 @@ async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(c
   const deferredSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
   assert(deferredSession.getEntries().length === 0, "pre-assistant same-session notification handling should preserve in-memory-only history by avoiding any direct durable append");
   assert(!findNotificationEntry(deferredSession, jobId), "pre-assistant same-session notification handling should defer durable completion messages while the target session is not durably materialized");
-  assert(liveSent.length >= 1, `pre-assistant same-session notification handling should still request at least one best-effort wake-up, saw ${liveSent.length}`);
-  assert(!readJob(jobId)?.notifiedAt, "pre-assistant same-session notification handling should leave the job unnotified while completion delivery is best-effort only");
+  assert(liveSent.length === 1, `pre-assistant same-session notification handling should request exactly one wake-up, saw ${liveSent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "pre-assistant same-session notification handling should mark one-time wake-up delivery as notified");
 
   appendAssistantMessage(targetSessionManager, "materialize original target session history", { provider: "anthropic", model: "claude-sonnet-4" });
   assert(await pathExists(targetSessionFile), "materializing the original target session should create the durable target session file before adoption");
@@ -522,8 +524,8 @@ async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(c
 
   const reopenedSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
   assert(!findNotificationEntry(reopenedSession, jobId), "off-session adopters should still avoid durable completion-message writes even after the target session later materializes on disk");
-  assert(!readJob(jobId)?.notifiedAt, "off-session adopters should leave the job unnotified while completion delivery remains best-effort only");
-  assert(adopterSent.length >= 1, `off-session adopters should request at least one best-effort wake-up from the adopting session, saw ${adopterSent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "already-notified pre-assistant jobs should remain marked after adopter scans");
+  assert(adopterSent.length === 0, `off-session adopters should not duplicate an already-delivered wake-up, saw ${adopterSent.length}`);
   await cleanupJob(jobId);
 }
 
@@ -550,8 +552,8 @@ async function testPreAssistantBranchedSameSessionSkipsDurableNotification(confi
   const skippedSession = SessionManager.open(sessionFile, undefined, process.cwd());
   assert(skippedSession.getEntries().length === 0, "pre-assistant branched same-session notification handling should not flush hidden history by attempting a direct durable append from an older leaf");
   assert(!findNotificationEntry(skippedSession, jobId), "pre-assistant branched same-session notification handling should skip durable notification writes while the live leaf is behind newer in-memory history");
-  assert(!readJob(jobId)?.notifiedAt, "pre-assistant branched same-session notification handling should leave the job unnotified while completion delivery is best-effort only");
-  assert(sent.length >= 1, `pre-assistant branched same-session notification handling should still request at least one best-effort wake-up, saw ${sent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "pre-assistant branched same-session notification handling should mark one-time wake-up delivery as notified");
+  assert(sent.length === 1, `pre-assistant branched same-session notification handling should request exactly one wake-up, saw ${sent.length}`);
 
   branchedSessionManager.branch(modelEntryId);
   await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(branchedSessionManager), "/tmp/fake-oracle-worker.mjs");
@@ -584,8 +586,8 @@ async function testNotificationMessagePreservesSessionModel(config: OracleConfig
   const modelAfter = reopenedSession.buildSessionContext().model;
   assert(modelAfter?.provider === modelBefore.provider && modelAfter?.modelId === modelBefore.modelId, "best-effort-only completion delivery should preserve the target-session model used for resume");
   assert(!findNotificationEntry(reopenedSession, jobId), "best-effort-only completion delivery should not append a synthetic assistant notification message into the target session");
-  assert(!readJob(jobId)?.notifiedAt, "best-effort-only completion delivery should leave the job unnotified while no durable session-history append exists");
-  assert(sent.length >= 1, `expected notification model preservation test to request at least one wake-up, saw ${sent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "one-time wake-up delivery should mark the job notified even without durable session-history append");
+  assert(sent.length === 1, `expected notification model preservation test to request exactly one wake-up, saw ${sent.length}`);
   await cleanupJob(jobId);
 }
 
@@ -612,7 +614,7 @@ async function testPollerNotificationAdoptsOrphanedSessionJobs(config: OracleCon
   assert(!findNotificationEntry(SessionManager.open(submitterSessionFile, undefined, process.cwd()), jobId), "adopted orphaned jobs should not append a durable completion message into the original target session under the wake-up-only model");
   assert(sent.length >= 1, `expected orphaned job to trigger at least one wake-up request, saw ${sent.length}`);
   assert((sent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "live poller should notify for orphaned jobs in the same project");
-  assert(!readJob(jobId)?.notifiedAt, "adopted orphaned jobs should remain unnotified while completion delivery is best-effort only");
+  assert(Boolean(readJob(jobId)?.notifiedAt), "adopted orphaned jobs should mark one-time wake-up delivery as notified");
   await cleanupJob(jobId);
 }
 
@@ -931,9 +933,9 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveAfterClaim
     await waitForPidExit(holderPid);
 
     await scanOracleJobsOnce(submitterPi as unknown as ExtensionAPI, submitterCtx, "/tmp/fake-oracle-worker.mjs");
-    assert(submitterSent.length >= 1, `expected the original session to receive at least one best-effort wake-up after becoming live, saw ${submitterSent.length}`);
+    assert(submitterSent.length === 1, `expected the original session to receive exactly one wake-up after becoming live, saw ${submitterSent.length}`);
     assert((submitterSent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "original session should receive the expected job wake-up after reclaiming liveness");
-    assert(!readJob(jobId)?.notifiedAt, "same-session live wake-up handling should still defer notification finalization under the best-effort-only model");
+    assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live wake-up handling should mark reclaimed one-time delivery as notified");
     assert(!findNotificationEntry(submitterSessionManager, jobId), "same-session live wake-up handling should not append a durable completion message directly into the active session after reclaiming liveness");
   } finally {
     stopPollerForSession(liveSessionFile, ctx.cwd);
@@ -1012,9 +1014,9 @@ async function testPollerDoesNotStealNotificationWhenOriginBecomesLiveBeforePers
     await waitForPidExit(holderPid);
 
     await scanOracleJobsOnce(submitterPi as unknown as ExtensionAPI, submitterCtx, "/tmp/fake-oracle-worker.mjs");
-    assert(submitterSent.length >= 1, `expected the original session to receive at least one best-effort wake-up after reclaiming liveness before append, saw ${submitterSent.length}`);
+    assert(submitterSent.length === 1, `expected the original session to receive exactly one wake-up after reclaiming liveness before append, saw ${submitterSent.length}`);
     assert((submitterSent[0]?.details as { jobId?: string } | undefined)?.jobId === jobId, "original session should receive the expected job wake-up after reclaiming liveness before append");
-    assert(!readJob(jobId)?.notifiedAt, "same-session live wake-up handling should still defer notification finalization after late revalidation hands notification back");
+    assert(Boolean(readJob(jobId)?.notifiedAt), "same-session live wake-up handling should mark late-revalidated one-time delivery as notified");
     assert(!findNotificationEntry(submitterSessionManager, jobId), "same-session live wake-up handling should not append a durable completion message directly into the active session after late revalidation hands notification back");
   } finally {
     stopPollerForSession(liveSessionFile, ctx.cwd);
@@ -1060,8 +1062,8 @@ async function testOffSessionWakeupsDoNotWriteTargetSessionHistory(config: Oracl
   assert(reopenedSession.getEntries().some((entry) => entry.id === headEntryId), "off-session wake-up-only handling should preserve the original target-session head entry");
   assert(peerEntryId && reopenedSession.getEntries().some((entry) => entry.id === peerEntryId), "off-session wake-up-only handling should preserve concurrent peer session writes in the target history");
   assert(!findNotificationEntry(reopenedSession, jobId), "off-session wake-up-only handling should not append a durable oracle completion message into the target session");
-  assert(!readJob(jobId)?.notifiedAt, "off-session wake-up-only handling should leave the job unnotified while no durable session-history append exists");
-  assert(sent.length >= 1, `off-session wake-up-only handling should still request at least one best-effort wake-up, saw ${sent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "off-session wake-up-only handling should mark one-time wake-up delivery as notified without writing target history");
+  assert(sent.length === 1, `off-session wake-up-only handling should request exactly one wake-up, saw ${sent.length}`);
   await cleanupJob(jobId);
 }
 
@@ -1083,8 +1085,8 @@ async function testNotificationClaimRecoveryDoesNotDuplicateWakeups(config: Orac
   const staleRecoveryCtx = createPollerCtx(SessionManager.open(adopterSessionFile, undefined, process.cwd()));
 
   await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
-  assert(sent.length === 1, `first wake-up-only recovery attempt should emit one best-effort wake-up, saw ${sent.length}`);
-  assert(!readJob(jobId)?.notifiedAt, "wake-up-only recovery should leave the job unnotified after the first wake-up attempt");
+  assert(sent.length === 1, `first wake-up-only recovery attempt should emit one wake-up, saw ${sent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "wake-up-only recovery should mark the job notified after the first wake-up attempt");
   assert(!findNotificationEntry(SessionManager.open(targetSessionFile, undefined, process.cwd()), jobId), "wake-up-only recovery should not create a durable completion message in the target session");
 
   await updateJob(jobId, (job) => ({
@@ -1094,8 +1096,8 @@ async function testNotificationClaimRecoveryDoesNotDuplicateWakeups(config: Orac
     wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
   }));
   await scanOracleJobsOnce(pi as unknown as ExtensionAPI, staleRecoveryCtx, "/tmp/fake-oracle-worker.mjs");
-  assert(sent.length >= 2, `recovered wake-up-only delivery should emit an additional best-effort wake-up after claim handoff, saw ${sent.length}`);
-  assert(!readJob(jobId)?.notifiedAt, "wake-up-only recovery should still leave the job unnotified after subsequent best-effort wake-up attempts");
+  assert(sent.length === 1, `already-notified recovery scans should not emit duplicate wake-ups after claim handoff, saw ${sent.length}`);
+  assert(Boolean(readJob(jobId)?.notifiedAt), "wake-up-only recovery should keep the job notified after subsequent scans");
   await cleanupJob(jobId);
 }
 
@@ -1318,7 +1320,7 @@ async function testOracleCleanHonorsPostSendWakeupGrace(config: OracleConfig): P
   }
 }
 
-async function testPollerWakeupRetriesStayBoundedWithoutDurableNotifications(config: OracleConfig): Promise<void> {
+async function testPollerWakeupDeliveryIsDedupedWithoutDurableNotifications(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const sessionManager = createPersistedSessionManager("poller-wakeup-retry-target");
   const sessionFile = sessionManager.getSessionFile();
@@ -1334,34 +1336,17 @@ async function testPollerWakeupRetriesStayBoundedWithoutDurableNotifications(con
 
   await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
   assert(sent.length >= 1, `expected at least one best-effort wake-up request after the first scan, saw ${sent.length}`);
-  assert(!findNotificationEntry(SessionManager.open(sessionFile, undefined, process.cwd()), jobId), "wake-up retries should not create durable completion messages under the best-effort-only model");
-  assert(readJob(jobId)?.wakeupAttemptCount === 1, "first wake-up attempt should record a single best-effort reminder request");
+  assert(!findNotificationEntry(SessionManager.open(sessionFile, undefined, process.cwd()), jobId), "one-time wake-up delivery should not create durable completion messages under the best-effort-only model");
+  assert(readJob(jobId)?.wakeupAttemptCount === 1, "first wake-up attempt should record a single reminder request");
+  assert(Boolean(readJob(jobId)?.notifiedAt), "first wake-up attempt should mark the job notified for dedupe");
 
   await updateJob(jobId, (job) => ({
     ...job,
     wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
   }));
   await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
-  assert(sent.length >= 2, `expected a second best-effort wake-up retry after backoff, saw ${sent.length}`);
-  assert(readJob(jobId)?.wakeupAttemptCount === 2, "wake-up retries should increment the best-effort reminder counter without durable completion messages");
-
-  await updateJob(jobId, (job) => ({
-    ...job,
-    wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-  }));
-  await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
-  assert(sent.length >= 3, `expected a third bounded best-effort wake-up retry after backoff, saw ${sent.length}`);
-  assert(readJob(jobId)?.wakeupAttemptCount === 3, "bounded wake-up retries should stop after the configured maximum attempts");
-
-  await updateJob(jobId, (job) => ({
-    ...job,
-    wakeupLastRequestedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-  }));
-  await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(sessionManager), "/tmp/fake-oracle-worker.mjs");
-  const wakeupAttemptsAtLimit = sent.length;
-  assert(wakeupAttemptsAtLimit >= 3, `wake-up retries should reach the configured maximum attempts before stopping, saw ${wakeupAttemptsAtLimit}`);
-  assert(sent.length === wakeupAttemptsAtLimit, `wake-up retries should stop once the configured maximum attempts is reached, saw ${sent.length}`);
-  assert(!readJob(jobId)?.notifiedAt, "bounded wake-up retries should leave the job unnotified while no durable completion message exists");
+  assert(sent.length === 1, `notified jobs should not emit a second wake-up after backoff, saw ${sent.length}`);
+  assert(readJob(jobId)?.wakeupAttemptCount === 1, "deduped wake-up scans should not increment the reminder counter after notification");
 
   await cleanupJob(jobId);
 }
@@ -1395,5 +1380,5 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testClaimedJobsBlockRemovalBeforeWakeup(config);
   await testPostSendWakeupGraceBlocksPrune(config);
   await testOracleCleanHonorsPostSendWakeupGrace(config);
-  await testPollerWakeupRetriesStayBoundedWithoutDurableNotifications(config);
+  await testPollerWakeupDeliveryIsDedupedWithoutDurableNotifications(config);
 }

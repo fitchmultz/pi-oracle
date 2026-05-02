@@ -15,6 +15,7 @@ import {
   hasPersistedOriginSession,
   isActiveOracleJob,
   listOracleJobDirs,
+  markJobNotified,
   noteWakeupRequested,
   readJob,
   recordNotificationTarget,
@@ -324,7 +325,6 @@ async function scan(
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
       }
-      requestWakeupTurn(pi, deliverable);
       const notedWakeup = await noteWakeupRequested(jobId);
       if (!notedWakeup) {
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
@@ -334,6 +334,13 @@ async function scan(
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
       }
+      await hooks.beforeMarkJobNotified?.(deliverable);
+      await markJobNotified(jobId, notificationClaimant, {
+        notificationSessionKey: pollerKey,
+        notificationSessionFile: currentSessionFile,
+      });
+      if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
+      requestWakeupTurn(pi, deliverable);
       if (snapshot.hasUI) {
         snapshot.ui.notify(`Oracle job ${claimed.id} is ${claimed.status}.`, "info");
       }
