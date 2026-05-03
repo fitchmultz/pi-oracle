@@ -114,7 +114,8 @@ export function classifyChatAuthPage(args) {
       state: "login_required",
       message:
         `Synced cookies from ${args.cookieSourceLabel}, but ChatGPT still rejected the session ` +
-        `(status=${args.probe?.status ?? 0}). Check auth.chromeProfile/auth.chromeCookiePath and inspect ${args.logPath}.`,
+        `(status=${args.probe?.status ?? 0}); the cookie DB may be stale, from the wrong browser profile, or for an account that is logged out. ` +
+        `Check auth.chromeProfile/auth.chromeCookiePath/auth.chromiumKeychain and inspect ${args.logPath}.`,
     };
   }
 
@@ -131,7 +132,8 @@ export function classifyChatAuthPage(args) {
       state: "login_required",
       message:
         `Synced cookies from ${args.cookieSourceLabel}, but ChatGPT still rejected the session ` +
-        `(status=${args.probe?.status ?? 0}). Check auth.chromeProfile/auth.chromeCookiePath and inspect ${args.logPath}.`,
+        `(status=${args.probe?.status ?? 0}); the cookie DB may be stale, from the wrong browser profile, or for an account that is logged out. ` +
+        `Check auth.chromeProfile/auth.chromeCookiePath/auth.chromiumKeychain and inspect ${args.logPath}.`,
     };
   }
 
