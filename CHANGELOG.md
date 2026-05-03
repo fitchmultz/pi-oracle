@@ -4,6 +4,7 @@
 
 ### Fixed
 - anchored the `oracle_submit.files[]` schema pattern so OpenAI-compatible parsers that require anchored JSON Schema regexes, including llama.cpp, can load the oracle tools
+- made background poller queued-job promotion best-effort under normal global admission-lock contention, avoiding noisy scan failures when multiple pi sessions are live
 
 ## 0.6.14 - 2026-05-02
 

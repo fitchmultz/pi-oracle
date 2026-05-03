@@ -246,7 +246,11 @@ async function scan(
   }
   if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
-  await promoteQueuedJobs({ workerPath, source: "poller" });
+  try {
+    await promoteQueuedJobs({ workerPath, source: "poller", lockTimeoutMs: POLLER_LOCK_TIMEOUT_MS });
+  } catch (error) {
+    if (!isLockTimeoutError(error, "admission", "global")) throw error;
+  }
   if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
   const terminalJobs = listOracleJobDirs()
