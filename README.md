@@ -223,6 +223,17 @@ Project config should only override safe, non-privileged settings.
 - Re-run `/oracle-auth`.
 - If ChatGPT is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
 
+### Custom Chromium auth says cookies synced but the session is rejected
+
+This usually means the cookie import worked but the source cookies are not the active ChatGPT session you expected.
+
+1. Open the configured browser profile.
+2. Confirm ChatGPT works there without logging in again.
+3. Quit the browser fully so its `Cookies` DB is stable.
+4. Confirm `auth.chromeCookiePath` points at that exact profile's `Cookies` DB.
+5. Confirm `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service for that DB.
+6. Re-run `/oracle-auth`.
+
 ### You hit a challenge / verification page
 
 - Solve it in the auth/bootstrap browser if prompted.

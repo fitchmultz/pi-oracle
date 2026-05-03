@@ -67,9 +67,9 @@ function readScopedJob(jobId: string, cwd: string) {
 
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
-    description: "Sync ChatGPT cookies from real Chrome into the oracle auth seed profile",
+    description: "Sync ChatGPT cookies from the configured local browser profile into the oracle auth seed profile",
     handler: async (_args, ctx) => {
-      ctx.ui.notify("Syncing ChatGPT cookies from real Chrome into the oracle auth seed profile…", "info");
+      ctx.ui.notify("Syncing ChatGPT cookies from the configured local browser profile into the oracle auth seed profile…", "info");
       try {
         const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd);
         ctx.ui.notify(result, "info");

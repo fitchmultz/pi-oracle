@@ -906,6 +906,9 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     );
 
     assert(result.code !== 0, "auth bootstrap config-guidance test should fail when source cookies are unavailable");
+    assert(result.stderr.includes("Oracle auth failed."), "auth bootstrap failure guidance should start with a compact failure summary");
+    assert(result.stderr.includes("Likely causes:"), "auth bootstrap failure guidance should include scannable likely causes");
+    assert(result.stderr.includes("Next:"), "auth bootstrap failure guidance should include concrete next steps");
     assert(result.stderr.includes(configLoad.effectiveAuthConfigPath), "auth bootstrap failure guidance should point at the effective agent config path for the active PI_CODING_AGENT_DIR");
     assert(result.stderr.includes(configLoad.projectConfigPath), "auth bootstrap failure guidance should mention the loaded project config path when one is present");
     assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");

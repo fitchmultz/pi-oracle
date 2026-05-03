@@ -73,7 +73,7 @@ The extension now follows the current `pi` session lifecycle model:
 ### Commands
 
 - `/oracle-auth`
-  - syncs ChatGPT cookies from the user’s real Chrome into the isolated oracle profile and verifies them there
+  - syncs ChatGPT cookies from the configured local browser profile into the isolated oracle profile and verifies them there
 - `/oracle-read [job-id]`
   - shows job status plus the saved response preview
 - `/oracle-status [job-id]`

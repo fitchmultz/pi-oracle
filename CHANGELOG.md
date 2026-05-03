@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- made `/oracle-auth` success and failure output easier to scan, with compact source summaries and source-specific troubleshooting for configured Chromium cookie sources
+
 ## 0.6.15 - 2026-05-03
 
 ### Fixed

@@ -463,11 +463,95 @@ function cookieSource() {
   return config.auth.chromeCookiePath || config.auth.chromeProfile;
 }
 
+function usesConfiguredChromiumCookieSource() {
+  return Boolean(config.auth.chromeCookiePath && config.auth.chromiumKeychain);
+}
+
+function browserSourceName() {
+  if (config.browser.executablePath) return basename(config.browser.executablePath);
+  if (usesConfiguredChromiumCookieSource()) return "configured Chromium browser";
+  return "Google Chrome";
+}
+
+function keychainSummary() {
+  const keychain = config.auth.chromiumKeychain;
+  if (!keychain) return undefined;
+  const services = Array.isArray(keychain.services) && keychain.services.length > 0 ? keychain.services.join(", ") : "(none configured)";
+  const label = keychain.label || services;
+  return `${label} (account: ${keychain.account}, services: ${services})`;
+}
+
 function cookieSourceLabel() {
-  if (config.auth.chromeCookiePath && config.auth.chromiumKeychain) return `Chromium cookie DB ${config.auth.chromeCookiePath}`;
+  if (usesConfiguredChromiumCookieSource()) return `configured Chromium cookie DB ${config.auth.chromeCookiePath}`;
   return config.auth.chromeCookiePath
     ? `Chrome cookie DB ${config.auth.chromeCookiePath}`
     : `Chrome profile ${config.auth.chromeProfile}`;
+}
+
+function formatAuthSuccessMessage({ classificationMessage, appliedCount, targetDir }) {
+  const lines = [
+    "Oracle auth synced.",
+    "",
+    "Source:",
+    `- Browser: ${browserSourceName()}`,
+  ];
+
+  if (config.auth.chromeCookiePath) lines.push(`- Cookie DB: ${config.auth.chromeCookiePath}`);
+  else lines.push(`- Profile: ${config.auth.chromeProfile}`);
+
+  const keychain = keychainSummary();
+  if (keychain) lines.push(`- Keychain: ${keychain}`);
+  lines.push(`- Cookies synced: ${appliedCount}`);
+  lines.push("", "Auth seed profile:", targetDir, "", "Diagnostics:", DIAGNOSTICS_DIR, "", "Status:", classificationMessage);
+  return lines.join("\n");
+}
+
+function formatAuthFailureGuidance(error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  const lines = ["Oracle auth failed.", "", `Reason: ${reason}`, "", "Likely causes:"];
+
+  if (usesConfiguredChromiumCookieSource()) {
+    lines.push(
+      "- the configured cookie DB is stale or from the wrong browser profile",
+      "- ChatGPT is logged out in that browser profile",
+      "- auth.chromiumKeychain does not match the browser safe-storage item for that cookie DB",
+      "- the target browser was still running while /oracle-auth read its Cookies DB",
+      "",
+      "Next:",
+      "1. Open the configured browser profile.",
+      "2. Confirm ChatGPT works there.",
+      "3. Quit the browser fully.",
+      "4. Confirm auth.chromeCookiePath points at that profile's Cookies DB.",
+      "5. Confirm auth.chromiumKeychain.services names the browser's safe-storage Keychain service.",
+      "6. Re-run /oracle-auth.",
+    );
+  } else {
+    lines.push(
+      "- ChatGPT is logged out in the configured local browser profile",
+      "- auth.chromeProfile or auth.chromeCookiePath points at the wrong profile",
+      "- the profile cookie store is stale or unreadable",
+      "",
+      "Next:",
+      "1. Open the configured local browser profile.",
+      "2. Confirm ChatGPT works there.",
+      "3. Quit the browser fully.",
+      "4. Re-run /oracle-auth.",
+    );
+  }
+
+  lines.push(
+    "",
+    "Details:",
+    `- Source: ${cookieSourceLabel()}`,
+    `- Browser: ${browserSourceName()}`,
+    `- Auth seed profile: ${config.browser.authSeedProfileDir}`,
+    `- Diagnostics: ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}`,
+    `- Log: ${LOG_PATH}`,
+    "",
+    authConfigSummary(),
+  );
+
+  return lines.join("\n");
 }
 
 async function readRawSourceCookies() {
@@ -825,9 +909,7 @@ async function run() {
       const generation = new Date().toISOString();
       await writeFile(join(profilePlan.targetDir, ".oracle-seed-generation"), `${generation}\n`, { encoding: "utf8", mode: 0o600 });
       committedProfile = true;
-      process.stdout.write(
-        `${classification.message} Synced ${appliedCount} cookies into ${profilePlan.targetDir}. Diagnostics: ${DIAGNOSTICS_DIR}`,
-      );
+      process.stdout.write(formatAuthSuccessMessage({ classificationMessage: classification.message, appliedCount, targetDir: profilePlan.targetDir }));
     } catch (error) {
       shouldPreserveBrowser = Boolean(error && typeof error === "object" && error.preserveBrowser === true);
       await log(`Auth bootstrap failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -843,8 +925,6 @@ async function run() {
 }
 
 run().catch((error) => {
-  process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\nSee ${LOG_PATH} and diagnostics in ${DIAGNOSTICS_DIR || "(oracle-auth diagnostics dir unavailable)"}\n${authConfigSummary()}\nIf needed, ensure the configured browser profile is already logged into ChatGPT and grant macOS Keychain access when prompted.`,
-  );
+  process.stderr.write(formatAuthFailureGuidance(error));
   process.exit(1);
 });
