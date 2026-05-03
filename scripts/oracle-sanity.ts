@@ -1,12 +1,14 @@
+// @rust-exception rationale: pi-oracle sanity coverage imports TypeScript extension modules directly; rewriting this harness in Rust would block exercising the platform-native Pi extension surface.
 // Purpose: Run local regression checks for the pi oracle extension.
 // Responsibilities: Exercise config, locking, queueing, worker, tool schema, and documentation contracts without remote CI.
 // Scope: Sanity-test orchestration only; production behavior remains in extensions/oracle and prompts/docs.
 // Usage: Invoked by npm run sanity:oracle through scripts/oracle-sanity-runner.mjs.
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { basename, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
@@ -24,6 +26,7 @@ import {
   type OracleSubmitPresetId,
 } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
+import { getCookiesFromConfiguredChromiumSource } from "../extensions/oracle/worker/chromium-cookie-source.mjs";
 import { extractArtifactLabels, filterStructuralArtifactCandidates, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
@@ -816,6 +819,42 @@ while :; do sleep 1; done
   }
 }
 
+async function testConfigRejectsPartialChromiumKeychain(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-chromium-config-"));
+  const agentExtensionsDir = join(fixtureDir, "agent", "extensions");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    process.env.PI_CODING_AGENT_DIR = join(fixtureDir, "agent");
+
+    await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
+      auth: {
+        chromiumKeychain: {
+          account: "Helium",
+          services: ["Helium Storage Key"],
+        },
+      },
+    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    assertThrows(() => loadOracleConfig(process.cwd()), "config should reject chromiumKeychain without chromeCookiePath to avoid silently falling back to another browser source", "auth.chromiumKeychain requires auth.chromeCookiePath");
+
+    await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
+      auth: {
+        chromeCookiePath: join(fixtureDir, "Cookies"),
+        chromiumKeychain: {
+          account: "Helium",
+          services: [],
+        },
+      },
+    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    assertThrows(() => loadOracleConfig(process.cwd()), "config should reject empty Chromium keychain services", "auth.chromiumKeychain.services must include at least one service name");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-config-guidance-"));
   const projectDir = join(fixtureDir, "project");
@@ -870,6 +909,7 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     assert(result.stderr.includes(configLoad.effectiveAuthConfigPath), "auth bootstrap failure guidance should point at the effective agent config path for the active PI_CODING_AGENT_DIR");
     assert(result.stderr.includes(configLoad.projectConfigPath), "auth bootstrap failure guidance should mention the loaded project config path when one is present");
     assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");
+    assert(result.stderr.includes("auth.chromiumKeychain"), "auth bootstrap failure guidance should mention configured Chromium keychain support");
     assert(!result.stderr.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap failure guidance should not hardcode the default global config path under isolated agent dirs");
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -2715,6 +2755,125 @@ async function testQueuedPromotionSkipsConversationBlockedJobs(config: OracleCon
 }
 
 
+function encryptChromiumCookieValue(value: string, password: string, options: { hashPrefix?: boolean } = {}): Buffer {
+  const key = pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
+  const iv = Buffer.alloc(16, 0x20);
+  const cipher = createCipheriv("aes-128-cbc", key, iv);
+  cipher.setAutoPadding(false);
+  const plain = options.hashPrefix ? Buffer.concat([Buffer.alloc(32, 0x01), Buffer.from(value, "utf8")]) : Buffer.from(value, "utf8");
+  const remainder = plain.length % 16;
+  const padding = remainder === 0 ? 16 : 16 - remainder;
+  const padded = Buffer.concat([plain, Buffer.alloc(padding, padding)]);
+  return Buffer.concat([Buffer.from("v10"), cipher.update(padded), cipher.final()]);
+}
+
+async function testChromiumCookieSourceReadsConfiguredKeychain(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-chromium-cookie-source-"));
+  const binDir = join(fixtureDir, "bin");
+  const dbPath = join(fixtureDir, "Cookies");
+  const originalPath = process.env.PATH;
+  const keychainPassword = "helium-test-storage-key";
+
+  try {
+    await mkdir(binDir, { recursive: true, mode: 0o700 });
+    await writeExecutableScript(
+      join(binDir, "security"),
+      `#!/bin/sh
+printf '%s\\n' ${shellQuote(keychainPassword)}
+`,
+    );
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec("CREATE TABLE meta (key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR);");
+      db.prepare("INSERT INTO meta (key, value) VALUES ('version', '24')").run();
+      db.exec(`CREATE TABLE cookies (
+        creation_utc INTEGER NOT NULL,
+        host_key TEXT NOT NULL,
+        top_frame_site_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        value TEXT NOT NULL,
+        encrypted_value BLOB NOT NULL,
+        path TEXT NOT NULL,
+        expires_utc INTEGER NOT NULL,
+        is_secure INTEGER NOT NULL,
+        is_httponly INTEGER NOT NULL,
+        last_access_utc INTEGER NOT NULL,
+        has_expires INTEGER NOT NULL,
+        is_persistent INTEGER NOT NULL,
+        priority INTEGER NOT NULL,
+        samesite INTEGER NOT NULL,
+        source_scheme INTEGER NOT NULL,
+        source_port INTEGER NOT NULL,
+        is_same_party INTEGER NOT NULL
+      );`);
+      const insertCookie = db.prepare(`INSERT INTO cookies (
+        creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, expires_utc,
+        is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite,
+        source_scheme, source_port, is_same_party
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`);
+      insertCookie.run(
+        0,
+        ".chatgpt.com",
+        "",
+        "__Secure-next-auth.session-token.0",
+        "",
+        encryptChromiumCookieValue("stale-session-from-helium", keychainPassword, { hashPrefix: true }),
+        "/",
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        2,
+        443,
+        0,
+      );
+      insertCookie.run(
+        1,
+        ".chatgpt.com",
+        "",
+        "__Secure-next-auth.session-token.0",
+        "",
+        encryptChromiumCookieValue("session-from-helium", keychainPassword, { hashPrefix: true }),
+        "/",
+        14_000_000_000_000_000,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        443,
+        0,
+      );
+    } finally {
+      db.close();
+    }
+
+    process.env.PATH = `${binDir}:${originalPath}`;
+    const result = await getCookiesFromConfiguredChromiumSource({
+      dbPath,
+      keychain: { account: "Helium", services: ["Helium Storage Key"], label: "Helium Storage Key" },
+      origins: ["https://chatgpt.com"],
+      profile: "Default",
+    });
+
+    assert(result.warnings.length === 0, `expected no Chromium cookie warnings, saw ${result.warnings.join(" | ")}`);
+    const sessionCookies = result.cookies.filter((cookie) => cookie.name === "__Secure-next-auth.session-token.0");
+    assert(sessionCookies.length === 1, `Chromium cookie source should dedupe duplicate browser session cookies, saw ${sessionCookies.length}`);
+    assert(sessionCookies[0]?.value === "session-from-helium", "Chromium cookie source should strip Chromium v24 host-hash prefixes and preserve the newest duplicate browser session cookie by expiry ordering");
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 function testAuthCookiePolicy(): void {
   const rawCookies: ImportedAuthCookie[] = [
     { name: "__Secure-next-auth.session-token.0", value: "session-a", domain: ".chatgpt.com", path: "/", secure: true, httpOnly: true, sameSite: "Lax" },
@@ -3118,6 +3277,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!recoveryDrillSource.includes("/tmp/oracle-auth.log"), "recovery drill should not reference the old fixed oracle-auth log path");
   assert(designSource.includes("`preset` is the only model-selection parameter"), "design doc should state preset is the only selector");
   assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
+  assert(designSource.includes("chromiumKeychain"), "design doc should document configured Chromium keychain cookie sources");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
@@ -3147,6 +3307,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("Agent preflights, then gathers a context-rich relevant repo slice"), "README high-level flow should reflect the context-rich /oracle path");
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
   assert(readmeSource.includes("`oracle_auth`"), "README should document the oracle_auth agent-facing tool");
+  assert(readmeSource.includes("chromiumKeychain"), "README should document configured Chromium keychain cookie sources");
   assert(readmeSource.includes("oracle_auth({})"), "README should explain that agent callers can refresh stale oracle auth through oracle_auth before retrying once");
   assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
   assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");
@@ -4804,12 +4965,15 @@ async function testPollerHostSafety(): Promise<void> {
 async function main() {
   await ensureNoActiveJobs();
   assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
+  assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
   const config: OracleConfig = {
     ...DEFAULT_CONFIG,
     browser: { ...DEFAULT_CONFIG.browser, maxConcurrentJobs: 1 },
   };
 
   testAuthCookiePolicy();
+  await testConfigRejectsPartialChromiumKeychain();
+  await testChromiumCookieSourceReadsConfiguredKeychain();
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
   await testCleanupPendingRecoveryTerminatesStaleLiveWorker(config);

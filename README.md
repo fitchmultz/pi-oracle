@@ -97,7 +97,7 @@ If concurrency is full, the job is queued and starts automatically later.
 User-facing commands:
 - `/oracle <request>` — prompt template that tells the agent to gather context and dispatch an oracle job
 - `/oracle-followup <job-id> <request>` — prompt template that continues an earlier oracle job in the same ChatGPT thread
-- `/oracle-auth` — sync ChatGPT cookies from your real Chrome profile into the isolated oracle auth profile
+- `/oracle-auth` — sync ChatGPT cookies from your configured local browser profile into the isolated oracle auth profile
 - `/oracle-read [job-id]` — inspect job status plus the saved response preview
 - `/oracle-status [job-id]` — inspect job status and list recent job ids when no explicit id is given
 - `/oracle-cancel <job-id>` — cancel a queued or active job by id
@@ -112,7 +112,7 @@ Agent-facing tools:
 
 ## Minimal config
 
-Most users can start with the packaged defaults and only set the Chrome profile if needed.
+Most users can start with the packaged defaults and only set the browser profile if needed.
 
 `~/.pi/agent/extensions/oracle.json`
 
@@ -132,6 +132,27 @@ Notes:
 - The canonical preset ids live in `extensions/oracle/lib/config.ts`.
 - If the packaged default is fine, you can omit `defaults.preset` entirely.
 - You usually do not need to set browser paths unless auto-detection fails.
+
+For a Chromium-family browser that is not one of `@steipete/sweet-cookie`'s built-in Chrome/Brave/Arc/Chromium targets, point oracle at the browser executable, cookie DB, and macOS Keychain safe-storage item:
+
+```json
+{
+  "browser": {
+    "executablePath": "/Applications/Helium.app/Contents/MacOS/Helium"
+  },
+  "auth": {
+    "chromeProfile": "Default",
+    "chromeCookiePath": "/Users/you/Library/Application Support/net.imput.helium/Default/Cookies",
+    "chromiumKeychain": {
+      "account": "Helium",
+      "services": ["Helium Storage Key"],
+      "label": "Helium Storage Key"
+    }
+  }
+}
+```
+
+`auth.chromeCookiePath` remains the cookie database path for backward compatibility. When `auth.chromiumKeychain` is present, `/oracle-auth` uses pi-oracle's repo-owned generic Chromium cookie reader instead of patching `@steipete/sweet-cookie` internals.
 
 ## Available presets
 
@@ -173,8 +194,8 @@ Project config should only override safe, non-privileged settings.
 
 - macOS
 - Node.js 22 or newer
-- Google Chrome installed
-- ChatGPT already signed into a local Chrome profile
+- Google Chrome or another Chromium-family browser installed
+- ChatGPT already signed into the configured local browser profile
 - `pi` 0.65.0 or newer
 - `agent-browser` available on the machine
 - `tar` and `zstd` available
@@ -183,7 +204,7 @@ Project config should only override safe, non-privileged settings.
 
 ### `/oracle-auth` fails or says login is required
 
-- Make sure ChatGPT works in the same local Chrome profile you configured.
+- Make sure ChatGPT works in the same local browser profile you configured.
 - Re-run `/oracle-auth`.
 - If ChatGPT is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
 
