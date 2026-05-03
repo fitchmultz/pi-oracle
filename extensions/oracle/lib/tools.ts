@@ -63,7 +63,7 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
   files: Type.Array(Type.String({
     description: "Project-relative file or directory path to include in the archive.",
     minLength: 1,
-    pattern: ".*\\S.*",
+    pattern: "^.*\\S.*$",
   }), {
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,

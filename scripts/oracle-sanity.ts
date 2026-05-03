@@ -3050,9 +3050,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const preflightProperties = asRecord(asRecord(preflightTool.parameters)?.properties);
   const authProperties = asRecord(asRecord(authTool.parameters)?.properties);
   const submitProperties = asRecord(asRecord(submitTool.parameters)?.properties);
+  const submitFilesItems = asRecord(asRecord(submitProperties?.files)?.items);
   assert(preflightProperties !== undefined, "oracle preflight tool should expose an object schema");
   assert(authProperties !== undefined, "oracle auth tool should expose an object schema");
   assert(submitProperties, "oracle submit tool should expose an object schema");
+  assert(submitFilesItems?.pattern === "^.*\\S.*$", "oracle submit files schema pattern should be anchored for OpenAI-compatible parser compatibility");
   const representativePresetAliases: [string, OracleSubmitPresetId][] = [
     ["Pro-standard", "pro_standard"],
     ["Pro-extended", "pro_extended"],

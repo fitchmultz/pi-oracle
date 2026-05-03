@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- anchored the `oracle_submit.files[]` schema pattern so OpenAI-compatible parsers that require anchored JSON Schema regexes, including llama.cpp, can load the oracle tools
+
 ## 0.6.14 - 2026-05-02
 
 ### Fixed
