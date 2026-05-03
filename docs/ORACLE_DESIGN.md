@@ -127,9 +127,10 @@ Auth bootstrap flow:
 
 1. load oracle config
 2. acquire the global auth-maintenance lock
-3. read ChatGPT cookies directly from the user’s real Chrome cookie store in read-only mode
+3. read ChatGPT cookies directly from the configured local browser cookie store in read-only mode
    - configurable source profile / cookie DB path
-   - no launch or mutation of the real Chrome profile
+   - optional configured Chromium Keychain source for browsers outside the default importer
+   - no launch or mutation of the real browser profile
 4. validate that `browser.authSeedProfileDir` is an absolute safe path and not inside the real Chrome user-data tree
 5. create a staged seed-profile path next to the target seed profile
 6. launch the isolated auth browser headed with:
@@ -277,6 +278,23 @@ Browser/auth settings are global-only because they control local privileged brow
   }
 }
 ```
+
+`auth.chromiumKeychain` is an opt-in alternate cookie source for Chromium-family browsers that are not handled by the default `@steipete/sweet-cookie` Chrome-compatible importer. It must be configured with `auth.chromeCookiePath`; partial config is rejected so `/oracle-auth` cannot silently fall back to a different browser profile.
+
+When both `auth.chromeCookiePath` and `auth.chromiumKeychain` are present, auth bootstrap:
+
+1. reads the configured macOS Keychain safe-storage password using `account` and the ordered `services` list
+2. snapshots the Chromium `Cookies` DB plus `Cookies-wal` / `Cookies-shm` sidecars, tolerating sidecars that disappear while the browser is closing
+3. decrypts Chromium AES-CBC cookie values, including Chromium v24+ host-hash-prefixed values
+4. dedupes duplicate cookie rows by keeping the first row after newest-expiry ordering
+5. filters importable ChatGPT auth cookies and seeds the isolated oracle auth profile
+
+Operational requirements for this path:
+
+- ChatGPT must already be logged in in the configured browser profile.
+- The target browser should be fully quit before `/oracle-auth` so the cookie DB snapshot is stable.
+- The configured Keychain item must be accessible to the current macOS user; allow Keychain access if prompted.
+- `browser.executablePath` should point at the same Chromium-family browser so the headed auth/bootstrap browser uses the intended app.
 
 ## Cleanup maintenance model
 
@@ -570,7 +588,7 @@ Live-validated after the concurrency redesign:
 - the poller no longer needs the worker to stay alive just to observe completion for artifact-producing runs
 - expired/missing auth now fails as a clean auth-related error instead of generic UI/config drift
 - `/oracle-auth` repairs the seed profile and a post-repair probe succeeds again
-- live auth recovery also exposed and corrected a real source-profile misconfiguration during validation; the configured Chrome profile must actually contain the active ChatGPT session cookies
+- live auth recovery also exposed and corrected a real source-profile misconfiguration during validation; the configured browser profile must actually contain the active ChatGPT session cookies
 
 ## Known remaining work
 

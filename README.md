@@ -9,7 +9,7 @@ Use it when you want:
 - async background execution
 - durable saved responses/artifacts plus best-effort wake-ups back into `pi`
 
-Normal oracle jobs run in an isolated browser profile, not your active Chrome window.
+Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 > Status: experimental public beta. Validated primarily on macOS with Google Chrome and `pi` 0.65.0+.
 
@@ -43,7 +43,7 @@ pi install https://github.com/fitchmultz/pi-oracle
 ## Quickstart
 
 1. Start a normal persisted `pi` session. Do not use `pi --no-session` for oracle.
-2. Make sure ChatGPT already works in your local Chrome profile.
+2. Make sure ChatGPT already works in your configured local browser profile.
 3. Make sure these are installed: Google Chrome, `agent-browser`, `tar`, and `zstd`.
 4. Optional: create `~/.pi/agent/extensions/oracle.json` if you want non-default settings.
 5. Run `/oracle-auth`.
@@ -133,7 +133,19 @@ Notes:
 - If the packaged default is fine, you can omit `defaults.preset` entirely.
 - You usually do not need to set browser paths unless auto-detection fails.
 
-For a Chromium-family browser that is not one of `@steipete/sweet-cookie`'s built-in Chrome/Brave/Arc/Chromium targets, point oracle at the browser executable, cookie DB, and macOS Keychain safe-storage item:
+### Custom Chromium cookie sources
+
+Most Chrome-compatible browsers should work through the default cookie importer. Use this alternate path only for a Chromium-family browser that is not one of `@steipete/sweet-cookie`'s built-in Chrome/Brave/Arc/Chromium targets or otherwise cannot import cookies without dependency patching.
+
+Before running `/oracle-auth` with this path:
+
+1. Log into ChatGPT in the target browser profile.
+2. Fully quit the browser so its `Cookies` database is stable.
+3. Find the profile `Cookies` SQLite DB path.
+4. Find the browser's macOS Keychain safe-storage item account and service name.
+5. Configure all of `browser.executablePath`, `auth.chromeCookiePath`, and `auth.chromiumKeychain` in the agent-level config at `~/.pi/agent/extensions/oracle.json`.
+
+Example Helium config:
 
 ```json
 {
@@ -152,7 +164,9 @@ For a Chromium-family browser that is not one of `@steipete/sweet-cookie`'s buil
 }
 ```
 
-`auth.chromeCookiePath` remains the cookie database path for backward compatibility. When `auth.chromiumKeychain` is present, `/oracle-auth` uses pi-oracle's repo-owned generic Chromium cookie reader instead of patching `@steipete/sweet-cookie` internals.
+`auth.chromeCookiePath` remains the cookie database path for backward compatibility. `auth.chromiumKeychain` must be paired with `auth.chromeCookiePath`; partial config is rejected so oracle does not silently fall back to a different browser source. When both are present, `/oracle-auth` uses pi-oracle's repo-owned generic Chromium cookie reader instead of patching `@steipete/sweet-cookie` internals.
+
+If macOS prompts for Keychain access during `/oracle-auth`, allow access for the configured browser safe-storage item. If auth still fails after cookies are synced, the cookie DB may be stale, from the wrong profile, or for an account that is logged out; reopen the configured browser profile, confirm ChatGPT works there, quit the browser, and rerun `/oracle-auth`.
 
 ## Available presets
 
@@ -205,6 +219,7 @@ Project config should only override safe, non-privileged settings.
 ### `/oracle-auth` fails or says login is required
 
 - Make sure ChatGPT works in the same local browser profile you configured.
+- For custom Chromium cookie sources, confirm `auth.chromeCookiePath` points at that profile's `Cookies` DB and `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service.
 - Re-run `/oracle-auth`.
 - If ChatGPT is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
 
@@ -235,9 +250,10 @@ Project config should only override safe, non-privileged settings.
 
 - Install the missing local dependency and rerun the command.
 
-### Auto-detection picked the wrong Chrome profile
+### Auto-detection picked the wrong browser profile
 
 - Set `auth.chromeProfile` in `~/.pi/agent/extensions/oracle.json`.
+- For custom Chromium cookie sources, set `auth.chromeCookiePath` to the exact profile `Cookies` DB and pair it with `auth.chromiumKeychain`.
 - Re-run `/oracle-auth`.
 
 ### You want more details about a failed run
@@ -254,7 +270,7 @@ Project config should only override safe, non-privileged settings.
 ## Privacy / local data
 
 This extension is local-first, but it does read and persist local data:
-- `/oracle-auth` reads ChatGPT cookies from a local Chrome profile
+- `/oracle-auth` reads ChatGPT cookies from the configured local browser profile
 - job archives are uploaded to ChatGPT.com
 - responses and artifacts are written under the configured oracle jobs dir
 

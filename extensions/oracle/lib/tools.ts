@@ -1055,7 +1055,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_auth",
     label: "Oracle Auth",
-    description: "Refresh the shared oracle auth seed profile by importing ChatGPT cookies from your configured real Chrome profile.",
+    description: "Refresh the shared oracle auth seed profile by importing ChatGPT cookies from your configured local browser profile.",
     promptSnippet: "Refresh oracle auth before retrying a login-required oracle run.",
     promptGuidelines: [
       "Call oracle_auth when an oracle run failed because ChatGPT login is required, the worker said to rerun /oracle-auth, or stale auth appears to be blocking submission execution.",
