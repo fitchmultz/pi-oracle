@@ -5,6 +5,15 @@
 ### Changed
 - made `/oracle-auth` success and failure output easier to scan, with compact source summaries and source-specific troubleshooting for configured Chromium cookie sources
 
+## 0.6.16 - 2026-05-07
+
+### Changed
+- migrated the local pi development baseline and peer metadata from deprecated `@mariozechner/*` packages to maintained `@earendil-works/*` `0.74.0`
+- regenerated the npm lockfile against the current stable dependency graph and refreshed the `basic-ftp` override to the current patched major
+
+### Compatibility
+- reviewed the pi `0.74.0` changelog and confirmed the oracle extension remains compatible with current extension lifecycle and package install/update guidance
+
 ## 0.6.15 - 2026-05-03
 
 ### Fixed
