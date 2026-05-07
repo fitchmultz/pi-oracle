@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import { getProjectId } from "./runtime.js";
 

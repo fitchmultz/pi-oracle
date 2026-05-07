@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Oracle only runs against persisted sessions, and startup maintenance should be best-effort without breaking session initialization.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
 import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";

@@ -10,8 +10,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, wr
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { basename, join } from "node:path";
-import { SessionManager, type SessionEntry } from "@mariozechner/pi-coding-agent";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
 import {
   coerceOracleSubmitPresetId,
@@ -1079,13 +1079,13 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
   const preflightTool = pi.tools.get("oracle_preflight");
   assert(preflightTool?.execute, "oracle preflight tool should register for readiness testing");
 
   const sessionFile = `/tmp/oracle-sanity-session-oracle-preflight-${randomUUID()}.jsonl`;
-  const persistedCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
-  const noSessionCtx = createExtensionCtx({ getSessionFile: () => undefined } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const persistedCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const noSessionCtx = createExtensionCtx({ getSessionFile: () => undefined } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   const defaultSeedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
   const configPath = join(agentExtensionsDir, "oracle.json");
 
@@ -1173,13 +1173,13 @@ async function testOracleAuthToolRefreshesSeedProfile(): Promise<void> {
   await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: seedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeAuthWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeAuthWorkerPath);
   const authTool = pi.tools.get("oracle_auth");
   assert(authTool?.execute, "oracle auth tool should register for stale-auth recovery testing");
 
   try {
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    const result = await authTool.execute!("oracle-auth-refresh", {}, undefined, () => { }, createExtensionCtx({ getSessionFile: () => undefined } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub())) as { content?: unknown; details?: unknown };
+    const result = await authTool.execute!("oracle-auth-refresh", {}, undefined, () => { }, createExtensionCtx({ getSessionFile: () => undefined } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub())) as { content?: unknown; details?: unknown };
     const text = Array.isArray(result.content) ? asRecord(result.content[0])?.text : undefined;
     const details = asRecord(result.details);
     assert(typeof text === "string" && text.includes("Auth refreshed via fake worker"), "oracle auth tool should return the shared auth-bootstrap worker output");
@@ -1203,12 +1203,12 @@ async function testOracleSubmitPreflightRejectsKnownAuthSeedFailures(): Promise<
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
   const submitTool = pi.tools.get("oracle_submit");
   assert(submitTool?.execute, "oracle submit tool should register for preflight testing");
 
   const sessionFile = `/tmp/oracle-sanity-session-submit-preflight-${randomUUID()}.jsonl`;
-  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   const configPath = join(agentExtensionsDir, "oracle.json");
   const jobDirCountBefore = listOracleJobDirs().length;
 
@@ -1271,8 +1271,8 @@ async function testWorkspaceRootProjectIdentityCoversSubdirectories(config: Orac
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
   const readTool = pi.tools.get("oracle_read");
   const statusCommand = pi.commands.get("oracle-status");
   const cancelCommand = pi.commands.get("oracle-cancel");
@@ -1389,12 +1389,12 @@ async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: Oracl
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
   const submitTool = pi.tools.get("oracle_submit");
   assert(submitTool?.execute, "oracle submit tool should register for workspace-root submit testing");
 
   const sessionFile = `/tmp/oracle-sanity-session-submit-workspace-root-${randomUUID()}.jsonl`;
-  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub(), subdirCwd);
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub(), subdirCwd);
   let jobId: string | undefined;
 
   try {
@@ -1443,7 +1443,7 @@ async function testOracleStatusListsRecentJobIdsWhenNoExplicitId(config: OracleC
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
   const statusCommand = pi.commands.get("oracle-status");
   assert(statusCommand, "oracle status command should register for recent-job listing coverage");
 
@@ -1451,7 +1451,7 @@ async function testOracleStatusListsRecentJobIdsWhenNoExplicitId(config: OracleC
   const firstJobId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
   const secondJobId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
   const ui = createUiStub();
-  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
 
   try {
     await statusCommand.handler("", ctx);
@@ -1473,14 +1473,14 @@ async function testOracleCancelCommandRequiresExplicitJobId(config: OracleConfig
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
   const cancelCommand = pi.commands.get("oracle-cancel");
   assert(cancelCommand, "oracle cancel command should register for explicit-id validation");
 
   const sessionFile = `/tmp/oracle-sanity-session-cancel-explicit-id-${randomUUID()}.jsonl`;
   const queuedId = await createJobForTest(config, process.cwd(), sessionFile, { initialState: "queued" });
   const ui = createUiStub();
-  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
 
   try {
     await cancelCommand.handler("", ctx);
@@ -1517,7 +1517,7 @@ async function testOracleToolResultsExposeStructuredJobDetails(config: OracleCon
   await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({ browser: { authSeedProfileDir: seedDir, maxConcurrentJobs: 1 } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
   const submitTool = pi.tools.get("oracle_submit");
   const readTool = pi.tools.get("oracle_read");
   const cancelTool = pi.tools.get("oracle_cancel");
@@ -1527,7 +1527,7 @@ async function testOracleToolResultsExposeStructuredJobDetails(config: OracleCon
 
   const cwd = process.cwd();
   const sessionFile = `/tmp/oracle-sanity-session-tool-details-${randomUUID()}.jsonl`;
-  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   let blockingId: string | undefined;
   let queuedId: string | undefined;
 
@@ -1602,8 +1602,8 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
   const readTool = pi.tools.get("oracle_read");
   const readCommand = pi.commands.get("oracle-read");
   const statusCommand = pi.commands.get("oracle-status");
@@ -1613,11 +1613,11 @@ async function testOracleReadAndStatusSummariesKeepTerminalFailuresProminent(con
 
   const cwd = process.cwd();
   const sessionFile = `/tmp/oracle-sanity-session-terminal-summary-${randomUUID()}.jsonl`;
-  const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   const readCommandUi = createUiStub();
-  const readCommandCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], readCommandUi);
+  const readCommandCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], readCommandUi);
   const statusUi = createUiStub();
-  const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
+  const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
   const jobId = await createJobForTest(config, cwd, sessionFile);
   let commandReadJobId: string | undefined;
 
@@ -1679,8 +1679,8 @@ async function testOracleReadSummaryShowsHeartbeatFreshness(config: OracleConfig
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
   const readTool = pi.tools.get("oracle_read");
   const statusCommand = pi.commands.get("oracle-status");
   assert(readTool?.execute, "oracle read tool should register for heartbeat-summary testing");
@@ -1688,9 +1688,9 @@ async function testOracleReadSummaryShowsHeartbeatFreshness(config: OracleConfig
 
   const cwd = process.cwd();
   const sessionFile = `/tmp/oracle-sanity-session-heartbeat-summary-${randomUUID()}.jsonl`;
-  const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const readCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   const statusUi = createUiStub();
-  const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
+  const statusCtx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], statusUi);
   const staleId = await createJobForTest(config, cwd, sessionFile);
   const waitingId = await createJobForTest(config, cwd, sessionFile);
 
@@ -1740,7 +1740,7 @@ async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { encoding: "utf8", mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
   const submitTool = pi.tools.get("oracle_submit");
   const readTool = pi.tools.get("oracle_read");
   const toolResultHandler = pi.handlers.get("tool_result");
@@ -1749,7 +1749,7 @@ async function testOracleToolErrorsExposeStructuredMetadata(): Promise<void> {
   assert(toolResultHandler, "oracle tools should register a tool_result hook to preserve isError for structured errors");
 
   const sessionFile = `/tmp/oracle-sanity-session-tool-errors-${randomUUID()}.jsonl`;
-  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
 
   try {
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -1884,7 +1884,7 @@ async function testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(conf
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
 
   const cleanCommand = pi.commands.get("oracle-clean");
   assert(cleanCommand, "oracle clean command should register for retention-grace testing");
@@ -1902,7 +1902,7 @@ async function testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(conf
   }));
 
   const ui = createUiStub();
-  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
 
   try {
     await cleanCommand.handler(jobId, ctx);
@@ -1924,7 +1924,7 @@ async function testOracleCleanRefusesTerminalJobsWithLiveWorkers(config: OracleC
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
 
   const cleanCommand = pi.commands.get("oracle-clean");
   assert(cleanCommand, "oracle clean command should register");
@@ -1971,7 +1971,7 @@ async function testOracleCleanRefusesTerminalJobsWithLiveWorkers(config: OracleC
   }));
 
   const ui = createUiStub();
-  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+  const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
 
   try {
     await cleanCommand.handler(jobId, ctx);
@@ -2259,8 +2259,8 @@ async function testCancelCleanupWarningsDoNotPromoteQueuedJobs(config: OracleCon
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
 
   const cancelTool = pi.tools.get("oracle_cancel");
   const cancelCommand = pi.commands.get("oracle-cancel");
@@ -2277,7 +2277,7 @@ async function testCancelCleanupWarningsDoNotPromoteQueuedJobs(config: OracleCon
 
     const waitingId = await createJobForTest(config, cwd, sessionFile, { initialState: "queued" });
     const ui = createUiStub();
-    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
     (ctx as { hasUI: boolean }).hasUI = false;
 
     try {
@@ -2401,8 +2401,8 @@ async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig)
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
 
   const cancelTool = pi.tools.get("oracle_cancel");
   const cancelCommand = pi.commands.get("oracle-cancel");
@@ -2413,7 +2413,7 @@ async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig)
     const sessionFile = `/tmp/oracle-sanity-session-cancel-message-cancelled-${kind}-${randomUUID()}.jsonl`;
     const queuedId = await createJobForTest(config, cwd, sessionFile, { initialState: "queued" });
     const ui = createUiStub();
-    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
     (ctx as { hasUI: boolean }).hasUI = false;
 
     try {
@@ -2456,7 +2456,7 @@ async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig)
     }));
 
     const ui = createUiStub();
-    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
     (ctx as { hasUI: boolean }).hasUI = false;
 
     try {
@@ -2490,8 +2490,8 @@ async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): 
   await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
 
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
 
   const cancelTool = pi.tools.get("oracle_cancel");
   const cancelCommand = pi.commands.get("oracle-cancel");
@@ -2529,7 +2529,7 @@ async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): 
 
     const queuedId = await createJobForTest(config, cwd, sessionFile, { initialState: "queued" });
     const ui = createUiStub();
-    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
+    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
     (ctx as { hasUI: boolean }).hasUI = false;
 
     try {
@@ -3202,7 +3202,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     overrides?: { "basic-ftp"?: string; protobufjs?: string };
   };
   const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@mariozechner/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
   const preflightTool = pi.tools.get("oracle_preflight");
   const authTool = pi.tools.get("oracle_auth");
   const submitTool = pi.tools.get("oracle_submit");
@@ -3496,7 +3496,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
-  assert(pkg.overrides?.["basic-ftp"] === "5.3.0", "package.json should override basic-ftp to the latest patched stable version");
+  assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version");
   assert(pkg.overrides?.protobufjs === "7.5.5", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
@@ -4938,7 +4938,7 @@ async function testPollerHostSafety(): Promise<void> {
   const sessionFile = "/tmp/oracle-sanity-session-host-safety.jsonl";
   const pi = createPiHarness();
   pi.sendMessage = () => undefined;
-  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@mariozechner/pi-coding-agent").ExtensionContext["sessionManager"], {
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], {
     notifications: [],
     statuses: [],
     setStatus: () => undefined,

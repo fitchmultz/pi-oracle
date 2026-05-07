@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
 import {

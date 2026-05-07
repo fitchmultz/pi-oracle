@@ -8,7 +8,7 @@ import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
 import { runOracleAuthBootstrap } from "./auth.js";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
 import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
