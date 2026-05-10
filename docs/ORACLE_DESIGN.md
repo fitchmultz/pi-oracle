@@ -246,7 +246,7 @@ Browser/auth settings are global-only because they control local privileged brow
     "authSeedProfileDir": "<absolute path to oracle auth seed profile>",
     "runtimeProfilesDir": "<absolute path to oracle runtime profiles dir>",
     "maxConcurrentJobs": 2,
-    "cloneStrategy": "apfs-clone",
+    "cloneStrategy": "copy",
     "chatUrl": "https://chatgpt.com/",
     "authUrl": "https://chatgpt.com/auth/login",
     "runMode": "headless",
@@ -260,7 +260,7 @@ Browser/auth settings are global-only because they control local privileged brow
     "chromeProfile": "<optional Chrome/Chromium profile name>",
     "chromeCookiePath": "<optional absolute path to Chromium Cookies DB>",
     "chromiumKeychain": {
-      "account": "<macOS Keychain account for non-built-in Chromium browsers>",
+      "account": "<macOS-only Keychain account for non-built-in Chromium browsers>",
       "services": ["<safe-storage service name>"],
       "label": "<optional human-readable label>"
     }
@@ -282,9 +282,13 @@ Browser/auth settings are global-only because they control local privileged brow
 }
 ```
 
-`auth.chromiumKeychain` is an opt-in alternate cookie source for Chromium-family browsers that are not handled by the default `@steipete/sweet-cookie` Chrome-compatible importer. It must be configured with `auth.chromeCookiePath`; partial config is rejected so `/oracle-auth` cannot silently fall back to a different browser profile.
+`browser.cloneStrategy` defaults to `apfs-clone` on macOS and `copy` on Linux. If an existing Linux config still says `apfs-clone`, the runtime profile copy path falls back to ordinary recursive `cp -R` instead of using the macOS-only clone flag.
 
-When both `auth.chromeCookiePath` and `auth.chromiumKeychain` are present, auth bootstrap:
+The default `/oracle-auth` cookie importer delegates to `@steipete/sweet-cookie`. That dependency supports Linux Chrome/Chromium, Edge, and Firefox; Linux Chromium-family variants such as Brave should be configured with `auth.chromeProfile` or `auth.chromeCookiePath` pointing at the profile directory or `Cookies` DB. Encrypted Linux Chromium cookies are handled by Sweet Cookie via `secret-tool`, `kwallet-query`/`dbus-send`, `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic`, or the `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` / `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` / `SWEET_COOKIE_EDGE_SAFE_STORAGE_PASSWORD` overrides.
+
+`auth.chromiumKeychain` is a macOS-only opt-in alternate cookie source for Chromium-family browsers that are not handled by the default `@steipete/sweet-cookie` Chrome-compatible importer. It must be configured with `auth.chromeCookiePath`; partial config is rejected so `/oracle-auth` cannot silently fall back to a different browser profile. On Linux, valid config should leave `auth.chromiumKeychain` unset and use Sweet Cookie's Linux keyring/password options instead.
+
+When both `auth.chromeCookiePath` and `auth.chromiumKeychain` are present on macOS, auth bootstrap:
 
 1. reads the configured macOS Keychain safe-storage password using `account` and the ordered `services` list
 2. snapshots the Chromium `Cookies` DB plus `Cookies-wal` / `Cookies-shm` sidecars, tolerating sidecars that disappear while the browser is closing
@@ -292,7 +296,7 @@ When both `auth.chromeCookiePath` and `auth.chromiumKeychain` are present, auth 
 4. dedupes duplicate cookie rows by keeping the first row after newest-expiry ordering
 5. filters importable provider auth cookies and seeds the isolated oracle auth profile
 
-Operational requirements for this path:
+Operational requirements for this macOS-only path:
 
 - ChatGPT or Grok must already be logged in in the configured browser profile, depending on the provider being synced.
 - The target browser should be fully quit before `/oracle-auth` so the cookie DB snapshot is stable.

@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { isAbsolute, join, normalize } from "node:path";
+import { delimiter, isAbsolute, join, normalize, resolve } from "node:path";
 import { getProjectId } from "./runtime.js";
 
 export const ORACLE_PROVIDERS = ["chatgpt", "grok"] as const;
@@ -226,6 +226,45 @@ const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.op
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application Support", "Google", "Chrome");
+const LINUX_CHROME_EXECUTABLE_NAMES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
+
+function normalizedAbsolutePath(value: string): string {
+  const expanded = expandHomePath(value);
+  return normalize(isAbsolute(expanded) ? expanded : resolve(expanded));
+}
+
+function linuxConfigHome(): string {
+  const configured = process.env.XDG_CONFIG_HOME?.trim();
+  return configured ? normalizedAbsolutePath(configured) : join(homedir(), ".config");
+}
+
+function linuxChromiumUserDataDirs(): string[] {
+  const configHome = linuxConfigHome();
+  return [
+    join(configHome, "google-chrome"),
+    join(configHome, "chromium"),
+    join(configHome, "chromium-browser"),
+    join(configHome, "BraveSoftware", "Brave-Browser"),
+    join(configHome, "microsoft-edge"),
+  ];
+}
+
+function defaultChromeUserDataDirCandidates(): string[] {
+  if (process.platform === "darwin") return [DEFAULT_MAC_CHROME_USER_DATA_DIR];
+  if (process.platform === "linux") return linuxChromiumUserDataDirs();
+  return [];
+}
+
+function findExecutableOnPath(names: readonly string[]): string | undefined {
+  const pathDirs = (process.env.PATH || "").split(delimiter).filter(Boolean);
+  for (const name of names) {
+    for (const dir of pathDirs) {
+      const candidate = join(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
 
 export interface OracleConfig {
   defaults: {
@@ -274,31 +313,48 @@ export interface OracleConfig {
 }
 
 function detectDefaultChromeExecutablePath(): string | undefined {
-  return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  if (process.platform === "darwin") {
+    return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  }
+  if (process.platform === "linux") {
+    return findExecutableOnPath(LINUX_CHROME_EXECUTABLE_NAMES);
+  }
+  return undefined;
+}
+
+function chromeUserAgentPlatformToken(): string | undefined {
+  if (process.platform === "darwin") return "Macintosh; Intel Mac OS X 10_15_7";
+  if (process.platform === "linux") return "X11; Linux x86_64";
+  return undefined;
 }
 
 function detectDefaultChromeUserAgent(executablePath: string | undefined): string | undefined {
   if (!executablePath) return undefined;
+  const platformToken = chromeUserAgentPlatformToken();
+  if (!platformToken) return undefined;
   try {
     const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8" }).trim();
     const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+\.\d+)/);
     if (!versionMatch) return undefined;
-    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
+    return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
   } catch {
     return undefined;
   }
 }
 
 function detectDefaultChromeProfileName(): string {
-  const localStatePath = join(DEFAULT_MAC_CHROME_USER_DATA_DIR, "Local State");
-  if (!existsSync(localStatePath)) return "Default";
-  try {
-    const localState = JSON.parse(readFileSync(localStatePath, "utf8")) as { profile?: { last_used?: string } };
-    const lastUsed = localState?.profile?.last_used;
-    return typeof lastUsed === "string" && lastUsed.trim() ? lastUsed.trim() : "Default";
-  } catch {
-    return "Default";
+  for (const userDataDir of defaultChromeUserDataDirCandidates()) {
+    const localStatePath = join(userDataDir, "Local State");
+    if (!existsSync(localStatePath)) continue;
+    try {
+      const localState = JSON.parse(readFileSync(localStatePath, "utf8")) as { profile?: { last_used?: string } };
+      const lastUsed = localState?.profile?.last_used;
+      if (typeof lastUsed === "string" && lastUsed.trim()) return lastUsed.trim();
+    } catch {
+      // Try the next known Chromium-family profile root before falling back.
+    }
   }
+  return "Default";
 }
 
 const detectedChromeExecutablePath = detectDefaultChromeExecutablePath();
@@ -367,7 +423,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
     runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
     maxConcurrentJobs: 2,
-    cloneStrategy: "apfs-clone",
+    cloneStrategy: process.platform === "darwin" ? "apfs-clone" : "copy",
     chatUrl: "https://chatgpt.com/",
     authUrl: "https://chatgpt.com/auth/login",
     runMode: "headless",
@@ -456,8 +512,11 @@ function expectSafeProfilePath(pathValue: string, path: string): string {
   if (pathValue === "/" || pathValue === homedir()) {
     throw new Error(`Invalid oracle config: ${path} points to an unsafe directory`);
   }
-  if (pathValue === DEFAULT_MAC_CHROME_USER_DATA_DIR || pathValue.startsWith(`${DEFAULT_MAC_CHROME_USER_DATA_DIR}/`)) {
-    throw new Error(`Invalid oracle config: ${path} must not point into the real Chrome user-data directory`);
+  for (const userDataDir of defaultChromeUserDataDirCandidates()) {
+    const normalizedUserDataDir = normalize(userDataDir);
+    if (pathValue === normalizedUserDataDir || pathValue.startsWith(`${normalizedUserDataDir}/`)) {
+      throw new Error(`Invalid oracle config: ${path} must not point into a real browser user-data directory (${normalizedUserDataDir})`);
+    }
   }
   return pathValue;
 }
@@ -594,6 +653,13 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const chromiumKeychain = expectOptionalChromiumKeychain(auth.chromiumKeychain, "auth.chromiumKeychain");
   if (chromiumKeychain !== undefined && chromeCookiePath === undefined) {
     throw new Error("Invalid oracle config: auth.chromiumKeychain requires auth.chromeCookiePath");
+  }
+  if (chromiumKeychain !== undefined && process.platform !== "darwin") {
+    throw new Error(
+      "Invalid oracle config: auth.chromiumKeychain is macOS-only. " +
+        "On Linux, set auth.chromeCookiePath/auth.chromeProfile without auth.chromiumKeychain and use @steipete/sweet-cookie's " +
+        "SWEET_COOKIE_LINUX_KEYRING or SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD options for encrypted Chromium cookies.",
+    );
   }
 
   return {

@@ -2,7 +2,7 @@
 // Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
 // Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
-// Invariants/Assumptions: Runs against a local macOS Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
+// Invariants/Assumptions: Runs against a local Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -58,7 +58,29 @@ let URL_PATH = "(oracle-auth url path unavailable)";
 let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
-const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
+function linuxConfigHome() {
+  const configured = process.env.XDG_CONFIG_HOME?.trim();
+  if (!configured) return resolve(homedir(), ".config");
+  if (configured.startsWith("~/")) return resolve(homedir(), configured.slice(2));
+  if (configured === "~") return homedir();
+  return resolve(configured);
+}
+
+function realBrowserUserDataDirs() {
+  if (process.platform === "darwin") return [resolve(homedir(), "Library", "Application Support", "Google", "Chrome")];
+  if (process.platform === "linux") {
+    const configHome = linuxConfigHome();
+    return [
+      resolve(configHome, "google-chrome"),
+      resolve(configHome, "chromium"),
+      resolve(configHome, "chromium-browser"),
+      resolve(configHome, "BraveSoftware", "Brave-Browser"),
+      resolve(configHome, "microsoft-edge"),
+    ];
+  }
+  return [];
+}
+
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -269,8 +291,10 @@ async function createProfilePlan(profileDir) {
   if (targetDir === "/" || targetDir === homedir()) {
     throw new Error(`Oracle profileDir is unsafe: ${targetDir}`);
   }
-  if (targetDir === REAL_CHROME_USER_DATA_DIR || targetDir.startsWith(`${REAL_CHROME_USER_DATA_DIR}/`)) {
-    throw new Error(`Oracle profileDir must not point into the real Chrome user-data directory: ${targetDir}`);
+  for (const userDataDir of realBrowserUserDataDirs()) {
+    if (targetDir === userDataDir || targetDir.startsWith(`${userDataDir}/`)) {
+      throw new Error(`Oracle profileDir must not point into a real browser user-data directory (${userDataDir}): ${targetDir}`);
+    }
   }
 
   const stagingDir = `${targetDir}.staging-${Date.now()}`;
@@ -552,6 +576,11 @@ function formatAuthFailureGuidance(error) {
       "3. Quit the browser fully.",
       "4. Re-run /oracle-auth.",
     );
+    if (process.platform === "linux") {
+      lines.push(
+        "5. If Chromium encrypted-cookie warnings mention the Linux keyring, install/configure secret-tool or kwallet-query, or set SWEET_COOKIE_LINUX_KEYRING / SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD before rerunning.",
+      );
+    }
   }
 
   lines.push(

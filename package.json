@@ -76,7 +76,8 @@
     "node": ">=22.19.0"
   },
   "os": [
-    "darwin"
+    "darwin",
+    "linux"
   ],
   "packageManager": "npm@11.16.0",
   "peerDependenciesMeta": {

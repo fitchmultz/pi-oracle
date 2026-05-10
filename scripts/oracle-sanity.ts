@@ -842,6 +842,38 @@ async function testConfigRejectsPartialChromiumKeychain(): Promise<void> {
   }
 }
 
+async function testConfigRejectsChromiumKeychainOffMac(): Promise<void> {
+  if (process.platform === "darwin") return;
+
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-chromium-platform-config-"));
+  const agentExtensionsDir = join(fixtureDir, "agent", "extensions");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    process.env.PI_CODING_AGENT_DIR = join(fixtureDir, "agent");
+    await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
+      auth: {
+        chromeCookiePath: join(fixtureDir, "Cookies"),
+        chromiumKeychain: {
+          account: "Helium",
+          services: ["Helium Storage Key"],
+        },
+      },
+    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    assertThrows(
+      () => loadOracleConfig(process.cwd()),
+      "config should reject macOS Keychain cookie-source config on non-macOS platforms",
+      "auth.chromiumKeychain is macOS-only",
+    );
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-config-guidance-"));
   const projectDir = join(fixtureDir, "project");
@@ -3190,6 +3222,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const locksSource = await readFile(new URL("../extensions/oracle/lib/locks.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
+  const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
@@ -3290,6 +3323,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(designSource.includes("For ChatGPT, **`preset` is the only model-selection parameter"), "design doc should state preset is the only ChatGPT selector");
   assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
   assert(designSource.includes("chromiumKeychain"), "design doc should document configured Chromium keychain cookie sources");
+  assert(designSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "design doc should document Sweet Cookie Linux keyring options");
+  assert(designSource.includes("defaults to `apfs-clone` on macOS and `copy` on Linux"), "design doc should document platform-specific clone strategy defaults");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
@@ -3320,6 +3355,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
   assert(readmeSource.includes("`oracle_auth`"), "README should document the oracle_auth agent-facing tool");
   assert(readmeSource.includes("chromiumKeychain"), "README should document configured Chromium keychain cookie sources");
+  assert(readmeSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "README should document Sweet Cookie Linux keyring options");
+  assert(readmeSource.includes("macOS or Linux"), "README should document Linux as a supported platform");
+  assert(readmeSource.includes("leave `auth.chromiumKeychain` unset"), "README should explain Linux uses Sweet Cookie options instead of macOS Keychain config");
   assert(readmeSource.includes("oracle_auth({})"), "README should explain that agent callers can refresh stale oracle auth through oracle_auth before retrying once");
   assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
   assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");
@@ -3500,6 +3538,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
   assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
   assert(runtimeSource.includes("removeChromiumProcessSingletonArtifacts"), "runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
+  assert(workerSource.includes("PI_ORACLE_CP_PATH") && !workerSource.includes('spawnCommand("/bin/cp"'), "worker profile cloning should resolve cp from PATH on Linux/Nix instead of hard-coding /bin/cp");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
   assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");
@@ -3507,7 +3546,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
   assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor without an upper bound");
-  assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
+  assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux"), "package.json should declare macOS and Linux support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
@@ -5076,6 +5115,7 @@ async function main() {
   assertIsolatedSanityEnvironment();
   await ensureNoActiveJobs();
   assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
+  assert(DEFAULT_CONFIG.browser.cloneStrategy === (process.platform === "darwin" ? "apfs-clone" : "copy"), "default oracle clone strategy should use APFS clones only on macOS");
   assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
   const config: OracleConfig = {
     ...DEFAULT_CONFIG,
@@ -5084,6 +5124,7 @@ async function main() {
 
   testAuthCookiePolicy();
   await testConfigRejectsPartialChromiumKeychain();
+  await testConfigRejectsChromiumKeychainOffMac();
   await testChromiumCookieSourceReadsConfiguredKeychain();
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
