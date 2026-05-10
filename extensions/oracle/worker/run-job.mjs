@@ -80,6 +80,7 @@ const POST_SEND_SETTLE_MS = 15_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
+const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 
 let currentJob;
 let browserStarted = false;
@@ -286,17 +287,17 @@ async function cloneSeedProfileToRuntime(job) {
   await withLock(ORACLE_STATE_DIR, "auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
-    if (job.config.browser.cloneStrategy === "apfs-clone") {
+    if (job.config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
       try {
-        await spawnCommand("/bin/cp", ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+        await spawnCommand(CP_BIN, ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await log(`APFS clone copy failed; falling back to recursive copy: ${message}`);
         await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
-        await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+        await spawnCommand(CP_BIN, ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       }
     } else {
-      await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+      await spawnCommand(CP_BIN, ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
     }
     await removeChromiumProcessSingletonArtifacts(job.runtimeProfileDir);
   }, 10 * 60 * 1000);

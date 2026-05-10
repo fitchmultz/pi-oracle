@@ -379,7 +379,7 @@ export async function releaseConversationLease(conversationId: string | undefine
 }
 
 function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDir: string): string[] {
-  if (config.browser.cloneStrategy === "apfs-clone") {
+  if (config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
     return ["-cR", sourceDir, destinationDir];
   }
   return ["-R", sourceDir, destinationDir];
@@ -529,4 +529,3 @@ export async function cleanupRuntimeArtifacts(runtime: {
 
   return report;
 }
-
