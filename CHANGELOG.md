@@ -38,6 +38,7 @@
 
 ### Changed
 - made `/oracle-auth` success and failure output easier to scan, with compact source summaries and source-specific troubleshooting for configured Chromium cookie sources
+- expanded package support to Linux, using ordinary profile copies off macOS and documenting `@steipete/sweet-cookie`'s Linux keyring/password options for Chromium cookie import
 - tightened README quickstart/command wording around preflight-first `/oracle` behavior, context-rich archive selection, cleanup retention, and preset defaults
 - added the resolved oracle model preset snapshot to `oracle_submit` queued/dispatched output so agents can see what preset will run
 - clarified `oracle_preflight` output so users can see that it validates the persisted pi session, local config, and ChatGPT auth seed created by `oracle_auth`
