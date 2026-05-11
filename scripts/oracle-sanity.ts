@@ -67,6 +67,16 @@ import {
   transitionOracleJobPhase,
 } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
+import {
+  browserUserDataDirsForPlatform,
+  chromiumKeychainSupportedOnPlatform,
+  defaultCloneStrategyForPlatform,
+  detectDefaultBrowserProfileSource,
+  detectDefaultLinuxChromeExecutablePath,
+  knownBrowserUserDataPathMatch,
+  scrubSweetCookieSafeStoragePasswordEnv,
+  sweetCookieSafeStoragePasswordScrubbedEnv,
+} from "../extensions/oracle/shared/browser-profile-helpers.mjs";
 import { isTrackedProcessAlive, spawnDetachedNodeProcess, terminateTrackedProcess } from "../extensions/oracle/shared/process-helpers.mjs";
 import {
   acquireLock as acquireWorkerStateLock,
@@ -231,6 +241,102 @@ function findPresetId(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function testBrowserProfileHelpers(): Promise<void> {
+  assert(defaultCloneStrategyForPlatform("darwin") === "apfs-clone", "darwin should default to APFS clone profile copies");
+  assert(defaultCloneStrategyForPlatform("linux") === "copy", "linux should default to ordinary recursive profile copies");
+  assert(chromiumKeychainSupportedOnPlatform("darwin"), "macOS should support configured Chromium Keychain cookie sources");
+  assert(!chromiumKeychainSupportedOnPlatform("linux"), "Linux should reject macOS Keychain cookie-source config");
+
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-browser-profile-helpers-"));
+  const xdgConfigHome = join(fixtureDir, "xdg");
+  const fakeHome = join(fixtureDir, "home");
+  const helperEnv = { XDG_CONFIG_HOME: xdgConfigHome } as NodeJS.ProcessEnv;
+  try {
+    const macSafetyDirs = browserUserDataDirsForPlatform("darwin", { homeDir: fakeHome });
+    assert(macSafetyDirs.includes(join(fakeHome, "Library", "Application Support", "Google", "Chrome")), "macOS safety roots should include Google Chrome");
+    assert(macSafetyDirs.includes(join(fakeHome, "Library", "Application Support", "BraveSoftware", "Brave-Browser")), "macOS safety roots should include Brave");
+    assert(macSafetyDirs.includes(join(fakeHome, "Library", "Application Support", "Microsoft Edge")), "macOS safety roots should include Edge even though Edge cookies are not an auth backend");
+
+    const cookieImportDirs = browserUserDataDirsForPlatform("linux", { env: helperEnv, homeDir: fakeHome, includeUnsupported: false });
+    assert(cookieImportDirs.includes(join(xdgConfigHome, "google-chrome")), "linux cookie-import roots should include Google Chrome");
+    assert(cookieImportDirs.includes(join(xdgConfigHome, "chromium")), "linux cookie-import roots should include Chromium");
+    assert(!cookieImportDirs.includes(join(xdgConfigHome, "microsoft-edge")), "linux cookie-import roots should not imply Edge backend support");
+    const safetyDirs = browserUserDataDirsForPlatform("linux", { env: helperEnv, homeDir: fakeHome });
+    assert(safetyDirs.includes(join(xdgConfigHome, "microsoft-edge")), "linux safety roots should still protect Edge user-data directories from destructive profile use");
+
+    const chromiumProfile = join(xdgConfigHome, "chromium", "Profile 7");
+    await mkdir(chromiumProfile, { recursive: true, mode: 0o700 });
+    await writeFile(join(xdgConfigHome, "chromium", "Local State"), `${JSON.stringify({ profile: { last_used: "Profile 7" } })}\n`, { encoding: "utf8", mode: 0o600 });
+    assert(
+      detectDefaultBrowserProfileSource("linux", { env: helperEnv, homeDir: fakeHome }) === chromiumProfile,
+      "linux default cookie source should resolve non-Google Chromium profiles to absolute paths for Sweet Cookie's chrome backend",
+    );
+
+    await writeFile(join(xdgConfigHome, "chromium", "Local State"), `${JSON.stringify({ profile: { last_used: "Missing Profile" } })}\n`, { encoding: "utf8", mode: 0o600 });
+    await mkdir(join(xdgConfigHome, "chromium", "Default"), { recursive: true, mode: 0o700 });
+    assert(
+      detectDefaultBrowserProfileSource("linux", { env: helperEnv, homeDir: fakeHome }) === join(xdgConfigHome, "chromium", "Default"),
+      "linux default cookie source should fall back to Default when Local State's last_used profile is stale",
+    );
+
+    await writeFile(join(xdgConfigHome, "chromium", "Local State"), `${JSON.stringify({ profile: { last_used: "../escape" } })}\n`, { encoding: "utf8", mode: 0o600 });
+    assert(
+      detectDefaultBrowserProfileSource("linux", { env: helperEnv, homeDir: fakeHome }) === join(xdgConfigHome, "chromium", "Default"),
+      "linux default cookie source should ignore traversal-like Local State profile names",
+    );
+
+    const firstBinDir = join(fixtureDir, "bin-first");
+    const secondBinDir = join(fixtureDir, "bin-second");
+    await mkdir(join(firstBinDir, "google-chrome"), { recursive: true, mode: 0o700 });
+    await mkdir(secondBinDir, { recursive: true, mode: 0o700 });
+    const chromiumBin = join(secondBinDir, "chromium");
+    await writeExecutableScript(chromiumBin, "#!/bin/sh\nprintf 'Chromium 1.2.3.4\\n'\n");
+    assert(
+      detectDefaultLinuxChromeExecutablePath({ pathValue: `${firstBinDir}:${secondBinDir}` }) === chromiumBin,
+      "linux executable autodetection should skip directories/non-executables and continue to later PATH candidates",
+    );
+
+    await mkdir(join(xdgConfigHome, "google-chrome", "Default"), { recursive: true, mode: 0o700 });
+    const configHomeLink = join(fixtureDir, "config-link");
+    await symlink(xdgConfigHome, configHomeLink, "dir");
+    const symlinkedBrowserProfile = join(configHomeLink, "google-chrome", "Default");
+    const matchedRoot = knownBrowserUserDataPathMatch(symlinkedBrowserProfile, { platform: "linux", env: helperEnv, homeDir: fakeHome });
+    assert(matchedRoot === join(xdgConfigHome, "google-chrome"), "browser profile safety checks should resolve symlinked ancestors before destructive profile use");
+
+    const customCookieDb = join(fixtureDir, "CustomBrowser", "Profile 1", "Network", "Cookies");
+    const protectedCustomProfile = knownBrowserUserDataPathMatch(join(fixtureDir, "CustomBrowser", "Profile 1", "oracle-seed"), {
+      platform: "linux",
+      env: helperEnv,
+      homeDir: fakeHome,
+      cookieSources: { chromeCookiePath: customCookieDb },
+    });
+    assert(protectedCustomProfile === join(fixtureDir, "CustomBrowser", "Profile 1"), "cookie DB config should protect its containing custom browser profile directory");
+    const protectedCustomRoot = knownBrowserUserDataPathMatch(join(fixtureDir, "CustomBrowser", "oracle-runtime"), {
+      platform: "linux",
+      env: helperEnv,
+      homeDir: fakeHome,
+      cookieSources: { chromeCookiePath: customCookieDb },
+    });
+    assert(protectedCustomRoot === join(fixtureDir, "CustomBrowser"), "cookie DB config should protect the likely custom browser user-data root");
+
+    const passwordEnv = {
+      SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD: "chrome-secret",
+      SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD: "brave-secret",
+      KEEP_ME: "yes",
+    } as NodeJS.ProcessEnv;
+    const scrubbedChildEnv = sweetCookieSafeStoragePasswordScrubbedEnv(passwordEnv);
+    assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === "chrome-secret", "child-env scrubbing should not mutate the original env object");
+    assert(scrubbedChildEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined, "child env should omit Chrome safe-storage passwords");
+    assert(scrubbedChildEnv.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD === undefined, "child env should omit Brave safe-storage passwords");
+    assert(scrubbedChildEnv.KEEP_ME === "yes", "child env scrubbing should preserve unrelated environment variables");
+    scrubSweetCookieSafeStoragePasswordEnv(passwordEnv);
+    assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined, "in-process scrubbing should remove Chrome safe-storage passwords after cookie import");
+    assert(passwordEnv.KEEP_ME === "yes", "in-process scrubbing should preserve unrelated environment variables");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
 }
 
 function readProcessStartedAt(pid: number | undefined): string | undefined {
@@ -931,7 +1037,7 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     assert(result.stderr.includes(configLoad.effectiveAuthConfigPath), "auth bootstrap failure guidance should point at the effective agent config path for the active PI_CODING_AGENT_DIR");
     assert(result.stderr.includes(configLoad.projectConfigPath), "auth bootstrap failure guidance should mention the loaded project config path when one is present");
     assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");
-    assert(result.stderr.includes("auth.chromiumKeychain"), "auth bootstrap failure guidance should mention configured Chromium keychain support");
+    assert(result.stderr.includes("auth.chromeProfile") && result.stderr.includes("auth.chromeCookiePath"), "auth bootstrap failure guidance should mention configurable browser cookie sources");
     assert(!result.stderr.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap failure guidance should not hardcode the default global config path under isolated agent dirs");
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1178,6 +1284,19 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     const runtimeProfilesResult = await preflightTool.execute!("oracle-preflight-runtime-profiles-file", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
     const runtimeProfilesError = asRecord(asRecord(runtimeProfilesResult.details)?.error);
     assert(runtimeProfilesError?.code === "runtime_profiles_dir_unwritable", "oracle preflight should surface runtime_profiles_dir_unwritable when runtimeProfilesDir cannot be prepared as a directory");
+
+    const originalCpPath = process.env.PI_ORACLE_CP_PATH;
+    try {
+      process.env.PI_ORACLE_CP_PATH = join(fixtureDir, "missing-cp");
+      await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      const missingCpResult = await preflightTool.execute!("oracle-preflight-missing-cp", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+      const missingCpError = asRecord(asRecord(missingCpResult.details)?.error);
+      assert(missingCpError?.code === "local_dependency_missing", "oracle preflight should surface local_dependency_missing when configured cp is unavailable");
+      assert(missingCpError?.rejectedValue === "cp", "oracle preflight should identify cp as the missing configured profile-copy dependency");
+    } finally {
+      if (originalCpPath === undefined) delete process.env.PI_ORACLE_CP_PATH;
+      else process.env.PI_ORACLE_CP_PATH = originalCpPath;
+    }
 
     const originalPath = process.env.PATH;
     try {
@@ -3920,6 +4039,63 @@ while :; do sleep 1; done
   }
 }
 
+async function testArchiveSubprocessesScrubSafeStoragePasswords(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-env-scrub-"));
+  const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-env-scrub-bin-"));
+  const archivePath = join(tmpdir(), `oracle-archive-env-scrub-${randomUUID()}.tar.zst`);
+  const tarEnvPath = join(fixtureDir, "tar-safe-storage.txt");
+  const zstdEnvPath = join(fixtureDir, "zstd-safe-storage.txt");
+  const originalPath = process.env.PATH ?? "";
+  const originalChromePassword = process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD;
+  const originalBravePassword = process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD;
+
+  try {
+    await writeFile(join(fixtureDir, "main.ts"), "export const main = true;\n");
+    await writeExecutableScript(
+      join(binDir, "tar"),
+      `#!/bin/sh
+printf '%s:%s\n' "$SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD" "$SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD" > ${shellQuote(tarEnvPath)}
+printf 'fake archive payload\n'
+`,
+    );
+    await writeExecutableScript(
+      join(binDir, "zstd"),
+      `#!/bin/sh
+printf '%s:%s\n' "$SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD" "$SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD" > ${shellQuote(zstdEnvPath)}
+out=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then
+    shift
+    out="$1"
+  fi
+  shift || break
+done
+if [ -z "$out" ]; then
+  echo 'missing -o' >&2
+  exit 1
+fi
+cat > "$out"
+`,
+    );
+    process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD = "chrome-secret";
+    process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD = "brave-secret";
+
+    await createArchiveForTesting(fixtureDir, ["main.ts"], archivePath, { commandTimeoutMs: 5_000 });
+    assert((await readFile(tarEnvPath, "utf8")).trim() === ":", "archive tar subprocess should not inherit Sweet Cookie safe-storage password env vars");
+    assert((await readFile(zstdEnvPath, "utf8")).trim() === ":", "archive zstd subprocess should not inherit Sweet Cookie safe-storage password env vars");
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalChromePassword === undefined) delete process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD;
+    else process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD = originalChromePassword;
+    if (originalBravePassword === undefined) delete process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD;
+    else process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD = originalBravePassword;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
+  }
+}
+
 async function testArchiveBrokenPipeRejectsCleanly(): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-broken-pipe-"));
   const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-broken-pipe-bin-"));
@@ -5115,8 +5291,9 @@ async function main() {
   assertIsolatedSanityEnvironment();
   await ensureNoActiveJobs();
   assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
-  assert(DEFAULT_CONFIG.browser.cloneStrategy === (process.platform === "darwin" ? "apfs-clone" : "copy"), "default oracle clone strategy should use APFS clones only on macOS");
+  assert(DEFAULT_CONFIG.browser.cloneStrategy === defaultCloneStrategyForPlatform(process.platform), "default oracle clone strategy should use APFS clones only on macOS");
   assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
+  await testBrowserProfileHelpers();
   const config: OracleConfig = {
     ...DEFAULT_CONFIG,
     browser: { ...DEFAULT_CONFIG.browser, maxConcurrentJobs: 1 },
@@ -5188,6 +5365,7 @@ async function main() {
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
+  await testArchiveSubprocessesScrubSafeStoragePasswords();
   await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();

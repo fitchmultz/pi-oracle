@@ -4,6 +4,7 @@
 // Usage: auth-bootstrap.mjs uses this when auth.chromiumKeychain is configured alongside auth.chromeCookiePath.
 // Invariants/Assumptions: The configured cookie path points at a Chromium Cookies DB and the configured Keychain item is the browser's safe-storage secret.
 import { spawn } from "node:child_process";
+import { sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createDecipheriv, pbkdf2Sync } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +17,7 @@ const MACOS_CHROMIUM_KEY_ITERATIONS = 1003;
 
 function spawnCapture(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timeoutMs = options.timeoutMs ?? 5_000;

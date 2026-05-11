@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
+import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
 import type { OracleConfig } from "./config.js";
@@ -26,11 +27,18 @@ const WORKSPACE_ROOT_MARKERS = [
   ".pi",
   "AGENTS.md",
 ] as const;
-const REQUIRED_ORACLE_DEPENDENCIES = [
-  { name: "agent-browser", command: AGENT_BROWSER_BIN },
-  { name: "tar", command: "tar" },
-  { name: "zstd", command: "zstd" },
-] as const;
+function cpCommand(): string {
+  return process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
+}
+
+function requiredOracleDependencies(): Array<{ name: string; command: string }> {
+  return [
+    { name: "agent-browser", command: AGENT_BROWSER_BIN },
+    { name: "cp", command: cpCommand() },
+    { name: "tar", command: "tar" },
+    { name: "zstd", command: "zstd" },
+  ];
+}
 
 export interface OracleRuntimeLeaseMetadata {
   jobId: string;
@@ -152,6 +160,25 @@ function missingLocalDependencyMessage(name: string): string {
   return `Oracle prerequisite not found on PATH: ${name}. Install ${name} and retry.`;
 }
 
+function unsafeOracleProfilePathMessage(label: string, path: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Oracle ${label} path is unsafe: ${path}. ${message}`;
+}
+
+function assertSafeOracleProfilePath(
+  path: string,
+  label: "auth seed profile" | "runtime profile" | "runtime profiles",
+  config?: OracleConfig,
+): void {
+  try {
+    assertNotKnownBrowserUserDataPath(path, `Oracle ${label}`, {
+      cookieSources: config ? { chromeProfile: config.auth.chromeProfile, chromeCookiePath: config.auth.chromeCookiePath } : undefined,
+    });
+  } catch (error) {
+    throw new Error(unsafeOracleProfilePathMessage(label, path, error));
+  }
+}
+
 function unwritableOracleDirectoryMessage(label: "runtime profiles" | "jobs", path: string): string {
   return `Oracle ${label} directory is not writable: ${path}. Fix its permissions or configure a writable path, then retry.`;
 }
@@ -160,6 +187,8 @@ async function resolveExecutableOnPath(command: string): Promise<string | undefi
   if (!command) return undefined;
   if (command.includes("/")) {
     try {
+      const commandStats = await stat(command);
+      if (!commandStats.isFile()) return undefined;
       await access(command, fsConstants.X_OK);
       return command;
     } catch {
@@ -172,6 +201,8 @@ async function resolveExecutableOnPath(command: string): Promise<string | undefi
     if (!segment) continue;
     const candidate = join(segment, command);
     try {
+      const candidateStats = await stat(candidate);
+      if (!candidateStats.isFile()) continue;
       await access(candidate, fsConstants.X_OK);
       return candidate;
     } catch {
@@ -235,6 +266,7 @@ async function assertWritableDirectory(path: string, label: "runtime profiles" |
 
 export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Promise<void> {
   const seedDir = config.browser.authSeedProfileDir;
+  assertSafeOracleProfilePath(seedDir, "auth seed profile", config);
   let seedStats;
   try {
     seedStats = await stat(seedDir);
@@ -257,9 +289,10 @@ export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Pr
 }
 
 export async function assertOracleSubmitPrerequisites(config: OracleConfig): Promise<void> {
+  assertSafeOracleProfilePath(config.browser.runtimeProfilesDir, "runtime profiles", config);
   await assertOracleAuthSeedProfileReady(config);
   await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
-  for (const dependency of REQUIRED_ORACLE_DEPENDENCIES) {
+  for (const dependency of requiredOracleDependencies()) {
     await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
   }
   await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");
@@ -387,7 +420,7 @@ function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDi
 
 async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn("cp", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cpCommand(), args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
@@ -445,6 +478,7 @@ export async function cloneSeedProfileToRuntime(
 ): Promise<string | undefined> {
   const seedDir = config.browser.authSeedProfileDir;
   await assertOracleAuthSeedProfileReady(config);
+  assertSafeOracleProfilePath(runtimeProfileDir, "runtime profile", config);
 
   await withAuthLock({ runtimeProfileDir, seedDir }, async () => {
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
@@ -465,7 +499,7 @@ export interface OracleCleanupReport {
 
 async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
   return new Promise<string | undefined>((resolve) => {
-    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { stdio: "ignore" });
+    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: "ignore" });
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     let timedOut = false;
@@ -510,9 +544,12 @@ export async function cleanupRuntimeArtifacts(runtime: {
   }
   if (runtime.runtimeProfileDir) {
     report.attempted.push("runtimeProfileDir");
-    await rm(runtime.runtimeProfileDir, { recursive: true, force: true }).catch((error: Error) => {
-      report.warnings.push(`Failed to remove runtime profile ${runtime.runtimeProfileDir}: ${error.message}`);
-    });
+    try {
+      assertSafeOracleProfilePath(runtime.runtimeProfileDir, "runtime profile");
+      await rm(runtime.runtimeProfileDir, { recursive: true, force: true });
+    } catch (error) {
+      report.warnings.push(`Failed to remove runtime profile ${runtime.runtimeProfileDir}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   if (runtime.conversationId) {
     report.attempted.push("conversationLease");

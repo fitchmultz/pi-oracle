@@ -10,6 +10,11 @@ import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
+import {
+  assertNotKnownBrowserUserDataPath,
+  scrubSweetCookieSafeStoragePasswordEnv,
+  sweetCookieSafeStoragePasswordScrubbedEnv,
+} from "../shared/browser-profile-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
@@ -58,29 +63,6 @@ let URL_PATH = "(oracle-auth url path unavailable)";
 let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
-function linuxConfigHome() {
-  const configured = process.env.XDG_CONFIG_HOME?.trim();
-  if (!configured) return resolve(homedir(), ".config");
-  if (configured.startsWith("~/")) return resolve(homedir(), configured.slice(2));
-  if (configured === "~") return homedir();
-  return resolve(configured);
-}
-
-function realBrowserUserDataDirs() {
-  if (process.platform === "darwin") return [resolve(homedir(), "Library", "Application Support", "Google", "Chrome")];
-  if (process.platform === "linux") {
-    const configHome = linuxConfigHome();
-    return [
-      resolve(configHome, "google-chrome"),
-      resolve(configHome, "chromium"),
-      resolve(configHome, "chromium-browser"),
-      resolve(configHome, "BraveSoftware", "Brave-Browser"),
-      resolve(configHome, "microsoft-edge"),
-    ];
-  }
-  return [];
-}
-
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -168,6 +150,7 @@ function spawnCommand(command, args, options = {}) {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(),
     });
     let stdout = "";
     let stderr = "";
@@ -291,12 +274,9 @@ async function createProfilePlan(profileDir) {
   if (targetDir === "/" || targetDir === homedir()) {
     throw new Error(`Oracle profileDir is unsafe: ${targetDir}`);
   }
-  for (const userDataDir of realBrowserUserDataDirs()) {
-    if (targetDir === userDataDir || targetDir.startsWith(`${userDataDir}/`)) {
-      throw new Error(`Oracle profileDir must not point into a real browser user-data directory (${userDataDir}): ${targetDir}`);
-    }
-  }
-
+  assertNotKnownBrowserUserDataPath(targetDir, "Oracle profileDir", {
+    cookieSources: { chromeProfile: config.auth.chromeProfile, chromeCookiePath: config.auth.chromeCookiePath },
+  });
   const stagingDir = `${targetDir}.staging-${Date.now()}`;
   const backupDir = `${targetDir}.prev`;
   await mkdir(dirname(targetDir), { recursive: true, mode: 0o700 });
@@ -578,7 +558,7 @@ function formatAuthFailureGuidance(error) {
     );
     if (process.platform === "linux") {
       lines.push(
-        "5. If Chromium encrypted-cookie warnings mention the Linux keyring, install/configure secret-tool or kwallet-query, or set SWEET_COOKIE_LINUX_KEYRING / SWEET_COOKIE_*_SAFE_STORAGE_PASSWORD before rerunning.",
+        "5. If Chromium encrypted-cookie warnings mention the Linux keyring, install/configure secret-tool or kwallet-query, or set SWEET_COOKIE_LINUX_KEYRING / SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD / SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD for this run before rerunning.",
       );
     }
   }
@@ -621,7 +601,13 @@ async function readRawSourceCookies() {
 
 async function readSourceCookies() {
   await log(`Reading ${providerName()} cookies from ${cookieSourceLabel()}`);
-  const { cookies, warnings } = await readRawSourceCookies();
+  let sourceResult;
+  try {
+    sourceResult = await readRawSourceCookies();
+  } finally {
+    scrubSweetCookieSafeStoragePasswordEnv();
+  }
+  const { cookies, warnings } = sourceResult;
 
   if (warnings.length) {
     await log(`Cookie source warnings: ${warnings.join(" | ")}`);
