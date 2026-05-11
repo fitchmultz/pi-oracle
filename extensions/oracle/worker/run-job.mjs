@@ -705,6 +705,14 @@ function matchesModelConfigurationOpener(candidate) {
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
 }
 
+function canUseOpenModelMenuForSelection(snapshot, selection) {
+  if (selection.modelFamily !== "instant" || selection.autoSwitchToThinking === true) return false;
+  return Boolean(findEntry(
+    snapshot,
+    (candidate) => candidate.kind === "menuitemradio" && matchesModelFamilyControl(candidate, selection.modelFamily),
+  ));
+}
+
 function composerControlsVisible(snapshot) {
   const entries = parseSnapshotEntries(snapshot);
   const hasComposer = entries.some(
@@ -802,25 +810,35 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
   const hasUsableComposer = snapshotHasUsableComposerControls(snapshot);
 
-  if (probe?.status === 401 || (probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer || probe?.domLoginCta))) {
+  const probeHasAccountIdentity = probe?.bodyHasId === true || probe?.bodyHasEmail === true;
+
+  if (probe?.status === 401 || (probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
   }
 
   if (onAuthPath || probe?.onAuthPage) {
-    if (probe?.bodyHasId || probe?.bodyHasEmail) {
+    if (probeHasAccountIdentity) {
       return {
         state: "auth_transitioning",
-        message: "ChatGPT is on an auth page even though the backend session is partially authenticated. Rerun /oracle-auth.",
+        message: "ChatGPT is on an auth page even though the backend probe returned account-like fields. Rerun /oracle-auth.",
       };
     }
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
   }
 
+  if (onAllowedOrigin && hasUsableComposer && probe?.domLoginCta && !probeHasAccountIdentity) {
+    return {
+      state: "login_required",
+      message: "ChatGPT login is required: the chat shell still shows public Log in/Sign up controls. Run /oracle-auth.",
+    };
+  }
+
   if (onAllowedOrigin && (probe?.status === 200 || probe?.status === 403) && hasUsableComposer) {
-    if (probe?.domLoginCta && (probe?.bodyHasId || probe?.bodyHasEmail)) {
+    if (probe?.domLoginCta) {
+      // The public logged-out composer case returned above, so a remaining visible login CTA here still has account-like probe data.
       return {
         state: "auth_transitioning",
-        message: "ChatGPT backend session is authenticated, but the web shell still shows public login CTA chrome. Rerun /oracle-auth.",
+        message: "ChatGPT backend probe returned account-like fields, but the web shell still shows public login controls. Rerun /oracle-auth.",
       };
     }
     return { state: "authenticated_and_ready", message: "ChatGPT is authenticated and ready." };
@@ -875,7 +893,7 @@ async function waitForOracleReady(job) {
       }
       if (elapsedMs >= 15_000) {
         await captureDiagnostics(job, "preflight-auth-transition");
-        throw new Error("ChatGPT backend session is authenticated, but the web shell stayed in a partially logged-in state. Rerun /oracle-auth.");
+        throw new Error(classification.message || "ChatGPT auth did not settle into a ready chat shell. Rerun /oracle-auth.");
       }
       await sleep(1000);
       continue;
@@ -1009,6 +1027,7 @@ async function openModelConfiguration(job) {
     await agentBrowser(job, "wait", "800");
     const after = await snapshotText(job);
     if (snapshotHasModelConfigurationUi(after)) return after;
+    if (canUseOpenModelMenuForSelection(after, job.selection)) return after;
 
     const configureEntry = findEntry(
       after,
@@ -1020,6 +1039,7 @@ async function openModelConfiguration(job) {
       await agentBrowser(job, "wait", "1200");
       const postConfigure = await snapshotText(job);
       if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
+      if (canUseOpenModelMenuForSelection(postConfigure, job.selection)) return postConfigure;
     }
   }
 

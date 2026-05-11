@@ -30,6 +30,7 @@ const THINKING_EFFORT_COMBOBOX_LABEL = "Thinking effort";
 const PRO_THINKING_EFFORT_COMBOBOX_LABEL = "Pro thinking effort";
 const EFFORT_LABELS = new Set(["Light", "Standard", "Extended", "Heavy"]);
 const BARE_EFFORT_PATTERN = /^(light|standard|extended|heavy)(?:, click to remove)?$/i;
+const INSTANT_CHIP_PATTERN = /^instant(?:, click to remove)?$/i;
 const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
 const PRO_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?pro(?:, click to remove)?$/i;
 const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"]);
@@ -122,6 +123,12 @@ function parseComposerChipSelection(label) {
     return {
       modelFamily: /** @type {OracleUiModelFamily} */ ("thinking"),
       effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (bareEffortMatch[1].toLowerCase()),
+    };
+  }
+
+  if (INSTANT_CHIP_PATTERN.test(normalized)) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("instant"),
     };
   }
 
@@ -240,11 +247,20 @@ export function snapshotHasModelConfigurationUi(snapshot) {
           .filter((family) => matchesModelFamilyLabel(entry.label, family)),
       ),
   );
+  const visibleRadioFamilies = new Set(
+    entries
+      .filter((entry) => entry.kind === "radio" && typeof entry.label === "string")
+      .flatMap((entry) =>
+        /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])
+          .filter((family) => matchesModelFamilyLabel(entry.label, family)),
+      ),
+  );
   const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
+  const hasIntelligenceHeading = entries.some((entry) => entry.kind === "heading" && normalizeText(entry.label) === "Intelligence" && !entry.disabled);
   const hasEffortCombobox = entries.some(
     (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,
   );
-  return visibleFamilies.size >= 2 || hasCloseButton || hasEffortCombobox;
+  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || hasCloseButton || hasIntelligenceHeading || hasEffortCombobox;
 }
 
 /**

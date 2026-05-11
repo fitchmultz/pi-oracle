@@ -12,6 +12,12 @@ export interface OracleJobSummaryLike {
   heartbeatAt?: string;
   projectId: string;
   sessionId: string;
+  selection?: {
+    preset?: string;
+    modelFamily?: string;
+    effort?: string;
+    autoSwitchToThinking?: boolean;
+  };
   followUpToJobId?: string;
   chatUrl?: string;
   conversationId?: string;

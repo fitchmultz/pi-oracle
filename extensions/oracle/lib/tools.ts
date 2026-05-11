@@ -957,12 +957,14 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
       "Oracle preflight ready.",
       details.session.sessionFile ? `Persisted session: ${details.session.sessionFile}` : undefined,
       details.auth.seedProfileDir ? `Auth seed profile: ${details.auth.seedProfileDir}` : undefined,
+      "Preflight validates the persisted pi session, local oracle config, and ChatGPT auth seed created by oracle_auth.",
       "You can continue with oracle context gathering and submission.",
     ].filter(Boolean).join("\n");
   }
 
   return [
     `Oracle preflight blocked: ${details.error?.message ?? "unknown blocker"}`,
+    "Preflight checks the persisted pi session, local oracle config, and ChatGPT auth seed before any archive work starts.",
     details.error?.suggestedNextStep ? `Suggested next step: ${details.error.suggestedNextStep}` : undefined,
   ].filter(Boolean).join("\n");
 }

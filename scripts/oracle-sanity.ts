@@ -33,6 +33,7 @@ import {
   buildAssistantCompletionSignature,
   deriveAssistantCompletionSignature,
   snapshotCanSafelySkipModelConfiguration,
+  snapshotHasModelConfigurationUi,
   snapshotHasModelOpener,
   snapshotHasUsableComposerControls,
   snapshotStronglyMatchesRequestedModel,
@@ -79,6 +80,7 @@ import {
   cancelOracleJob,
   createJob,
   getJobDir,
+  getOracleJobsDir,
   hasDurableWorkerHandoff,
   isActiveOracleJob,
   listOracleJobDirs,
@@ -299,6 +301,19 @@ async function waitForTmpStateDir(parentDir: string, finalName: string, timeoutM
 
 function hashedOracleStatePath(kind: string, key: string, rootDir: string): string {
   return join(rootDir, `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`);
+}
+
+function assertIsolatedSanityEnvironment(): void {
+  const jobsEnv = process.env.PI_ORACLE_JOBS_DIR?.trim();
+  const stateEnv = process.env.PI_ORACLE_STATE_DIR?.trim();
+  const jobsDir = getOracleJobsDir();
+  const stateDir = getOracleStateDir();
+  if (!jobsEnv || !stateEnv || jobsDir === "/tmp" || stateDir === "/tmp/pi-oracle-state") {
+    throw new Error(
+      "Refusing to run oracle sanity checks without isolated PI_ORACLE_STATE_DIR and PI_ORACLE_JOBS_DIR. " +
+      "Use `npm run sanity:oracle` so scripts/oracle-sanity-runner.mjs creates private temp dirs.",
+    );
+  }
 }
 
 async function ensureNoActiveJobs(): Promise<void> {
@@ -1099,20 +1114,24 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     assert(noSessionDetails?.ready === false, "oracle preflight should report ready=false when the session is not persisted");
     assert(noSessionError?.code === "persisted_session_required", "oracle preflight should surface persisted_session_required for no-session contexts");
 
-    const missingSeedResult = await preflightTool.execute!("oracle-preflight-missing-seed", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const missingSeedResult = await preflightTool.execute!("oracle-preflight-missing-seed", {}, undefined, () => { }, persistedCtx) as { content?: unknown; details?: unknown };
+    const missingSeedText = String(asRecord(Array.isArray(missingSeedResult.content) ? missingSeedResult.content[0] : undefined)?.text ?? "");
     const missingSeedDetails = asRecord(missingSeedResult.details);
     const missingSeedError = asRecord(missingSeedDetails?.error);
     const missingSeedAuth = asRecord(missingSeedDetails?.auth);
     assert(missingSeedDetails?.ready === false, "oracle preflight should report ready=false when the auth seed is missing");
     assert(missingSeedError?.code === "auth_seed_profile_missing", "oracle preflight should surface auth_seed_profile_missing when the seed dir is absent");
     assert(missingSeedAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the configured auth seed path");
+    assert(missingSeedText.includes("Preflight checks the persisted pi session, local oracle config, and ChatGPT auth seed"), "blocked oracle preflight text should explain what readiness covers before archive work starts");
 
     await mkdir(defaultSeedDir, { recursive: true, mode: 0o700 });
-    const readyResult = await preflightTool.execute!("oracle-preflight-ready", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const readyResult = await preflightTool.execute!("oracle-preflight-ready", {}, undefined, () => { }, persistedCtx) as { content?: unknown; details?: unknown };
+    const readyText = String(asRecord(Array.isArray(readyResult.content) ? readyResult.content[0] : undefined)?.text ?? "");
     const readyDetails = asRecord(readyResult.details);
     const readyAuth = asRecord(readyDetails?.auth);
     assert(readyDetails?.ready === true, "oracle preflight should report ready=true once persisted session and auth seed prerequisites are satisfied");
     assert(readyAuth?.ready === true && readyAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the ready auth seed path");
+    assert(readyText.includes("Preflight validates the persisted pi session, local oracle config, and ChatGPT auth seed created by oracle_auth"), "ready oracle preflight text should explain why oracle_auth matters");
 
     const missingExecutablePath = join(fixtureDir, "missing-chrome");
     await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, executablePath: missingExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -3557,7 +3576,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
   assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
   assert(workerSource.includes('candidate.label === "Model"'), "worker should recognize the current ChatGPT Model button as the configuration opener");
+  assert(workerSource.includes("canUseOpenModelMenuForSelection"), "worker should fall back to the top-level model menu for plain Instant when ChatGPT's configure sheet is unavailable");
   assert(workerSource.includes("snapshotHasUsableComposerControls"), "worker readiness should accept authenticated usable composer shells even when model labels drift");
+  assert(workerSource.includes("public Log in/Sign up controls"), "worker readiness should not accept ChatGPT's public logged-out composer shell as authenticated");
+  assert(workerSource.includes("throw new Error(classification.message"), "worker auth-transition timeout should preserve the specific classifier guidance instead of replacing it with a misleading generic partial-login message");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
@@ -4274,6 +4296,12 @@ function testSharedObservabilityHelpers(): void {
     id: string;
     projectId: string;
     sessionId: string;
+    selection: {
+      preset: string;
+      modelFamily: string;
+      effort?: string;
+      autoSwitchToThinking: boolean;
+    };
     promptPath: string;
     archivePath: string;
     workerLogPath: string;
@@ -4288,6 +4316,12 @@ function testSharedObservabilityHelpers(): void {
     queuedAt: "2026-01-01T00:00:00.000Z",
     projectId: "/repo",
     sessionId: "/repo/.pi/session.jsonl",
+    selection: {
+      preset: "thinking_light",
+      modelFamily: "thinking",
+      effort: "light",
+      autoSwitchToThinking: false,
+    },
     promptPath: "/tmp/prompt.md",
     archivePath: "/tmp/context.tar.zst",
     responsePath: "/tmp/response.md",
@@ -4349,6 +4383,7 @@ function testSharedObservabilityHelpers(): void {
     queueDepth: 3,
   });
   assert(submitResponse.includes("Oracle job queued: job-observe") && submitResponse.includes("Archive auto-pruned"), "shared observability helpers should format queued submit responses and auto-prune notes consistently");
+  assert(submitResponse.includes("Model preset: thinking_light (family=thinking, effort=light)"), "submit responses should disclose the resolved oracle model preset snapshot for transparency");
 
   const wakeupContent = buildOracleWakeupNotificationContent(job, {
     responsePath: "/tmp/response.md",
@@ -4384,6 +4419,23 @@ function testChatGptUiHelpers(): void {
   assert(
     snapshotCanSafelySkipModelConfiguration(closedThinkingSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
     "closed standard-thinking chips should safely skip model reconfiguration because the chip encodes the preset",
+  );
+
+  const closedInstantSnapshot = [
+    '- button "Instant, click to remove" [ref=e105]',
+    '- button "Instant" [expanded=false, ref=e106]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(closedInstantSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "closed instant chips should strongly verify the plain instant preset",
+  );
+  assert(
+    snapshotCanSafelySkipModelConfiguration(closedInstantSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "closed instant chips should safely skip model reconfiguration because the chip encodes the preset",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(closedInstantSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
+    "plain instant chips should not verify auto-switch instant presets",
   );
 
   const closedExtendedThinkingSnapshot = [
@@ -4515,6 +4567,7 @@ function testChatGptUiHelpers(): void {
     '- radio "Pro" [checked=false, ref=e8]',
     '- combobox "Thinking effort" [expanded=false, ref=e2]: Standard',
   ].join("\n");
+  assert(snapshotHasModelConfigurationUi(latestModelDialogSnapshot), "current Intelligence dialog with radio family controls should be recognized as the model configuration UI");
   assert(
     !snapshotStronglyMatchesRequestedModel(latestModelDialogSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
     "latest-model dialogs should not infer thinking from a visible effort combobox when no family is selected",
@@ -4620,6 +4673,23 @@ function testAuthFlowHelpers(): void {
     logPath: "/tmp/oracle-auth.log",
   });
   assert(transitioningState.state === "auth_transitioning", "auth classification should treat CTA-visible authenticated shells as transitioning");
+
+  const publicLoggedOutState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: [
+      readySnapshot,
+      '- button "Log in" [ref=e4]',
+      '- button "Sign up for free" [ref=e5]',
+    ].join("\n"),
+    body: "",
+    probe: { ...normalizedProbe, ok: false, status: 403, domLoginCta: true, bodyHasId: false, bodyHasEmail: false, bodyKeys: [] },
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(publicLoggedOutState.state === "login_required", "auth classification should not accept ChatGPT's public logged-out composer shell as authenticated");
+  assert(publicLoggedOutState.message.includes("public login controls"), "public composer login-required guidance should name the visible login controls");
 
   const readyState = classifyChatAuthPage({
     url: "https://chatgpt.com/",
@@ -4729,6 +4799,7 @@ async function testSanityRunnerIsolation(): Promise<void> {
   assert(runnerSource.includes("/tmp/pi-oracle-sanity-jobs-"), "sanity runner should force an isolated oracle jobs dir");
   assert(!runnerSource.includes("process.env.PI_ORACLE_STATE_DIR?.trim()"), "sanity runner should not reuse inherited production state dir env");
   assert(!runnerSource.includes("process.env.PI_ORACLE_JOBS_DIR?.trim()"), "sanity runner should not reuse inherited production jobs dir env");
+  assert((await readFile(new URL("./oracle-sanity.ts", import.meta.url), "utf8")).includes("assertIsolatedSanityEnvironment();"), "sanity entrypoint should fail fast when invoked without isolated oracle temp dirs");
 }
 
 function testArtifactCandidateHeuristics(): void {
@@ -4966,6 +5037,7 @@ async function testPollerHostSafety(): Promise<void> {
 }
 
 async function main() {
+  assertIsolatedSanityEnvironment();
   await ensureNoActiveJobs();
   assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
   assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");

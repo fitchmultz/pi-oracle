@@ -109,7 +109,9 @@ export function classifyChatAuthPage(args) {
     return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/error page. Logs: ${args.logPath}` };
   }
 
-  if (args.probe?.status === 401 || (args.probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer || args.probe?.domLoginCta))) {
+  const probeHasAccountIdentity = args.probe?.bodyHasId === true || args.probe?.bodyHasEmail === true;
+
+  if (args.probe?.status === 401 || (args.probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
     return {
       state: "login_required",
       message:
@@ -120,7 +122,7 @@ export function classifyChatAuthPage(args) {
   }
 
   if (args.probe?.onAuthPage) {
-    if (args.probe?.bodyHasId || args.probe?.bodyHasEmail) {
+    if (probeHasAccountIdentity) {
       return {
         state: "auth_transitioning",
         message:
@@ -137,6 +139,16 @@ export function classifyChatAuthPage(args) {
     };
   }
 
+  if (onAllowedOrigin && hasUsableComposer && args.probe?.domLoginCta && !probeHasAccountIdentity) {
+    return {
+      state: "login_required",
+      message:
+        `ChatGPT still shows public login controls after syncing cookies from ${args.cookieSourceLabel}. ` +
+        `The cookie DB may be stale, from the wrong browser profile, or for an account that is logged out. ` +
+        `Check auth.chromeProfile/auth.chromeCookiePath/auth.chromiumKeychain and inspect ${args.logPath}.`,
+    };
+  }
+
   if (onAllowedOrigin && (args.probe?.status === 200 || args.probe?.status === 403) && hasUsableComposer) {
     if (!args.probe?.domLoginCta) {
       return {
@@ -145,12 +157,12 @@ export function classifyChatAuthPage(args) {
       };
     }
 
+    // The public logged-out composer case returned above, so a remaining visible login CTA here still has account-like probe data.
     return {
       state: "auth_transitioning",
       message:
-        args.probe?.bodyHasId || args.probe?.bodyHasEmail
-          ? `ChatGPT backend session is authenticated but the shell still shows public CTA chrome. Logs: ${args.logPath}`
-          : `ChatGPT accepted cookies but is still hydrating/auth-selecting. Logs: ${args.logPath}`,
+        `ChatGPT backend probe returned account-like fields, but the shell still shows public login controls. ` +
+        `Trying to resolve the account shell. Logs: ${args.logPath}`,
     };
   }
 

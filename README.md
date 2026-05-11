@@ -99,11 +99,13 @@ This reads ChatGPT cookies from your configured local browser profile and writes
 
 Expected result:
 
-- `/oracle` preflights before expensive repo reading
-- `oracle_submit` creates or queues a job
-- the job uploads a repo archive to ChatGPT.com, capped at 250 MiB after default exclusions/pruning
-- the response is saved under `/tmp/oracle-<job-id>/response.md` by default
-- the matching `pi` session gets one best-effort wake-up when the job finishes
+- The `/oracle` prompt now runs an early oracle preflight before expensive repo reading or archive creation.
+- The agent chooses a context-rich relevant archive up to the 250 MB ceiling, not the smallest possible one-file slice when nearby context helps.
+- `oracle_submit` creates or queues a job.
+- If local packing is too large, the prompt treats that as a retryable archive-selection failure and narrows automatically before surfacing the problem.
+- The job uploads a repo archive to ChatGPT.com, capped at 250 MiB after default exclusions/pruning.
+- The response is saved under `/tmp/oracle-<job-id>/response.md` by default.
+- The matching `pi` session gets one best-effort wake-up when the job finishes.
 
 If the wake-up does not arrive, run:
 
@@ -134,7 +136,7 @@ If the wake-up does not arrive, run:
 
 ```mermaid
 flowchart LR
-    A["/oracle request"] --> B["Agent preflights local oracle readiness"]
+    A["/oracle request"] --> B["Agent preflights, then gathers a context-rich relevant repo slice"]
     B --> C["Agent chooses context-rich archive inputs"]
     C --> D["oracle_submit builds .tar.zst archive"]
     D --> E["Detached worker clones isolated auth seed profile"]
@@ -159,9 +161,9 @@ User-facing commands:
 - `/oracle-followup <job-id> <request>` — continue an earlier oracle job in the same ChatGPT thread
 - `/oracle-auth` — sync ChatGPT cookies into the isolated oracle auth seed profile
 - `/oracle-read [job-id]` — inspect job status and saved response preview
-- `/oracle-status [job-id]` — inspect a job or list recent job ids
+- `/oracle-status [job-id]` — inspect a job or list recent job ids when no explicit id is given
 - `/oracle-cancel <job-id>` — cancel a queued or active job
-- `/oracle-clean <job-id|all>` — remove temp files for terminal jobs; recent wake-up results may be retained briefly
+- `/oracle-clean <job-id|all>` — remove temp files for terminal jobs; recently woken terminal jobs may stay retained briefly, and a blocked cleanup returns the next eligible cleanup time
 
 Agent-facing tools:
 
@@ -193,6 +195,7 @@ Notes:
 - `defaults.preset` is the default ChatGPT model preset for oracle jobs.
 - The canonical preset ids live in [`extensions/oracle/lib/config.ts`](extensions/oracle/lib/config.ts).
 - If the packaged default is fine, omit `defaults.preset`.
+- When an agent is unsure which oracle preset fits, it should omit `preset` and use the configured default model instead of asking by default.
 - You usually do not need browser paths unless auto-detection fails.
 
 ### Custom Chromium cookie sources
@@ -241,7 +244,7 @@ Example Helium config:
 | `instant` | Instant |
 | `instant_auto_switch` | Instant - Auto-switch to Thinking Enabled |
 
-`oracle_submit` accepts canonical preset ids or matching human-readable labels. Keep config values on canonical ids.
+`oracle_submit` accepts canonical preset ids or a matching human-readable preset label. Keep config values on canonical ids.
 
 ## Outputs and cleanup
 
@@ -277,6 +280,7 @@ Review the code and design docs before using it with private or regulated materi
 - Make sure ChatGPT works in the same local browser profile you configured.
 - For custom Chromium cookie sources, confirm `auth.chromeCookiePath` points at that profile's `Cookies` DB and `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service.
 - Re-run `/oracle-auth`.
+- Agent callers can use `oracle_auth({})` once before retrying a stale-auth oracle submission.
 - If ChatGPT is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
 
 ### Custom Chromium auth says cookies synced but the session is rejected

@@ -46,6 +46,20 @@ function formatAutoPrunedArchiveMessage(autoPrunedPrefixes) {
   return `Archive auto-pruned generic generated-output-name dirs to fit size limit: ${autoPrunedPrefixes.map((entry) => `${entry.relativePath}/ (${formatBytes(entry.bytes)})`).join(", ")}`;
 }
 
+/**
+ * @param {OracleJobSummaryLike["selection"]} selection
+ * @returns {string | undefined}
+ */
+function formatOracleSelection(selection) {
+  if (!selection?.preset || !selection.modelFamily) return undefined;
+  const details = [
+    `family=${selection.modelFamily}`,
+    selection.effort ? `effort=${selection.effort}` : undefined,
+    selection.autoSwitchToThinking === true ? "auto-switch-to-thinking=true" : undefined,
+  ].filter(Boolean).join(", ");
+  return `Model preset: ${selection.preset}${details ? ` (${details})` : ""}`;
+}
+
 const ACTIVE_SUMMARY_STATUSES = new Set(["preparing", "submitted", "waiting"]);
 const DEFAULT_ORACLE_HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 const DEFAULT_ACTIVE_JOB_POLL_HINT_SECONDS = 15;
@@ -221,6 +235,7 @@ export function formatOracleSubmitResponse(job, options) {
     `${options.queued ? "Oracle job queued" : "Oracle job dispatched"}: ${job.id}`,
     options.queued && options.queuePosition && options.queueDepth ? `Queue position: ${options.queuePosition} of ${options.queueDepth}` : undefined,
     job.followUpToJobId ? `Follow-up to: ${job.followUpToJobId}` : undefined,
+    formatOracleSelection(job.selection),
     `Prompt: ${job.promptPath}`,
     `Archive: ${job.archivePath}`,
     formatAutoPrunedArchiveMessage(options.autoPrunedPrefixes),

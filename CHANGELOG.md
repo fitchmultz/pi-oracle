@@ -2,8 +2,18 @@
 
 ## Unreleased
 
+## 0.6.17 - 2026-05-10
+
 ### Changed
 - made `/oracle-auth` success and failure output easier to scan, with compact source summaries and source-specific troubleshooting for configured Chromium cookie sources
+- tightened README quickstart/command wording around preflight-first `/oracle` behavior, context-rich archive selection, cleanup retention, and preset defaults
+- added the resolved oracle model preset snapshot to `oracle_submit` queued/dispatched output so agents can see what preset will run
+- clarified `oracle_preflight` output so users can see that it validates the persisted pi session, local config, and ChatGPT auth seed created by `oracle_auth`
+- made direct `scripts/oracle-sanity.ts` execution fail fast unless isolated oracle state/jobs dirs are provided, preventing accidental sanity-job leakage into live oracle pollers
+
+### Fixed
+- stopped worker/auth readiness checks from treating ChatGPT's public logged-out composer shell as an authenticated ready state, and made stale-auth failures name the visible login controls instead of reporting a misleading partial-login state
+- made plain `instant` model selection robust against the current ChatGPT model menu by recognizing closed Instant chips and falling back to the top-level model menu when the configure sheet is unavailable
 
 ## 0.6.16 - 2026-05-07
 
