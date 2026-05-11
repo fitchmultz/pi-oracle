@@ -34,6 +34,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
 } from "./chatgpt-ui-helpers.mjs";
 import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -81,6 +82,7 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
 const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
+scrubSweetCookieSafeStoragePasswordEnv();
 
 let currentJob;
 let browserStarted = false;
@@ -216,6 +218,7 @@ function spawnCommand(command, args, options = {}) {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(),
     });
     let stdout = "";
     let stderr = "";
@@ -275,8 +278,20 @@ async function removeChromiumProcessSingletonArtifacts(profileDir) {
   ]);
 }
 
+function assertSafeRuntimeProfilePath(path, label, config = undefined) {
+  try {
+    assertNotKnownBrowserUserDataPath(path, label, {
+      cookieSources: config ? { chromeProfile: config.auth.chromeProfile, chromeCookiePath: config.auth.chromeCookiePath } : undefined,
+    });
+  } catch (error) {
+    throw new Error(`Oracle ${label} path is unsafe: ${path}. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function cloneSeedProfileToRuntime(job) {
   const seedDir = job.config.browser.authSeedProfileDir;
+  assertSafeRuntimeProfilePath(seedDir, "auth seed profile", job.config);
+  assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
   if (!existsSync(seedDir)) {
     throw new Error(`Oracle auth seed profile not found: ${seedDir}. Run /oracle-auth first.`);
   }
@@ -315,27 +330,28 @@ async function cleanupRuntime(job) {
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
-    await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(async (error) => {
+    try {
+      assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
+      await rm(job.runtimeProfileDir, { recursive: true, force: true });
+    } catch (error) {
       const message = `Runtime profile cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    }
+    await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(async (error) => {
+      const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    });
+    await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(async (error) => {
+      const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
     if (warnings.length === 0) {
-      await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(async (error) => {
-        const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
-        warnings.push(message);
-        await log(message).catch(() => undefined);
-      });
-      await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(async (error) => {
-        const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
-        warnings.push(message);
-        await log(message).catch(() => undefined);
-      });
-    }
-    if (warnings.length === 0) {
       await log(`Cleanup summary: runtime ${job.runtimeId} released with no warnings`).catch(() => undefined);
     } else {
-      await log(`Cleanup summary: runtime ${job.runtimeId} released with ${warnings.length} warning(s)`).catch(() => undefined);
+      await log(`Cleanup summary: runtime ${job.runtimeId} released after ${warnings.length} warning(s)`).catch(() => undefined);
     }
     return warnings;
   } finally {

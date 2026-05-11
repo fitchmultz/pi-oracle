@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, posix } from "node:path";
+import { sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -398,11 +399,14 @@ async function writeArchiveFile(
 
   const { spawn } = await import("node:child_process");
   await new Promise<void>((resolvePromise, rejectPromise) => {
+    const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv();
     const tar = spawn("tar", ["--null", "-cf", "-", "-T", listPath], {
       cwd,
+      env: scrubbedEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const zstd = spawn("zstd", ["-19", "-T0", "-f", "-o", archivePath], {
+      env: scrubbedEnv,
       stdio: ["pipe", "ignore", "pipe"],
     });
 
@@ -829,6 +833,14 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
       message,
       rejectedValue,
       suggestedNextStep: `Install ${rejectedValue || "the missing dependency"} and retry.`,
+    };
+  }
+
+  if (/^Oracle (auth seed profile|runtime profile|runtime profiles) path is unsafe: /.test(message)) {
+    return {
+      code: "oracle_profile_path_unsafe",
+      message,
+      suggestedNextStep: "Move browser.authSeedProfileDir/browser.runtimeProfilesDir outside real browser profile directories and retry.",
     };
   }
 
