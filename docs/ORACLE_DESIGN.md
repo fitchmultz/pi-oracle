@@ -279,6 +279,8 @@ Browser/auth settings are global-only because they control local privileged brow
 }
 ```
 
+`browser.cloneStrategy` defaults to `apfs-clone` on macOS and `copy` on Windows. The `auth.chromiumKeychain` path is macOS-only; normal Google Chrome profiles on Windows use the default cookie importer.
+
 `auth.chromiumKeychain` is an opt-in alternate cookie source for Chromium-family browsers that are not handled by the default `@steipete/sweet-cookie` Chrome-compatible importer. It must be configured with `auth.chromeCookiePath`; partial config is rejected so `/oracle-auth` cannot silently fall back to a different browser profile.
 
 When both `auth.chromeCookiePath` and `auth.chromiumKeychain` are present, auth bootstrap:

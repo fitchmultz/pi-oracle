@@ -735,6 +735,8 @@ async function testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config: O
 }
 
 async function testRuntimeProfileCloneTimeoutKillsHungCp(config: OracleConfig): Promise<void> {
+  if (process.platform === "win32") return;
+
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-clone-timeout-"));
   const binDir = await mkdtemp(join(tmpdir(), "oracle-clone-bin-"));
   const seedDir = join(fixtureDir, "seed");
@@ -781,6 +783,8 @@ while :; do sleep 1; done
 }
 
 async function testAuthBootstrapAgentBrowserTimeoutFailsFast(config: OracleConfig): Promise<void> {
+  if (process.platform === "win32") return;
+
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-timeout-"));
   const agentBrowserPath = join(fixtureDir, "agent-browser");
   const browserPidPath = join(fixtureDir, "agent-browser.pid");
@@ -896,7 +900,11 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     await mkdir(projectExtensionsDir, { recursive: true, mode: 0o700 });
     await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
     await writeFile(join(projectExtensionsDir, "oracle.json"), `${JSON.stringify({ defaults: { preset: "instant" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    await writeExecutableScript(agentBrowserPath, "#!/bin/sh\nexit 0\n");
+    if (process.platform === "win32") {
+      await writeFile(agentBrowserPath, "@echo off\r\nexit /b 0\r\n", { encoding: "utf8" });
+    } else {
+      await writeExecutableScript(agentBrowserPath, "#!/bin/sh\nexit 0\n");
+    }
     process.env.PI_CODING_AGENT_DIR = agentDir;
     const configLoad = getOracleConfigLoadDetails(projectDir);
     const authConfigGuidance = {
@@ -2790,6 +2798,8 @@ function encryptChromiumCookieValue(value: string, password: string, options: { 
 }
 
 async function testChromiumCookieSourceReadsConfiguredKeychain(): Promise<void> {
+  if (process.platform !== "darwin") return;
+
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-chromium-cookie-source-"));
   const binDir = join(fixtureDir, "bin");
   const dbPath = join(fixtureDir, "Cookies");
@@ -3510,7 +3520,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
   assert(pkg.engines?.node === ">=22", "package.json should advertise the actual Node.js support floor");
-  assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
+  assert(pkg.os?.includes("darwin") && pkg.os?.includes("win32"), "package.json should declare macOS and Windows support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");

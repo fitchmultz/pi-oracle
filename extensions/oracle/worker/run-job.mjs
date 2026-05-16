@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Job state is persisted under worker-held locks, browser/session artifacts live under the configured oracle directories, and cleanup preserves durable recovery semantics.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -195,6 +195,7 @@ function spawnCommand(command, args, options = {}) {
     const { timeoutMs, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
+      shell: process.platform === "win32",
       ...spawnOptions,
     });
     let stdout = "";
@@ -258,7 +259,9 @@ async function cloneSeedProfileToRuntime(job) {
   await withLock(ORACLE_STATE_DIR, "auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
-    if (job.config.browser.cloneStrategy === "apfs-clone") {
+    if (process.platform === "win32") {
+      await cp(seedDir, job.runtimeProfileDir, { recursive: true });
+    } else if (job.config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
       try {
         await spawnCommand("/bin/cp", ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       } catch (error) {

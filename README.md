@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Validated primarily on macOS with Google Chrome/Chromium and `pi` 0.65.0+. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Validated primarily on macOS with Google Chrome/Chromium and `pi` 0.65.0+. Native Windows support is beta and requires the local prerequisites listed below. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -37,7 +37,7 @@ Do not use it for:
 
 - short local coding tasks that `pi` can handle directly
 - projects that must never be uploaded to ChatGPT.com
-- non-macOS environments or machines without the required local browser/tooling
+- machines without the required local browser/tooling
 
 ## Problem it solves
 
@@ -75,13 +75,20 @@ pi install https://github.com/fitchmultz/pi-oracle
 
 You need:
 
-- macOS
+- macOS or Windows 10/11
 - Node.js 22 or newer
 - `pi` 0.65.0 or newer
 - Google Chrome or another Chromium-family browser
 - ChatGPT already signed in to the configured local browser profile
 - `agent-browser`, `tar`, and `zstd` available on the machine
 - a normal persisted `pi` session, not `pi --no-session`
+
+Windows notes:
+
+- Install `agent-browser` so the `agent-browser` command is on `PATH`, for example `npm install -g agent-browser`.
+- Install `zstd`, for example `winget install Facebook.Zstandard`, and open a new terminal afterward.
+- Windows includes `tar` on supported Windows 10/11 installs. If `oracle_preflight` reports it missing, install a tar provider and make sure `tar` is on `PATH`.
+- The default Windows Chrome profile is read from `%LOCALAPPDATA%\Google\Chrome\User Data`. If Chrome is somewhere else, set `browser.executablePath` in `%USERPROFILE%\.pi\agent\extensions\oracle.json`.
 
 ### 3. Sync ChatGPT auth once
 
@@ -200,7 +207,7 @@ Notes:
 
 ### Custom Chromium cookie sources
 
-Use this only for a Chromium-family browser that the default cookie importer cannot read.
+Use this only on macOS for a Chromium-family browser that the default cookie importer cannot read. The default Google Chrome importer handles normal Chrome profiles on Windows without `auth.chromiumKeychain`.
 
 Before running `/oracle-auth` with this path:
 
@@ -266,7 +273,7 @@ Review the code and design docs before using it with private or regulated materi
 
 ## Current limits
 
-- Experimental public beta, validated primarily on macOS.
+- Experimental public beta, validated primarily on macOS; Windows support is beta.
 - ChatGPT UI, auth, model controls, and artifact download behavior can drift.
 - Archive uploads are capped at 250 MiB after default exclusions and automatic whole-repo pruning.
 - A real ChatGPT web session is required.

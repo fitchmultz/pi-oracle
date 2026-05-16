@@ -2,13 +2,13 @@
 // Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
 // Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
-// Invariants/Assumptions: Runs against a local macOS Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
+// Invariants/Assumptions: Runs against a local Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
@@ -57,7 +57,7 @@ let URL_PATH = "(oracle-auth url path unavailable)";
 let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
-const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
+const REAL_CHROME_USER_DATA_DIR = defaultChromeUserDataDir();
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -77,6 +77,24 @@ const AGENT_BROWSER_CLOSE_TIMEOUT_MS = readPositiveIntEnv("PI_ORACLE_AUTH_CLOSE_
 const AGENT_BROWSER_KILL_GRACE_MS = readPositiveIntEnv("PI_ORACLE_AUTH_KILL_GRACE_MS", 2_000);
 
 let runtimeProfileDir = config.browser.authSeedProfileDir;
+
+function defaultChromeUserDataDir() {
+  if (process.platform === "darwin") return resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) return resolve(process.env.LOCALAPPDATA, "Google", "Chrome", "User Data");
+  return undefined;
+}
+
+function comparablePath(value) {
+  const normalized = normalize(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathEqualsOrIsInside(pathValue, parentPath) {
+  const child = comparablePath(pathValue);
+  const parent = comparablePath(parentPath);
+  const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
+  return child === parent || child.startsWith(parentWithSeparator);
+}
 
 function authSessionName() {
   return `${config.browser.sessionPrefix}-auth`;
@@ -143,6 +161,7 @@ function spawnCommand(command, args, options = {}) {
     const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
+      shell: process.platform === "win32",
       ...spawnOptions,
     });
     let stdout = "";
@@ -261,13 +280,13 @@ async function sweepStaleStagingProfiles(targetDir) {
 
 async function createProfilePlan(profileDir) {
   const targetDir = resolve(profileDir);
-  if (!targetDir.startsWith("/")) {
+  if (!isAbsolute(targetDir)) {
     throw new Error(`Oracle profileDir must be an absolute path: ${profileDir}`);
   }
   if (targetDir === "/" || targetDir === homedir()) {
     throw new Error(`Oracle profileDir is unsafe: ${targetDir}`);
   }
-  if (targetDir === REAL_CHROME_USER_DATA_DIR || targetDir.startsWith(`${REAL_CHROME_USER_DATA_DIR}/`)) {
+  if (REAL_CHROME_USER_DATA_DIR && pathEqualsOrIsInside(targetDir, REAL_CHROME_USER_DATA_DIR)) {
     throw new Error(`Oracle profileDir must not point into the real Chrome user-data directory: ${targetDir}`);
   }
 

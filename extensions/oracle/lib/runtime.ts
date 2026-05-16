@@ -6,8 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
-import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { delimiter, dirname, join } from "node:path";
+import { access, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { delimiter, dirname, extname, join } from "node:path";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
 import type { OracleConfig } from "./config.js";
@@ -158,27 +158,43 @@ function unwritableOracleDirectoryMessage(label: "runtime profiles" | "jobs", pa
 
 async function resolveExecutableOnPath(command: string): Promise<string | undefined> {
   if (!command) return undefined;
-  if (command.includes("/")) {
-    try {
-      await access(command, fsConstants.X_OK);
-      return command;
-    } catch {
-      return undefined;
+  const candidateNames = executableCandidateNames(command);
+  if (command.includes("/") || command.includes("\\")) {
+    for (const candidate of candidateNames) {
+      try {
+        await access(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch {
+        continue;
+      }
     }
+    return undefined;
   }
 
   const pathValue = process.env.PATH ?? "";
   for (const segment of pathValue.split(delimiter)) {
     if (!segment) continue;
-    const candidate = join(segment, command);
-    try {
-      await access(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      continue;
+    for (const candidateName of candidateNames) {
+      const candidate = join(segment, candidateName);
+      try {
+        await access(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch {
+        continue;
+      }
     }
   }
   return undefined;
+}
+
+function executableCandidateNames(command: string): string[] {
+  if (process.platform !== "win32" || extname(command)) return [command];
+  const pathExt = process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD";
+  const extensions = pathExt
+    .split(";")
+    .map((extension) => extension.trim())
+    .filter(Boolean);
+  return [command, ...extensions.map((extension) => `${command}${extension}`)];
 }
 
 async function assertConfiguredBrowserExecutableReady(executablePath: string | undefined): Promise<void> {
@@ -379,7 +395,7 @@ export async function releaseConversationLease(conversationId: string | undefine
 }
 
 function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDir: string): string[] {
-  if (config.browser.cloneStrategy === "apfs-clone") {
+  if (config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
     return ["-cR", sourceDir, destinationDir];
   }
   return ["-R", sourceDir, destinationDir];
@@ -429,6 +445,19 @@ async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promis
   });
 }
 
+async function copyProfileDirectory(
+  config: OracleConfig,
+  sourceDir: string,
+  destinationDir: string,
+  options?: { timeoutMs?: number },
+): Promise<void> {
+  if (process.platform === "win32") {
+    await cp(sourceDir, destinationDir, { recursive: true });
+    return;
+  }
+  await spawnCp(profileCloneArgs(config, sourceDir, destinationDir), options);
+}
+
 export async function cloneSeedProfileToRuntime(
   config: OracleConfig,
   runtimeProfileDir: string,
@@ -440,7 +469,7 @@ export async function cloneSeedProfileToRuntime(
   await withAuthLock({ runtimeProfileDir, seedDir }, async () => {
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await mkdir(dirname(runtimeProfileDir), { recursive: true, mode: 0o700 }).catch(() => undefined);
-    await spawnCp(profileCloneArgs(config, seedDir, runtimeProfileDir), { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
+    await copyProfileDirectory(config, seedDir, runtimeProfileDir, { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
   });
 
   return getSeedGeneration(config);
@@ -455,7 +484,10 @@ export interface OracleCleanupReport {
 
 async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
   return new Promise<string | undefined>((resolve) => {
-    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { stdio: "ignore" });
+    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], {
+      stdio: "ignore",
+      shell: process.platform === "win32",
+    });
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     let timedOut = false;
@@ -519,4 +551,3 @@ export async function cleanupRuntimeArtifacts(runtime: {
 
   return report;
 }
-

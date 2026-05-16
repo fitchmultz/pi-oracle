@@ -2,7 +2,7 @@
 // Responsibilities: Read stable process start identities, detect liveness, wait for freshly spawned processes, and terminate tracked processes safely.
 // Scope: Local process coordination only; job-state mutation and queue semantics stay in higher-level helpers.
 // Usage: Imported by lib/jobs.ts, lib/runtime.ts, worker/run-job.mjs, and shared state helpers.
-// Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
+// Invariants/Assumptions: Process identity is validated with platform process start time to defend against PID reuse.
 
 import { spawn, execFileSync } from "node:child_process";
 
@@ -20,6 +20,15 @@ function sleep(ms) {
 export function readProcessStartedAt(pid) {
   if (!pid || pid <= 0) return undefined;
   try {
+    if (process.platform === "win32") {
+      const startedAt = execFileSync("powershell", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToString('o')`,
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return startedAt || undefined;
+    }
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return startedAt || undefined;
   } catch {

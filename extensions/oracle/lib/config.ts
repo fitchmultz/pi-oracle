@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, normalize, sep } from "node:path";
 import { getProjectId } from "./runtime.js";
 
 export const MODEL_FAMILIES = ["instant", "thinking", "pro"] as const;
@@ -186,6 +186,14 @@ const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.op
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application Support", "Google", "Chrome");
+const DEFAULT_WINDOWS_CHROME_USER_DATA_DIR = process.env.LOCALAPPDATA
+  ? join(process.env.LOCALAPPDATA, "Google", "Chrome", "User Data")
+  : undefined;
+const DEFAULT_WINDOWS_CHROME_EXECUTABLE_CANDIDATES = [
+  process.env.PROGRAMFILES ? join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe") : undefined,
+  process.env["PROGRAMFILES(X86)"] ? join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe") : undefined,
+  process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe") : undefined,
+].filter((candidate): candidate is string => Boolean(candidate));
 
 export interface OracleConfig {
   defaults: {
@@ -231,8 +239,20 @@ export interface OracleConfig {
   };
 }
 
+function getDefaultChromeUserDataDir(): string | undefined {
+  if (process.platform === "darwin") return DEFAULT_MAC_CHROME_USER_DATA_DIR;
+  if (process.platform === "win32") return DEFAULT_WINDOWS_CHROME_USER_DATA_DIR;
+  return undefined;
+}
+
 function detectDefaultChromeExecutablePath(): string | undefined {
-  return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  if (process.platform === "darwin") {
+    return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  }
+  if (process.platform === "win32") {
+    return DEFAULT_WINDOWS_CHROME_EXECUTABLE_CANDIDATES.find((candidate) => existsSync(candidate));
+  }
+  return undefined;
 }
 
 function detectDefaultChromeUserAgent(executablePath: string | undefined): string | undefined {
@@ -241,14 +261,17 @@ function detectDefaultChromeUserAgent(executablePath: string | undefined): strin
     const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8" }).trim();
     const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+\.\d+)/);
     if (!versionMatch) return undefined;
-    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
+    const platformToken = process.platform === "win32" ? "Windows NT 10.0; Win64; x64" : "Macintosh; Intel Mac OS X 10_15_7";
+    return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
   } catch {
     return undefined;
   }
 }
 
 function detectDefaultChromeProfileName(): string {
-  const localStatePath = join(DEFAULT_MAC_CHROME_USER_DATA_DIR, "Local State");
+  const userDataDir = getDefaultChromeUserDataDir();
+  if (!userDataDir) return "Default";
+  const localStatePath = join(userDataDir, "Local State");
   if (!existsSync(localStatePath)) return "Default";
   try {
     const localState = JSON.parse(readFileSync(localStatePath, "utf8")) as { profile?: { last_used?: string } };
@@ -323,7 +346,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
     runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
     maxConcurrentJobs: 2,
-    cloneStrategy: "apfs-clone",
+    cloneStrategy: process.platform === "darwin" ? "apfs-clone" : "copy",
     chatUrl: "https://chatgpt.com/",
     authUrl: "https://chatgpt.com/auth/login",
     runMode: "headless",
@@ -408,11 +431,24 @@ function expectAbsoluteNormalizedPath(value: unknown, path: string): string {
   return normalize(expanded);
 }
 
+function comparablePath(value: string): string {
+  const normalized = normalize(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathEqualsOrIsInside(pathValue: string, parentPath: string): boolean {
+  const child = comparablePath(pathValue);
+  const parent = comparablePath(parentPath);
+  const parentWithSeparator = parent.endsWith(sep) ? parent : `${parent}${sep}`;
+  return child === parent || child.startsWith(parentWithSeparator);
+}
+
 function expectSafeProfilePath(pathValue: string, path: string): string {
   if (pathValue === "/" || pathValue === homedir()) {
     throw new Error(`Invalid oracle config: ${path} points to an unsafe directory`);
   }
-  if (pathValue === DEFAULT_MAC_CHROME_USER_DATA_DIR || pathValue.startsWith(`${DEFAULT_MAC_CHROME_USER_DATA_DIR}/`)) {
+  const defaultChromeUserDataDir = getDefaultChromeUserDataDir();
+  if (defaultChromeUserDataDir && pathEqualsOrIsInside(pathValue, defaultChromeUserDataDir)) {
     throw new Error(`Invalid oracle config: ${path} must not point into the real Chrome user-data directory`);
   }
   return pathValue;
