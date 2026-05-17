@@ -1,4 +1,4 @@
-// Purpose: Provide pure ChatGPT conversation-state helpers used by the oracle worker.
+// Purpose: Provide pure provider conversation-state helpers used by the oracle worker.
 // Responsibilities: Slice assistant snapshot regions, normalize URLs, and track stable conversation URL observations.
 // Scope: Pure worker flow logic only; browser I/O and polling loops stay in run-job.mjs.
 // Usage: Imported by run-job.mjs and sanity tests to validate conversation-state heuristics without driving a browser.
@@ -53,7 +53,7 @@ export function stripUrlQueryAndHash(url) {
  */
 export function isConversationPathUrl(url) {
   try {
-    return /\/c\/[A-Za-z0-9-]+$/i.test(new URL(url).pathname);
+    return /\/(?:c|chat)\/[A-Za-z0-9-]+$/i.test(new URL(url).pathname);
   } catch {
     return false;
   }

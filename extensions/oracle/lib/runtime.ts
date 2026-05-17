@@ -429,6 +429,15 @@ async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promis
   });
 }
 
+async function removeChromiumProcessSingletonArtifacts(profileDir: string): Promise<void> {
+  await Promise.all([
+    rm(join(profileDir, "SingletonLock"), { force: true }),
+    rm(join(profileDir, "SingletonSocket"), { force: true }),
+    rm(join(profileDir, "SingletonCookie"), { force: true }),
+    rm(join(profileDir, "DevToolsActivePort"), { force: true }),
+  ]);
+}
+
 export async function cloneSeedProfileToRuntime(
   config: OracleConfig,
   runtimeProfileDir: string,
@@ -441,6 +450,7 @@ export async function cloneSeedProfileToRuntime(
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await mkdir(dirname(runtimeProfileDir), { recursive: true, mode: 0o700 }).catch(() => undefined);
     await spawnCp(profileCloneArgs(config, seedDir, runtimeProfileDir), { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
+    await removeChromiumProcessSingletonArtifacts(runtimeProfileDir);
   });
 
   return getSeedGeneration(config);

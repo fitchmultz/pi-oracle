@@ -10,11 +10,17 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import { getProjectId } from "./runtime.js";
 
-export const MODEL_FAMILIES = ["instant", "thinking", "pro"] as const;
+export const ORACLE_PROVIDERS = ["chatgpt", "grok"] as const;
+export type OracleProvider = (typeof ORACLE_PROVIDERS)[number];
+
+export const MODEL_FAMILIES = ["instant", "thinking", "pro", "grok"] as const;
 export type OracleModelFamily = (typeof MODEL_FAMILIES)[number];
 
 export const EFFORTS = ["light", "standard", "extended", "heavy"] as const;
 export type OracleEffort = (typeof EFFORTS)[number];
+
+export const GROK_MODES = ["heavy"] as const;
+export type OracleGrokMode = (typeof GROK_MODES)[number];
 
 /**
  * Canonical preset registry for `oracle_submit` preset selection.
@@ -156,7 +162,9 @@ export function getOracleSubmitPresetById(id: OracleSubmitPresetId): OracleSubmi
 
 /** Resolved execution snapshot generated from a preset at submit time. */
 export type OracleResolvedSelection = {
-  preset: OracleSubmitPresetId;
+  provider: OracleProvider;
+  preset?: OracleSubmitPresetId;
+  mode?: OracleGrokMode;
   modelFamily: OracleModelFamily;
   effort?: OracleEffort;
   autoSwitchToThinking: boolean;
@@ -169,10 +177,42 @@ export type OracleResolvedSelection = {
 export function resolveOracleSubmitPreset(presetId: OracleSubmitPresetId): OracleResolvedSelection {
   const def = getOracleSubmitPresetById(presetId);
   return {
+    provider: "chatgpt",
     preset: presetId,
     modelFamily: def.modelFamily,
     effort: def.modelFamily === "instant" ? undefined : def.effort,
     autoSwitchToThinking: def.modelFamily === "instant" ? def.autoSwitchToThinking : false,
+  };
+}
+
+export function resolveOracleGrokMode(mode: OracleGrokMode): OracleResolvedSelection {
+  return {
+    provider: "grok",
+    mode,
+    modelFamily: "grok",
+    effort: "heavy",
+    autoSwitchToThinking: false,
+  };
+}
+
+export function getProviderAuthSeedProfileDir(config: OracleConfig, provider: OracleProvider): string {
+  return provider === "grok" ? `${config.browser.authSeedProfileDir}-grok` : config.browser.authSeedProfileDir;
+}
+
+export function resolveOracleConfigForProvider(config: OracleConfig, provider: OracleProvider): OracleConfig {
+  if (provider === "chatgpt") return config;
+  return {
+    ...config,
+    defaults: {
+      ...config.defaults,
+      provider,
+    },
+    browser: {
+      ...config.browser,
+      authSeedProfileDir: getProviderAuthSeedProfileDir(config, provider),
+      chatUrl: "https://grok.com/",
+      authUrl: "https://grok.com/",
+    },
   };
 }
 
@@ -189,7 +229,9 @@ const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application
 
 export interface OracleConfig {
   defaults: {
+    provider: OracleProvider;
     preset: OracleSubmitPresetId;
+    grokMode: OracleGrokMode;
   };
   browser: {
     sessionPrefix: string;
@@ -316,7 +358,9 @@ export function formatOracleAuthConfigSummary(details: OracleConfigLoadDetails):
 
 export const DEFAULT_CONFIG: OracleConfig = {
   defaults: {
+    provider: "chatgpt",
     preset: "pro_extended",
+    grokMode: "heavy",
   },
   browser: {
     sessionPrefix: "oracle",
@@ -529,7 +573,9 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const root = normalizeLegacyBrowserConfig(expectObject(value, "root"));
 
   const defaults = expectObject(root.defaults, "defaults");
+  const provider = expectEnum(defaults.provider, "defaults.provider", ORACLE_PROVIDERS);
   const preset = expectEnum(defaults.preset, "defaults.preset", PRESET_IDS);
+  const grokMode = expectEnum(defaults.grokMode, "defaults.grokMode", GROK_MODES);
 
   const browser = expectObject(root.browser, "browser");
   const auth = expectObject(root.auth, "auth");
@@ -552,7 +598,9 @@ function validateOracleConfig(value: unknown): OracleConfig {
 
   return {
     defaults: {
+      provider,
       preset,
+      grokMode,
     },
     browser: {
       sessionPrefix: expectString(browser.sessionPrefix, "browser.sessionPrefix"),

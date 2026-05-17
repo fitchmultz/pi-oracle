@@ -13,7 +13,9 @@ export interface OracleJobSummaryLike {
   projectId: string;
   sessionId: string;
   selection?: {
+    provider?: string;
     preset?: string;
+    mode?: string;
     modelFamily?: string;
     effort?: string;
     autoSwitchToThinking?: boolean;

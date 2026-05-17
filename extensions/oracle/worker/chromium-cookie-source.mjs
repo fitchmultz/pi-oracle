@@ -1,4 +1,4 @@
-// Purpose: Read ChatGPT cookies from arbitrary macOS Chromium-family cookie stores when sweet-cookie's built-in browser list is too narrow.
+// Purpose: Read provider cookies from arbitrary macOS Chromium-family cookie stores when sweet-cookie's built-in browser list is too narrow.
 // Responsibilities: Snapshot a Chromium Cookies SQLite DB, decrypt AES-CBC cookie values with a configured Keychain item, and return sweet-cookie-shaped cookie objects.
 // Scope: macOS Chromium cookie extraction only; auth policy filtering and browser seeding stay in auth-bootstrap.mjs.
 // Usage: auth-bootstrap.mjs uses this when auth.chromiumKeychain is configured alongside auth.chromeCookiePath.
@@ -117,7 +117,7 @@ function buildHostWhereClause(origins) {
     try {
       for (const domain of parentCookieDomains(new URL(origin).hostname)) domains.add(domain);
     } catch {
-      // Ignore malformed origins; validated ChatGPT config supplies the real set.
+      // Ignore malformed origins; validated provider config supplies the real set.
     }
   }
   if (domains.size === 0) return "0";

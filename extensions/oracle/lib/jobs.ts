@@ -943,7 +943,7 @@ export async function createJob(
     requestSource: input.requestSource,
     selection: input.selection,
     followUpToJobId: input.followUpToJobId,
-    chatUrl: input.followUpToJobId ? input.chatUrl : undefined,
+    chatUrl: input.chatUrl,
     conversationId,
     responseFormat: "text/plain",
     artifactPaths: [],

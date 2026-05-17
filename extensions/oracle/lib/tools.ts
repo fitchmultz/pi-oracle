@@ -16,8 +16,12 @@ import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.j
 import {
   coerceOracleSubmitPresetId,
   loadOracleConfig,
+  ORACLE_PROVIDERS,
   ORACLE_SUBMIT_PRESET_IDS,
+  resolveOracleConfigForProvider,
+  resolveOracleGrokMode,
   resolveOracleSubmitPreset,
+  type OracleProvider,
 } from "./config.js";
 import {
   appendCleanupWarnings,
@@ -59,7 +63,7 @@ import {
 } from "./runtime.js";
 
 const ORACLE_SUBMIT_PARAMS = Type.Object({
-  prompt: Type.String({ description: "Prompt text to send to ChatGPT web." }),
+  prompt: Type.String({ description: "Prompt text to send to ChatGPT or Grok web." }),
   files: Type.Array(Type.String({
     description: "Project-relative file or directory path to include in the archive.",
     minLength: 1,
@@ -68,14 +72,33 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
   }),
+  provider: Type.Optional(
+    Type.String({
+      description: `Oracle web provider. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}. Use grok when the user asks to oracle to Grok. Grok archives are capped at 200 MiB.`,
+    }),
+  ),
   preset: Type.Optional(
     Type.String({
       description:
         `ChatGPT model preset. Omit to use the configured default preset. Canonical ids: ${ORACLE_SUBMIT_PRESET_IDS.join(", ")}. ` +
-        "Matching human-readable preset labels and common hyphen/space variants are normalized automatically.",
+        "Matching human-readable preset labels and common hyphen/space variants are normalized automatically. Do not pass preset when provider is grok.",
+    }),
+  ),
+  mode: Type.Optional(
+    Type.String({
+      description: "Provider mode. For Grok, only heavy is currently supported. Omit to use the configured default mode.",
     }),
   ),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
+});
+
+const ORACLE_PREFLIGHT_PARAMS = Type.Object({
+  provider: Type.Optional(Type.String({ description: `Provider readiness to check. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.` })),
+  followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose provider/thread readiness should be checked." })),
+});
+
+const ORACLE_AUTH_PARAMS = Type.Object({
+  provider: Type.Optional(Type.String({ description: `Provider auth seed to refresh. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.` })),
 });
 
 const ORACLE_READ_PARAMS = Type.Object({
@@ -86,7 +109,9 @@ const ORACLE_CANCEL_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
 });
 
-const MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
+const CHATGPT_MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
+const GROK_MAX_ARCHIVE_BYTES = 200 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = CHATGPT_MAX_ARCHIVE_BYTES;
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
 const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = MAX_ARCHIVE_BYTES;
 const ARCHIVE_COMMAND_TIMEOUT_MS = 120_000;
@@ -347,7 +372,7 @@ function formatArchiveOversizeError(args: {
   const topLevel = summarizeTopLevelIncludedPaths(args.entrySizes);
   const adaptiveCandidates = summarizeAdaptivePruneCandidates(args.entrySizes, args.adaptivePruneMinBytes).slice(0, 7);
   return [
-    `Oracle archive exceeds ChatGPT upload limit (${formatBytes(args.maxBytes)}) after default exclusions${args.autoPrunedPrefixes.length > 0 ? " and automatic generic generated-output-dir pruning" : ""}.`,
+    `Oracle archive exceeds provider upload limit (${formatBytes(args.maxBytes)}) after default exclusions${args.autoPrunedPrefixes.length > 0 ? " and automatic generic generated-output-dir pruning" : ""}.`,
     `The local archive measured ${formatBytes(args.archiveBytes)} (${args.archiveBytes} bytes), so submission stopped before dispatch.`,
     args.autoPrunedPrefixes.length > 0 ? "Automatically pruned generic generated-output paths before failing:" : undefined,
     ...args.autoPrunedPrefixes.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
@@ -497,7 +522,7 @@ export async function createArchiveForTesting(
       }
 
       const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath, { commandTimeoutMs: options?.commandTimeoutMs });
-      if (archiveBytes < maxBytes) {
+      if (archiveBytes <= maxBytes) {
         return {
           sha256: await sha256File(archivePath),
           archiveBytes,
@@ -528,8 +553,29 @@ export async function createArchiveForTesting(
   }
 }
 
-async function createArchive(cwd: string, files: string[], archivePath: string): Promise<ArchiveCreationResult> {
-  return createArchiveForTesting(cwd, files, archivePath);
+async function createArchive(cwd: string, files: string[], archivePath: string, maxBytes = MAX_ARCHIVE_BYTES): Promise<ArchiveCreationResult> {
+  return createArchiveForTesting(cwd, files, archivePath, { maxBytes });
+}
+
+function normalizeOracleProvider(value: unknown, fallback: OracleProvider, toolName = "oracle_submit"): OracleProvider {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") throw new Error(`${toolName} provider must be a string`);
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "chatgpt" || normalized === "chat-gpt" || normalized === "openai") return "chatgpt";
+  if (normalized === "grok" || normalized === "xai" || normalized === "x.ai") return "grok";
+  throw new Error(`Unknown ${toolName} provider: ${value}. Use chatgpt or grok.`);
+}
+
+function normalizeGrokMode(value: unknown, fallback: "heavy"): "heavy" {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") throw new Error("oracle_submit mode must be a string");
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "heavy" || normalized === "grok heavy" || normalized === "grok-heavy") return "heavy";
+  throw new Error(`Unknown Grok oracle mode: ${value}. Only heavy is currently supported.`);
+}
+
+function getProviderMaxArchiveBytes(provider: "chatgpt" | "grok"): number {
+  return provider === "grok" ? GROK_MAX_ARCHIVE_BYTES : CHATGPT_MAX_ARCHIVE_BYTES;
 }
 
 export interface QueuedArchivePressure {
@@ -590,6 +636,7 @@ function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
   followUpToJobId?: string;
   chatUrl?: string;
   conversationId?: string;
+  provider?: "chatgpt" | "grok";
 } {
   if (!previousJobId) return {};
   const previous = readJob(previousJobId);
@@ -609,6 +656,7 @@ function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
     followUpToJobId: previous.id,
     chatUrl: previous.chatUrl,
     conversationId: previous.conversationId || parseConversationId(previous.chatUrl),
+    provider: previous.selection?.provider === "grok" ? "grok" : "chatgpt",
   };
 }
 
@@ -898,7 +946,7 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
-  if (toolName === "oracle_submit" && message.startsWith("Oracle archive exceeds ChatGPT upload limit")) {
+  if (toolName === "oracle_submit" && (message.startsWith("Oracle archive exceeds provider upload limit") || message.startsWith("Oracle archive exceeds ChatGPT upload limit"))) {
     return {
       code: "archive_too_large",
       message,
@@ -937,6 +985,7 @@ function buildOracleToolErrorResult(
 
 type OraclePreflightDetails = {
   ready: boolean;
+  provider?: OracleProvider;
   session: {
     persisted: boolean;
     sessionFile?: string;
@@ -951,25 +1000,32 @@ type OraclePreflightDetails = {
   error?: OracleToolErrorDetails;
 };
 
+function formatOracleProviderLabel(provider: OracleProvider | undefined): string {
+  if (provider === "grok") return "Grok";
+  if (provider === "chatgpt") return "ChatGPT";
+  return "configured provider";
+}
+
 function formatOraclePreflightResponse(details: OraclePreflightDetails): string {
+  const providerLabel = formatOracleProviderLabel(details.provider);
   if (details.ready) {
     return [
-      "Oracle preflight ready.",
+      `Oracle preflight ready for ${providerLabel}.`,
       details.session.sessionFile ? `Persisted session: ${details.session.sessionFile}` : undefined,
       details.auth.seedProfileDir ? `Auth seed profile: ${details.auth.seedProfileDir}` : undefined,
-      "Preflight validates the persisted pi session, local oracle config, and ChatGPT auth seed created by oracle_auth.",
+      `Preflight validates the persisted pi session, local oracle config, and ${providerLabel} auth seed created by oracle_auth.`,
       "You can continue with oracle context gathering and submission.",
     ].filter(Boolean).join("\n");
   }
 
   return [
     `Oracle preflight blocked: ${details.error?.message ?? "unknown blocker"}`,
-    "Preflight checks the persisted pi session, local oracle config, and ChatGPT auth seed before any archive work starts.",
+    `Preflight checks the persisted pi session, local oracle config, and ${providerLabel} auth seed before any archive work starts.`,
     details.error?.suggestedNextStep ? `Suggested next step: ${details.error.suggestedNextStep}` : undefined,
   ].filter(Boolean).join("\n");
 }
 
-async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePreflightDetails> {
+async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: unknown; followUpJobId?: unknown } = {}): Promise<OraclePreflightDetails> {
   const sessionFile = getSessionFile(ctx);
   if (!hasPersistedSessionFile(sessionFile)) {
     return {
@@ -986,11 +1042,23 @@ async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePrefligh
   }
 
   let config;
+  let provider: OracleProvider | undefined;
   try {
-    config = loadOracleConfig(ctx.cwd);
+    const followUpJobId = params.followUpJobId;
+    if (followUpJobId !== undefined && typeof followUpJobId !== "string") {
+      throw new Error("oracle_preflight followUpJobId must be a string");
+    }
+    const baseConfig = loadOracleConfig(ctx.cwd);
+    const followUp = resolveFollowUp(followUpJobId, ctx.cwd);
+    provider = normalizeOracleProvider(params.provider, followUp.provider ?? baseConfig.defaults.provider, "oracle_preflight");
+    if (followUp.provider && provider !== followUp.provider) {
+      throw new Error(`Follow-up job ${followUpJobId} uses provider ${followUp.provider}; cannot check it with ${provider}.`);
+    }
+    config = resolveOracleConfigForProvider(baseConfig, provider);
   } catch (error) {
     return {
       ready: false,
+      provider,
       session: { persisted: true, sessionFile },
       config: { ready: false },
       auth: { ready: false },
@@ -1004,6 +1072,7 @@ async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePrefligh
     const errorDetails = buildOracleToolErrorDetails("oracle_preflight", error, {});
     return {
       ready: false,
+      provider,
       session: { persisted: true, sessionFile },
       config: { ready: true },
       auth: {
@@ -1016,6 +1085,7 @@ async function runOraclePreflight(ctx: ExtensionContext): Promise<OraclePrefligh
 
   return {
     ready: true,
+    provider,
     session: { persisted: true, sessionFile },
     config: { ready: true },
     auth: {
@@ -1042,11 +1112,11 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     description: "Check whether oracle is ready in this session before spending time gathering context or preparing a submission.",
     promptSnippet: "Check oracle readiness before expensive /oracle preparation.",
     promptGuidelines: [
-      "Call oracle_preflight before doing expensive /oracle preparation. If ready is false, stop immediately and report the suggested next step instead of reading files or crafting archive inputs.",
+      "Call oracle_preflight before doing expensive /oracle preparation. Pass provider='grok' when the user explicitly asks for Grok, or followUpJobId for same-thread follow-ups. If ready is false, stop immediately and report the suggested next step instead of reading files or crafting archive inputs.",
     ],
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      const details = await runOraclePreflight(ctx);
+    parameters: ORACLE_PREFLIGHT_PARAMS,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const details = await runOraclePreflight(ctx, params);
       return {
         content: [{ type: "text" as const, text: formatOraclePreflightResponse(details) }],
         details,
@@ -1057,23 +1127,26 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
   pi.registerTool({
     name: "oracle_auth",
     label: "Oracle Auth",
-    description: "Refresh the shared oracle auth seed profile by importing ChatGPT cookies from your configured local browser profile.",
+    description: "Refresh the shared oracle auth seed profile by importing ChatGPT or Grok cookies from your configured local browser profile, based on the configured default provider.",
     promptSnippet: "Refresh oracle auth before retrying a login-required oracle run.",
     promptGuidelines: [
-      "Call oracle_auth when an oracle run failed because ChatGPT login is required, the worker said to rerun /oracle-auth, or stale auth appears to be blocking submission execution.",
+      "Call oracle_auth when an oracle run failed because ChatGPT or Grok login is required, the worker said to rerun /oracle-auth, or stale auth appears to be blocking submission execution. Pass provider='grok' when refreshing Grok auth.",
       "At most once per user request, refresh auth and then retry the blocked oracle submission.",
       "If oracle_auth itself fails, stop and report the failure instead of looping.",
     ],
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+    parameters: ORACLE_AUTH_PARAMS,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd);
+        const baseConfig = loadOracleConfig(projectCwd);
+        const provider = normalizeOracleProvider(params.provider, baseConfig.defaults.provider, "oracle_auth");
+        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd, provider);
         return {
           content: [{ type: "text" as const, text: message }],
           details: {
             refreshed: true,
-            authSeedProfileDir: loadOracleConfig(projectCwd).browser.authSeedProfileDir,
+            provider,
+            authSeedProfileDir: resolveOracleConfigForProvider(baseConfig, provider).browser.authSeedProfileDir,
           },
         };
       } catch (error) {
@@ -1086,13 +1159,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     name: "oracle_submit",
     label: "Oracle Submit",
     description:
-      "Dispatch a background ChatGPT web oracle job after gathering context. Always pass a prompt and exact project-relative archive inputs. " +
-      "Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults; canonical preset ids are listed in the README and ORACLE_SUBMIT_PRESETS registry, and matching labels are normalized at submit time.",
-    promptSnippet: "Dispatch a background ChatGPT web oracle job after gathering repo context.",
+      "Dispatch a background ChatGPT or Grok web oracle job after gathering context. Always pass a prompt and exact project-relative archive inputs. " +
+      "Optional provider: set `provider` to `grok` when the user asks for Grok; Grok currently supports only Heavy. Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults; canonical preset ids are listed in the README and ORACLE_SUBMIT_PRESETS registry, and matching labels are normalized at submit time.",
+    promptSnippet: "Dispatch a background ChatGPT or Grok web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
-      "If the immediately preceding oracle run failed because ChatGPT login is required or the worker explicitly said to rerun /oracle-auth, call oracle_auth once before retrying the submission. Do not loop auth refreshes.",
-      "Prefer context-rich archives up to the 250 MB ceiling because more relevant surrounding context is usually better than less.",
+      "If the immediately preceding oracle run failed because ChatGPT or Grok login is required or the worker explicitly said to rerun /oracle-auth, call oracle_auth once before retrying the submission; pass provider='grok' for Grok retries. Do not loop auth refreshes.",
+      "Prefer context-rich archives up to the provider ceiling because more relevant surrounding context is usually better than less: 250 MB for ChatGPT and 200 MiB for Grok.",
       "By default, archive the whole repo by passing '.' for broad or unclear requests; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and nested secrets directories anywhere in the repo.",
       "For narrower asks, still include nearby tests, docs, configs, and adjacent modules when they may improve answer quality. Only narrow aggressively when the user explicitly asks, privacy/sensitivity requires it, or size pressure forces it.",
       "Do not default to a one-file archive for a single function, file, or stack trace if the relevant surrounding context still fits comfortably within the limit.",
@@ -1104,21 +1177,31 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "For any other submit-time error, stop and report the error instead of retrying automatically.",
       "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
       "After a successful or queued oracle_submit, stop; do not continue the task while the oracle job is running. If oracle_submit failed with retryable archive_too_large, narrow the archive and retry first.",
-      "Use `preset` as the only model-selection parameter on oracle_submit. " +
+      "For ChatGPT, use `preset` as the only model-selection parameter on oracle_submit. " +
       `Canonical ids: ${ORACLE_SUBMIT_PRESET_IDS.join(", ")}. ` +
-      "matching human-readable preset labels are normalized automatically. Omit preset to use the configured default.",
+      "matching human-readable preset labels are normalized automatically. Omit preset to use the configured default. For Grok, pass provider='grok' and omit preset; only Heavy is supported today.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const config = loadOracleConfig(projectCwd);
+        const baseConfig = loadOracleConfig(projectCwd);
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
         const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);
-        const presetId = typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : config.defaults.preset;
-        const selection = resolveOracleSubmitPreset(presetId);
         const followUp = resolveFollowUp(params.followUpJobId, projectCwd);
+        const provider = normalizeOracleProvider(params.provider, followUp.provider ?? baseConfig.defaults.provider, "oracle_submit");
+        if (followUp.provider && provider !== followUp.provider) {
+          throw new Error(`Follow-up job ${params.followUpJobId} uses provider ${followUp.provider}; cannot continue it with ${provider}.`);
+        }
+        if (provider === "grok" && typeof params.preset === "string") {
+          throw new Error("oracle_submit preset is only valid for ChatGPT. For Grok, use provider='grok' and mode='heavy'.");
+        }
+        const selection = provider === "grok"
+          ? resolveOracleGrokMode(normalizeGrokMode(params.mode, baseConfig.defaults.grokMode))
+          : resolveOracleSubmitPreset(typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : baseConfig.defaults.preset);
+        const config = resolveOracleConfigForProvider(baseConfig, provider);
+        const targetChatUrl = followUp.chatUrl;
         // Validate caller-specified archive paths before surfacing unrelated local setup failures such as a missing auth seed profile.
         resolveArchiveInputs(projectCwd, params.files);
         await assertOracleSubmitPrerequisites(config);
@@ -1144,7 +1227,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
 
         try {
-          archive = await createArchive(projectCwd, params.files, tempArchivePath);
+          archive = await createArchive(projectCwd, params.files, tempArchivePath, getProviderMaxArchiveBytes(selection.provider));
           const currentArchive = archive;
           await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
             await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
@@ -1184,7 +1267,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                   files: params.files,
                   selection,
                   followUpToJobId: followUp.followUpToJobId,
-                  chatUrl: followUp.chatUrl,
+                  chatUrl: targetChatUrl,
                   requestSource: "tool",
                 },
                 projectCwd,
@@ -1227,7 +1310,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                 files: params.files,
                 selection,
                 followUpToJobId: followUp.followUpToJobId,
-                chatUrl: followUp.chatUrl,
+                chatUrl: targetChatUrl,
                 requestSource: "tool",
               },
               projectCwd,
@@ -1369,6 +1452,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     name: "oracle_read",
     label: "Oracle Read",
     description: "Read the status and outputs of a previously dispatched oracle job.",
+    promptSnippet: "Read oracle job status, queue position, artifacts, and response preview by job id.",
+    promptGuidelines: ["Use oracle_read when the user asks for the status, output, or artifacts of a previously submitted oracle job."],
     parameters: ORACLE_READ_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
@@ -1427,6 +1512,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     name: "oracle_cancel",
     label: "Oracle Cancel",
     description: "Cancel a queued or active oracle job.",
+    promptSnippet: "Cancel a queued or active oracle background job by job id.",
+    promptGuidelines: ["Use oracle_cancel only when the user explicitly asks to stop a queued or active oracle job."],
     parameters: ORACLE_CANCEL_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {

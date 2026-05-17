@@ -1,34 +1,36 @@
 ---
-description: Prepare and dispatch a ChatGPT web oracle job
+description: Prepare and dispatch a ChatGPT or Grok web oracle job
 ---
 You are preparing an /oracle job.
 
 Do not answer the user's request directly yet.
 
 Required workflow:
-1. Call `oracle_preflight` immediately.
-2. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, or prepare archive inputs first. If the blocker is an auth seed or stale-auth issue that `oracle_auth` can repair, call `oracle_auth` once, rerun `oracle_preflight`, and continue only if it becomes `ready: true`. Otherwise stop immediately and report the blocking issue plus the suggested next step.
+1. Call `oracle_preflight` immediately. If the user says to use Grok, pass `provider: "grok"` to `oracle_preflight`.
+2. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, or prepare archive inputs first. If the blocker is an auth seed or stale-auth issue that `oracle_auth` can repair, call `oracle_auth` once with the same provider, rerun `oracle_preflight` with the same provider, and continue only if it becomes `ready: true`. Otherwise stop immediately and report the blocking issue plus the suggested next step.
 3. Understand the request and decide whether it is explicitly narrow or genuinely broad.
-4. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the 250 MB archive ceiling.
+4. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the provider archive ceiling: 250 MB for ChatGPT, 200 MiB for Grok.
 5. If the user scope is explicit and narrow, start from the directly relevant area but still include nearby files, tests, docs, configs, and adjacent modules when they may improve answer quality. Keep the archive tightly minimal only when the user explicitly asks for that, privacy/sensitivity requires it, or size pressure forces it.
 6. If the request is broad, architectural, release-oriented, or otherwise repo-wide, gather broader context and usually archive `.`.
 7. Choose archive inputs for the oracle job.
-8. Craft a concise but complete oracle prompt for ChatGPT web.
+8. Craft a concise but complete oracle prompt for the selected web provider.
 9. Call `oracle_submit` with the prompt and exact archive inputs.
 10. Stop immediately after dispatching the oracle job.
 
-Oracle model (`oracle_submit`):
+Oracle provider/model (`oracle_submit`):
+- If the user says to use Grok (for example “Use the oracle to Grok about ...”), pass **`provider: "grok"`**. Grok currently supports only **`mode: "heavy"`**; omit `mode` unless the user explicitly says Heavy.
+- Otherwise omit **`provider`** to use the configured default provider, or pass **`provider: "chatgpt"`** only when needed for clarity.
 - To choose a specific ChatGPT model, pass **`preset`** with one of the allowed ids from the canonical preset registry.
 - Matching human-readable preset labels and common hyphen/space variants are also accepted and normalized automatically, but prefer canonical ids when readily available.
 - **Or** omit **`preset`** entirely to use the configured default model (from oracle config).
-- **`preset`** is the only model-selection parameter on `oracle_submit`. Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`.
+- For ChatGPT, **`preset`** is the only model-selection parameter. Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`.
 - If unsure, omit **`preset`** and use the configured default. Ask the user about model choice only when they explicitly want model control or the choice would materially change the result.
 
 Rules:
 - Use `oracle_preflight` before any expensive `/oracle` preparation so missing persisted-session or local auth/config blockers fail fast.
-- If the immediately preceding oracle run for this request failed because ChatGPT login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, call `oracle_auth` once and then retry the oracle submission once. Do not loop auth refreshes.
+- If the immediately preceding oracle run for this request failed because ChatGPT/Grok login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, call `oracle_auth` once and then retry the oracle submission once. For Grok, pass `provider: "grok"` to `oracle_auth`. Do not loop auth refreshes.
 - Always include an archive. Do not submit without context files.
-- By default, prefer context-rich archives up to the 250 MB ceiling because more relevant context is usually better than less. For broad or unclear requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
+- By default, prefer context-rich archives up to the provider ceiling because more relevant context is usually better than less. The ceiling is 250 MB for ChatGPT and 200 MiB for Grok. For broad or unclear requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
 - Only limit file selection if the user explicitly requests a tight archive, if privacy/sensitivity requires it, or if the archive would otherwise exceed the size limit after exclusions/pruning.
 - For targeted asks, still include directly related surrounding files, tests, docs, configs, and adjacent modules when they may improve answer quality. Do not default to a one-file archive just because the user mentioned one file, one function, or one stack trace.
 - Do not keep exploring once you already have enough context to submit well.

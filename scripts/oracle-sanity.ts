@@ -1102,6 +1102,7 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
   const persistedCtx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   const noSessionCtx = createExtensionCtx({ getSessionFile: () => undefined } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub());
   const defaultSeedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
+  const grokSeedDir = `${defaultSeedDir}-grok`;
   const configPath = join(agentExtensionsDir, "oracle.json");
 
   try {
@@ -1124,6 +1125,23 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     assert(missingSeedAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should report the configured auth seed path");
     assert(missingSeedText.includes("Preflight checks the persisted pi session, local oracle config, and ChatGPT auth seed"), "blocked oracle preflight text should explain what readiness covers before archive work starts");
 
+    await writeFile(configPath, `${JSON.stringify({ defaults: { provider: "grok" }, browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const missingGrokSeedResult = await preflightTool.execute!("oracle-preflight-missing-grok-seed", {}, undefined, () => { }, persistedCtx) as { content?: unknown; details?: unknown };
+    const missingGrokSeedText = String(asRecord(Array.isArray(missingGrokSeedResult.content) ? missingGrokSeedResult.content[0] : undefined)?.text ?? "");
+    const missingGrokSeedDetails = asRecord(missingGrokSeedResult.details);
+    const missingGrokSeedAuth = asRecord(missingGrokSeedDetails?.auth);
+    assert(missingGrokSeedDetails?.ready === false && missingGrokSeedDetails?.provider === "grok", "oracle preflight should use the configured Grok default provider");
+    assert(missingGrokSeedAuth?.seedProfileDir === grokSeedDir, "oracle preflight should check the Grok-specific auth seed path when Grok is selected");
+    assert(missingGrokSeedText.includes("Grok auth seed"), "oracle preflight text should name the selected provider auth seed");
+
+    await mkdir(grokSeedDir, { recursive: true, mode: 0o700 });
+    const readyGrokResult = await preflightTool.execute!("oracle-preflight-grok-ready", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+    const readyGrokDetails = asRecord(readyGrokResult.details);
+    const readyGrokAuth = asRecord(readyGrokDetails?.auth);
+    assert(readyGrokDetails?.ready === true && readyGrokDetails?.provider === "grok", "oracle preflight should pass when the selected Grok auth seed is ready");
+    assert(readyGrokAuth?.seedProfileDir === grokSeedDir, "oracle preflight ready details should report the selected Grok auth seed path");
+
+    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await mkdir(defaultSeedDir, { recursive: true, mode: 0o700 });
     const readyResult = await preflightTool.execute!("oracle-preflight-ready", {}, undefined, () => { }, persistedCtx) as { content?: unknown; details?: unknown };
     const readyText = String(asRecord(Array.isArray(readyResult.content) ? readyResult.content[0] : undefined)?.text ?? "");
@@ -2902,8 +2920,16 @@ function testAuthCookiePolicy(): void {
     { name: "oai-client-auth-info", value: "info", domain: "auth.openai.com", path: "/", secure: true, sameSite: "Lax" },
     { name: "_account_is_fedramp", value: "1", domain: "chatgpt.com", path: "/", secure: false, sameSite: "Lax" },
     { name: "_ga", value: "analytics", domain: "chatgpt.com", path: "/" },
+    { name: "cf_clearance", value: "clear", domain: ".chatgpt.com", path: "/", secure: true },
     { name: "__cf_bm", value: "bot", domain: "auth.openai.com", path: "/", secure: true },
+    { name: "__cflb", value: "lb", domain: "chatgpt.com", path: "/", secure: true },
+    { name: "_cfuvid", value: "visitor", domain: ".chatgpt.com", path: "/", secure: true },
     { name: "totally_unknown_cookie", value: "mystery", domain: "chatgpt.com", path: "/" },
+    { name: "sso", value: "grok-session", domain: "grok.com", path: "/", secure: true, httpOnly: true, sameSite: "Lax" },
+    { name: "sso-rw", value: "grok-rw", domain: "x.ai", path: "/", secure: true, httpOnly: true, sameSite: "Lax" },
+    { name: "auth_token", value: "x-auth", domain: "x.com", path: "/", secure: true, httpOnly: true, sameSite: "Lax" },
+    { name: "ct0", value: "x-csrf", domain: "x.com", path: "/", secure: true, sameSite: "Lax" },
+    { name: "guest_id", value: "ambient", domain: "x.com", path: "/", secure: true, sameSite: "Lax" },
     { name: "oai-client-auth-info", value: "evil", domain: "evil.example", path: "/", secure: true, sameSite: "Lax" },
   ];
 
@@ -2915,7 +2941,15 @@ function testAuthCookiePolicy(): void {
   assert(keptNames.includes("oai-client-auth-info@auth.openai.com"), "auth cookie should be kept");
   assert(keptNames.includes("_account_is_fedramp@chatgpt.com"), "fedramp marker should be kept");
   assert(!keptNames.some((name) => name.startsWith("_ga@")), "analytics cookie should be dropped");
-  assert(!keptNames.some((name) => name.startsWith("__cf_bm@")), "bot-management cookie should be dropped");
+  assert(keptNames.includes("cf_clearance@chatgpt.com"), "Cloudflare clearance cookie should be kept for ChatGPT challenge continuity");
+  assert(keptNames.includes("__cf_bm@auth.openai.com"), "Cloudflare bot-management cookie should be kept because cf_clearance alone is insufficient for current ChatGPT challenge continuity");
+  assert(keptNames.includes("__cflb@chatgpt.com"), "Cloudflare load-balancer cookie should be kept for ChatGPT challenge continuity");
+  assert(keptNames.includes("_cfuvid@chatgpt.com"), "Cloudflare visitor cookie should be kept for ChatGPT challenge continuity");
+  assert(keptNames.includes("sso@grok.com"), "Grok SSO cookie should be kept for Grok auth continuity");
+  assert(keptNames.includes("sso-rw@x.ai"), "x.ai Grok SSO read-write cookie should be kept for Grok auth continuity");
+  assert(keptNames.includes("auth_token@x.com"), "X auth token should be kept for Grok auth continuity");
+  assert(keptNames.includes("ct0@x.com"), "X CSRF cookie should be kept for Grok auth continuity");
+  assert(!keptNames.includes("guest_id@x.com"), "ambient X cookies should be dropped unless explicitly required for Grok auth");
   assert(droppedReasons.includes("noise"), "expected noise cookies to be classified and dropped");
   assert(droppedReasons.includes("non-auth"), "expected unknown cookies to be classified and dropped");
   assert(droppedReasons.includes("foreign-domain"), "expected foreign-domain cookies to be classified and dropped");
@@ -3249,20 +3283,21 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(followUpPromptSource.includes("Call `oracle_preflight` immediately"), "/oracle-followup prompt should require an immediate oracle_preflight guard");
   assert(followUpPromptSource.includes("Usage: /oracle-followup <job-id> <request>"), "/oracle-followup prompt should document the required usage contract for job id plus follow-up request");
   assert(followUpPromptSource.includes("followUpJobId"), "/oracle-followup prompt should explicitly route the parsed job id through oracle_submit.followUpJobId");
-  assert(followUpPromptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle-followup prompt should prefer context-rich archives within the configured upload ceiling");
+  assert(followUpPromptSource.includes("Bias toward context-rich submissions when they fit within the provider archive ceiling"), "/oracle-followup prompt should prefer context-rich archives within the configured upload ceiling");
   assert(followUpPromptSource.includes("call `oracle_auth` once"), "/oracle-followup prompt should tell agents to refresh auth once before retrying a stale-auth follow-up failure");
   assert(followUpPromptSource.includes("details.error.code === \"archive_too_large\""), "/oracle-followup prompt should explicitly recognize retryable archive_too_large submit failures");
   assert(followUpPromptSource.includes("after at most two total `oracle_submit` attempts"), "/oracle-followup prompt should cap automatic archive-too-large retries");
   assert(followUpPromptSource.includes("nearby files, tests, docs, configs, and adjacent modules"), "/oracle-followup prompt should preserve relevant surrounding context for narrow follow-up requests");
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, or prepare archive inputs first"), "/oracle prompt should forbid expensive prep before preflight passes");
-  assert(promptSource.includes("Bias toward context-rich submissions when they fit within the 250 MB archive ceiling"), "/oracle prompt should bias toward context-rich pre-submit context gathering within the upload ceiling");
+  assert(promptSource.includes("Bias toward context-rich submissions when they fit within the provider archive ceiling"), "/oracle prompt should bias toward context-rich pre-submit context gathering within the upload ceiling");
   assert(promptSource.includes("call `oracle_auth` once"), "/oracle prompt should tell agents to refresh auth once before retrying a stale-auth failure");
   assert(promptSource.includes("details.error.code === \"archive_too_large\""), "/oracle prompt should explicitly recognize retryable archive_too_large submit failures");
   assert(promptSource.includes("If the user scope is explicit and narrow"), "/oracle prompt should recognize explicit narrow requests before broad repo exploration");
   assert(promptSource.includes("Do not keep exploring once you already have enough context to submit well"), "/oracle prompt should bias toward dispatch once enough context is in hand");
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
-  assert(promptSource.includes("is the only model-selection parameter"), "/oracle prompt should state preset is the only selector");
+  assert(promptSource.includes("For ChatGPT, **`preset`** is the only model-selection parameter"), "/oracle prompt should state preset is the only ChatGPT selector");
+  assert(promptSource.includes("provider: \"grok\""), "/oracle prompt should document Grok provider routing");
   assert(promptSource.includes("canonical preset registry"), "/oracle prompt should point callers to the canonical registry instead of a hard-coded preset list");
   assert(promptSource.includes("Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`"), "/oracle prompt should tell callers not to pass legacy fields");
   assert(promptSource.includes("Matching human-readable preset labels"), "/oracle prompt should explain preset label normalization");
@@ -3271,7 +3306,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!promptSource.includes(presetId), `/oracle prompt should not hard-code preset id ${presetId}`);
   }
-  assert(promptSource.includes("prefer context-rich archives up to the 250 MB ceiling"), "/oracle prompt should tell agents to use the available archive budget generously when it improves answer quality");
+  assert(promptSource.includes("prefer context-rich archives up to the provider ceiling"), "/oracle prompt should tell agents to use the available archive budget generously when it improves answer quality");
   assert(promptSource.includes("include the whole repository by passing `.`"), "/oracle prompt should default to whole-repo archive selection");
   assert(promptSource.includes("obvious credentials/private data"), "/oracle prompt should mention default exclusion of obvious credentials/private data");
   assert(promptSource.includes("nested `secrets/` directories anywhere in the repo"), "/oracle prompt should exclude nested secrets directories by default");
@@ -3289,15 +3324,15 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(designSource.includes("`oracle_auth`"), "design doc should document the agent-facing oracle_auth tool");
   assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up prompt template");
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
-  assert(designSource.includes("bias toward context-rich archives when they fit within the 250 MB ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
+  assert(designSource.includes("bias toward context-rich archives when they fit within the provider ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
   assert(designSource.includes("retryable archive-selection miss"), "design doc should explain that archive-too-large submit failures are retryable archive-selection misses");
-  assert(designSource.includes("biases toward omitting `preset` and using the configured default"), "design doc should explain the default-preset bias for /oracle prompt ergonomics");
+  assert(designSource.includes("biases toward omitting provider/model fields and using configured defaults"), "design doc should explain the default provider/model bias for /oracle prompt ergonomics");
   assert(designSource.includes("the canonical registry is `ORACLE_SUBMIT_PRESETS`"), "design doc should point to the canonical preset registry");
   assert(designSource.includes("/tmp/pi-oracle-auth-*/oracle-auth.log"), "design doc should reference the per-run oracle-auth diagnostics bundle");
   assert(designSource.includes("returns a retry-after timestamp"), "design doc should explain that oracle-clean returns a retry-after timestamp when retention grace blocks cleanup");
   assert(recoveryDrillSource.includes("/tmp/pi-oracle-auth-*/"), "recovery drill should reference the per-run oracle-auth diagnostics bundle");
   assert(!recoveryDrillSource.includes("/tmp/oracle-auth.log"), "recovery drill should not reference the old fixed oracle-auth log path");
-  assert(designSource.includes("`preset` is the only model-selection parameter"), "design doc should state preset is the only selector");
+  assert(designSource.includes("For ChatGPT, **`preset` is the only model-selection parameter"), "design doc should state preset is the only ChatGPT selector");
   assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
   assert(designSource.includes("chromiumKeychain"), "design doc should document configured Chromium keychain cookie sources");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
@@ -3307,7 +3342,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("details.error.code === 'archive_too_large'"), "oracle submit tool guidance should explicitly recognize retryable archive_too_large failures");
   assert(toolsSource.includes("retry automatically with a smaller archive"), "oracle submit tool guidance should tell agents to retry archive-too-large failures automatically");
   assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle submit tool guidance should only stop after successful/queued submit results, not retryable oversize failures");
-  assert(toolsSource.includes("Prefer context-rich archives up to the 250 MB ceiling"), "oracle tool guidance should tell agents to use the available archive budget generously when it helps");
+  assert(toolsSource.includes("Prefer context-rich archives up to the provider ceiling"), "oracle tool guidance should tell agents to use the available archive budget generously when it helps");
   assert(toolsSource.includes('name: "oracle_auth"'), "oracle tools should register an agent-facing oracle_auth tool");
   assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
   assert(toolsSource.includes("Do not default to a one-file archive"), "oracle tool guidance should preserve surrounding context for narrowly described asks when the archive budget allows it");
@@ -3315,14 +3350,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("coerceOracleSubmitPresetId"), "oracle submit should normalize preset label aliases before resolving the canonical preset id");
   assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS registry"), "oracle submit tool description should point preset discovery to the canonical registry");
   assert(!toolsSource.includes("see `preset` field for canonical ids"), "oracle submit tool description should not imply the free-form preset schema exposes canonical ids");
-  assert(toolsSource.includes("Use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only selector");
+  assert(toolsSource.includes("For ChatGPT, use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only ChatGPT selector");
   assert(toolsSource.includes("matching human-readable preset labels are normalized automatically"), "oracle tool guidance should mention preset label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
   assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
   assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
-  assert(readmeSource.includes("context-rich relevant archive up to the 250 MB ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
+  assert(readmeSource.includes("context-rich relevant archive up to the selected provider's upload ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
   assert(readmeSource.includes("retryable archive-selection failure"), "README should explain that archive-too-large local packing failures are retryable and should auto-narrow before surfacing to the user");
   assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
   assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
@@ -3341,7 +3376,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("returns the next eligible cleanup time"), "README should explain that oracle-clean returns a retry-after hint when post-send retention grace blocks cleanup");
   assert(readmeSource.includes("### `/oracle-clean` refuses a terminal job right after completion"), "README troubleshooting should explain oracle-clean retention-grace refusals");
   assert(readmeSource.includes("Retry after ..."), "README troubleshooting should mention the oracle-clean retry-after hint");
-  assert(readmeSource.includes("## Available presets"), "README should document available oracle preset ids");
+  assert(readmeSource.includes("## Available providers and presets"), "README should document available oracle preset ids");
+  assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
   assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
   assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
   for (const [presetId, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
@@ -3352,9 +3388,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const authSchema = authTool.parameters as import("typebox").TSchema;
   const submitSchema = submitTool.parameters as import("typebox").TSchema;
   assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
+  assert(Check(preflightSchema, { provider: "grok" }), "oracle_preflight should accept optional provider selection");
+  assert(Check(preflightSchema, { followUpJobId: "sanity-job" }), "oracle_preflight should accept optional follow-up job id selection");
   assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
-  assert(Object.keys(preflightProperties ?? {}).length === 0, "oracle_preflight should not require caller arguments");
-  assert(Object.keys(authProperties ?? {}).length === 0, "oracle_auth should not require caller arguments");
+  assert(asRecord(preflightProperties?.provider)?.type === "string", "oracle_preflight should expose optional provider selection for provider-specific readiness checks");
+  assert(asRecord(preflightProperties?.followUpJobId)?.type === "string", "oracle_preflight should expose optional follow-up job id selection for same-thread readiness checks");
+  assert(!Array.isArray((asRecord(preflightTool.parameters)?.required)), "oracle_preflight should not require caller arguments");
+  assert(asRecord(authProperties?.provider)?.type === "string", "oracle_auth should expose optional provider selection for provider-specific auth refresh");
+  assert(!Array.isArray((asRecord(authTool.parameters)?.required)), "oracle_auth should not require caller arguments");
   assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
   for (const [presetAlias, presetId] of representativePresetAliases) {
     assert(
@@ -3390,7 +3431,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
   assert(toolsSource.includes("loadOracleConfig(projectCwd)"), "oracle submit should load config from the stable workspace-root cwd");
   assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
-  assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath)"), "oracle submit should build archives from the stable workspace-root cwd");
+  assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath"), "oracle submit should build archives from the stable workspace-root cwd");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
   assert(toolsSource.includes("await assertOracleSubmitPrerequisites(config);"), "oracle submit should preflight locally knowable blockers before archiving or persisting jobs");
   assert(toolsSource.includes("buildOracleToolErrorResult"), "oracle tools should centralize structured error payload creation");
@@ -3503,6 +3544,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("await releaseConversationLease(runtime.conversationId)"), "runtime cleanup should always attempt to release conversation leases");
   assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
   assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
+  assert(runtimeSource.includes("removeChromiumProcessSingletonArtifacts"), "runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
   assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");
@@ -3569,6 +3611,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(job);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
   assert(workerSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "worker runtime profile cloning should enforce a subprocess timeout");
+  assert(workerSource.includes("removeChromiumProcessSingletonArtifacts"), "worker runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
   assert(workerSource.includes("jobBlocksAdmission"), "worker queued-promotion admission should delegate blocking checks to the shared job coordination helper");
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
   assert(workerSource.includes("from \"./chatgpt-ui-helpers.mjs\""), "worker should use the shared ChatGPT UI helper module for model/origin/completion logic");
@@ -3579,7 +3622,17 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("canUseOpenModelMenuForSelection"), "worker should fall back to the top-level model menu for plain Instant when ChatGPT's configure sheet is unavailable");
   assert(workerSource.includes("snapshotHasUsableComposerControls"), "worker readiness should accept authenticated usable composer shells even when model labels drift");
   assert(workerSource.includes("public Log in/Sign up controls"), "worker readiness should not accept ChatGPT's public logged-out composer shell as authenticated");
+  assert(workerSource.includes("hasGrokLoginCta"), "worker should reject Grok login shells before accepting composer-like controls as authenticated");
+  assert(authBootstrapSource.includes("hasGrokLoginCta"), "auth bootstrap should reject Grok login shells before accepting composer-like controls as authenticated");
+  assert(workerSource.includes('parsed.pathname.match(/\\/(?:c|chat)\\/([^/?#]+)/i)'), "worker should parse both ChatGPT and Grok conversation URL ids");
+  assert(workerSource.includes("Grok response completed but the conversation URL did not stabilize"), "Grok jobs should fail clearly rather than persist the Grok home page as a follow-up URL");
+  assert(workerSource.includes("hasTargetCopyResponse: hasTargetCopyResponse || isGrokJob(job)"), "Grok completion should not require exact Copy-button evidence once response text is stable");
+  assert(workerSource.includes("const errorText = detectUploadErrorText(`${snapshot}\\n${body}`);"), "Grok upload confirmation should preserve visible upload error detection");
+  assert(workerSource.includes("document.querySelectorAll('.message-bubble')"), "Grok response extraction should anchor on message bubbles before brittle container class fallbacks");
+  assert(workerSource.includes("node.getAttribute('data-testid') !== 'user-message'"), "Grok response extraction should exclude user-message bubbles before selecting assistant text");
+  assert(workerSource.includes("/^Thought for /i.test"), "Grok response extraction should strip leading thinking-summary labels from answer text");
   assert(workerSource.includes("throw new Error(classification.message"), "worker auth-transition timeout should preserve the specific classifier guidance instead of replacing it with a misleading generic partial-login message");
+  assert(workerSource.includes("Math.min(job.config.auth.bootstrapTimeoutMs || 120_000, 120_000)"), "ChatGPT worker readiness should allow Cloudflare verification-successful settling longer than the old 30s fixed timeout");
   assert(workerSource.includes("from \"./chatgpt-flow-helpers.mjs\""), "worker should use the extracted ChatGPT flow helper module for stable URL/snapshot logic");
   assert(workerSource.includes("deriveAssistantCompletionSignature"), "worker should route completion decisions through the shared assistant-completion helper");
   assert(uiHelpersSource.includes("detectSelectedModelFamily"), "ChatGPT UI helpers should infer the selected family from current configure-modal semantics instead of assuming family labels alone identify the active selection");
@@ -3984,7 +4037,7 @@ async function testArchiveOversizeErrorExplainsRetryPlan(): Promise<void> {
     await assertRejects(
       () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
       "archive oversize errors should explain the configured size limit and retry plan",
-      "Oracle archive exceeds ChatGPT upload limit (0.01 MiB) after default exclusions.",
+      "Oracle archive exceeds provider upload limit (0.01 MiB) after default exclusions.",
     );
     await assertRejects(
       () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
@@ -4384,6 +4437,21 @@ function testSharedObservabilityHelpers(): void {
   });
   assert(submitResponse.includes("Oracle job queued: job-observe") && submitResponse.includes("Archive auto-pruned"), "shared observability helpers should format queued submit responses and auto-prune notes consistently");
   assert(submitResponse.includes("Model preset: thinking_light (family=thinking, effort=light)"), "submit responses should disclose the resolved oracle model preset snapshot for transparency");
+  const grokSubmitResponse = formatOracleSubmitResponse({
+    ...job,
+    id: "job-observe-grok",
+    selection: {
+      provider: "grok",
+      mode: "heavy",
+      modelFamily: "grok",
+      effort: "heavy",
+      autoSwitchToThinking: false,
+    },
+  }, {
+    autoPrunedPrefixes: [],
+    queued: false,
+  });
+  assert(grokSubmitResponse.includes("Provider model: Grok heavy"), "submit responses should disclose Grok provider/mode selections for transparency");
 
   const wakeupContent = buildOracleWakeupNotificationContent(job, {
     responsePath: "/tmp/response.md",
@@ -4650,6 +4718,18 @@ function testAuthFlowHelpers(): void {
   });
   assert(challengeState.state === "challenge_blocking", "auth classification should prioritize human-verification challenge pages");
 
+  const settlingChallengeState = classifyChatAuthPage({
+    url: "https://chatgpt.com/",
+    snapshot: '- Iframe "Widget containing a Cloudflare security challenge" [ref=e1]',
+    body: "Verification successful. Waiting for chatgpt.com to respond",
+    probe: normalizedProbe,
+    allowedOrigins,
+    cookieSourceLabel: "Chrome profile Default",
+    runtimeProfileDir: "/tmp/oracle-auth-profile",
+    logPath: "/tmp/oracle-auth.log",
+  });
+  assert(settlingChallengeState.state === "unknown", "auth classification should wait while Cloudflare reports verification-successful settling");
+
   const rejectedState = classifyChatAuthPage({
     url: "https://chatgpt.com/",
     snapshot: readySnapshot,
@@ -4774,6 +4854,7 @@ function testChatGptFlowHelpers(): void {
   );
   assert(stripUrlQueryAndHash("https://chatgpt.com/c/abc?model=gpt#section") === "https://chatgpt.com/c/abc", "conversation helpers should strip query/hash components from ChatGPT URLs");
   assert(isConversationPathUrl("https://chatgpt.com/c/abc-123"), "conversation helpers should recognize ChatGPT conversation URLs");
+  assert(isConversationPathUrl("https://grok.com/chat/abc-123"), "conversation helpers should recognize Grok conversation URLs");
   assert(!isConversationPathUrl("https://chatgpt.com/gpts"), "conversation helpers should reject non-conversation ChatGPT routes");
   assert(
     resolveStableConversationUrlCandidate("https://chatgpt.com/c/abc?model=gpt", undefined) === "https://chatgpt.com/c/abc",

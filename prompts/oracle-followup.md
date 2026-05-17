@@ -1,38 +1,40 @@
 ---
-description: Continue an earlier oracle job in the same ChatGPT thread
+description: Continue an earlier oracle job in the same provider thread
 ---
 You are preparing an `/oracle-followup` job.
 
 Do not answer the user's request directly yet.
 
 Required workflow:
-1. Call `oracle_preflight` immediately.
-2. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, or prepare archive inputs first. If the blocker is an auth seed or stale-auth issue that `oracle_auth` can repair, call `oracle_auth` once, rerun `oracle_preflight`, and continue only if it becomes `ready: true`. Otherwise stop immediately and report the blocking issue plus the suggested next step.
-3. Parse the user request as `<job-id> <follow-up request>`.
-4. If the request does not include both a prior oracle job id and a follow-up request, stop and report: `Usage: /oracle-followup <job-id> <request>. Find the job id in the earlier oracle response or via /oracle-status.`
-5. Treat the parsed job id as `followUpJobId` for `oracle_submit`.
-6. Understand whether the follow-up request is explicitly narrow or genuinely broad.
-7. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the 250 MB archive ceiling.
-8. If the follow-up request is explicit and narrow, start from the directly relevant area but still include nearby files, tests, docs, configs, and adjacent modules when they may improve answer quality. Keep the archive tightly minimal only when the user explicitly asks for that, privacy/sensitivity requires it, or size pressure forces it.
-9. If the follow-up request is broad, architectural, release-oriented, or otherwise repo-wide, gather broader context and usually archive `.`.
-10. Choose archive inputs for the follow-up oracle job.
-11. Craft a concise but complete follow-up prompt for ChatGPT web.
-12. Call `oracle_submit` with the prompt, exact archive inputs, and the parsed `followUpJobId`.
-13. Stop immediately after dispatching the oracle job.
+1. Parse the user request as `<job-id> <follow-up request>`.
+2. If the request does not include both a prior oracle job id and a follow-up request, stop and report: `Usage: /oracle-followup <job-id> <request>. Find the job id in the earlier oracle response or via /oracle-status.`
+3. Same-thread follow-ups cannot switch providers. If the user asks to move a ChatGPT thread to Grok or a Grok thread to ChatGPT, stop and tell them to start a new `/oracle` job instead.
+4. Call `oracle_preflight` immediately with the parsed `followUpJobId` so readiness checks use the prior job's provider.
+5. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, or prepare archive inputs first. If the blocker is an auth seed or stale-auth issue that `oracle_auth` can repair, call `oracle_auth` once for the provider reported by preflight, rerun `oracle_preflight` with the same `followUpJobId`, and continue only if it becomes `ready: true`. Otherwise stop immediately and report the blocking issue plus the suggested next step.
+6. Treat the parsed job id as `followUpJobId` for `oracle_submit`.
+7. Understand whether the follow-up request is explicitly narrow or genuinely broad.
+8. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the provider archive ceiling: 250 MB for ChatGPT, 200 MiB for Grok.
+9. If the follow-up request is explicit and narrow, start from the directly relevant area but still include nearby files, tests, docs, configs, and adjacent modules when they may improve answer quality. Keep the archive tightly minimal only when the user explicitly asks for that, privacy/sensitivity requires it, or size pressure forces it.
+10. If the follow-up request is broad, architectural, release-oriented, or otherwise repo-wide, gather broader context and usually archive `.`.
+11. Choose archive inputs for the follow-up oracle job.
+12. Craft a concise but complete follow-up prompt for the selected web provider.
+13. Call `oracle_submit` with the prompt, exact archive inputs, and the parsed `followUpJobId`.
+14. Stop immediately after dispatching the oracle job.
 
-Oracle model (`oracle_submit`):
+Oracle provider/model (`oracle_submit`):
+- Follow-ups normally continue on the prior job's provider. If the user explicitly says to use Grok, pass **`provider: "grok"`**. Grok currently supports only **`mode: "heavy"`**.
 - To choose a specific ChatGPT model, pass **`preset`** with one of the allowed ids from the canonical preset registry.
 - Matching human-readable preset labels and common hyphen/space variants are also accepted and normalized automatically, but prefer canonical ids when readily available.
 - **Or** omit **`preset`** entirely to use the configured default model (from oracle config).
-- **`preset`** is the only model-selection parameter on `oracle_submit`. Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`.
+- For ChatGPT, **`preset`** is the only model-selection parameter. Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`.
 - If unsure, omit **`preset`** and use the configured default. Ask the user about model choice only when they explicitly want model control or the choice would materially change the result.
 
 Rules:
 - Use `oracle_preflight` before any expensive `/oracle-followup` preparation so missing persisted-session or local auth/config blockers fail fast.
-- If the immediately preceding oracle run for this follow-up failed because ChatGPT login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, call `oracle_auth` once and then retry the follow-up submission once. Do not loop auth refreshes.
-- This prompt exists so normal users can continue the same ChatGPT thread without manually constructing `followUpJobId` tool calls.
+- If the immediately preceding oracle run for this follow-up failed because ChatGPT/Grok login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, call `oracle_auth` once and then retry the follow-up submission once. For Grok, pass `provider: "grok"` to `oracle_auth`. Do not loop auth refreshes.
+- This prompt exists so normal users can continue the same provider thread without manually constructing `followUpJobId` tool calls.
 - Always include an archive. Do not submit without context files.
-- By default, prefer context-rich archives up to the 250 MB ceiling because more relevant context is usually better than less. For broad or unclear follow-up requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
+- By default, prefer context-rich archives up to the provider ceiling because more relevant context is usually better than less. The ceiling is 250 MB for ChatGPT and 200 MiB for Grok. For broad or unclear follow-up requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
 - Only limit file selection if the user explicitly requests a tight archive, if privacy/sensitivity requires it, or if the archive would otherwise exceed the size limit after exclusions/pruning.
 - For targeted follow-ups, still include directly related surrounding files, tests, docs, configs, and adjacent modules when they may improve answer quality. Do not default to a one-file archive just because the user mentioned one file, one function, or one stack trace.
 - Do not keep exploring once you already have enough context to submit well.

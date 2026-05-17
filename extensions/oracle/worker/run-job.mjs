@@ -54,6 +54,13 @@ const CHATGPT_LABELS = {
   autoSwitchToThinking: "Auto-switch to Thinking",
   configure: "Configure...",
 };
+const GROK_LABELS = {
+  composer: "Ask Grok anything",
+  addFiles: "Attach",
+  send: "Submit",
+  modelSelect: "Model select",
+  stop: "Stop model response",
+};
 const WORKER_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
@@ -80,6 +87,18 @@ let cleaningUpBrowser = false;
 let cleaningUpRuntime = false;
 let shuttingDown = false;
 let lastHeartbeatMs = 0;
+
+function providerForJob(job) {
+  return job?.selection?.provider === "grok" ? "grok" : "chatgpt";
+}
+
+function isGrokJob(job) {
+  return providerForJob(job) === "grok";
+}
+
+function labelsForJob(job) {
+  return isGrokJob(job) ? GROK_LABELS : CHATGPT_LABELS;
+}
 
 async function ensurePrivateDir(path) {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -239,11 +258,20 @@ function parseConversationId(chatUrl) {
   if (!chatUrl) return undefined;
   try {
     const parsed = new URL(chatUrl);
-    const match = parsed.pathname.match(/\/c\/([^/?#]+)/i);
+    const match = parsed.pathname.match(/\/(?:c|chat)\/([^/?#]+)/i);
     return match?.[1];
   } catch {
     return undefined;
   }
+}
+
+async function removeChromiumProcessSingletonArtifacts(profileDir) {
+  await Promise.all([
+    rm(join(profileDir, "SingletonLock"), { force: true }),
+    rm(join(profileDir, "SingletonSocket"), { force: true }),
+    rm(join(profileDir, "SingletonCookie"), { force: true }),
+    rm(join(profileDir, "DevToolsActivePort"), { force: true }),
+  ]);
 }
 
 async function cloneSeedProfileToRuntime(job) {
@@ -270,6 +298,7 @@ async function cloneSeedProfileToRuntime(job) {
     } else {
       await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
     }
+    await removeChromiumProcessSingletonArtifacts(job.runtimeProfileDir);
   }, 10 * 60 * 1000);
 
   return seedGeneration;
@@ -713,13 +742,14 @@ function canUseOpenModelMenuForSelection(snapshot, selection) {
   ));
 }
 
-function composerControlsVisible(snapshot) {
+function composerControlsVisible(snapshot, job = currentJob) {
+  const labels = labelsForJob(job);
   const entries = parseSnapshotEntries(snapshot);
-  const hasComposer = entries.some(
-    (entry) => entry.kind === "textbox" && entry.label === CHATGPT_LABELS.composer && !entry.disabled,
-  );
+  const hasComposer = isGrokJob(job)
+    ? entries.some((entry) => !entry.disabled && ((entry.kind === "textbox" && entry.label === labels.composer) || /editable/.test(String(entry.line || ""))))
+    : entries.some((entry) => entry.kind === "textbox" && entry.label === labels.composer && !entry.disabled);
   const hasAddFiles = entries.some(
-    (entry) => entry.kind === "button" && entry.label === CHATGPT_LABELS.addFiles && !entry.disabled,
+    (entry) => entry.kind === "button" && entry.label === labels.addFiles && !entry.disabled,
   );
   return hasComposer && hasAddFiles;
 }
@@ -774,13 +804,28 @@ async function openEffortDropdown(job) {
 }
 
 async function setComposerText(job, text) {
+  if (isGrokJob(job)) {
+    const result = await evalPage(job, toJsonScript(`
+      const el = document.querySelector('[contenteditable="true"], [contenteditable=true]');
+      if (!el) return { ok: false };
+      el.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('insertText', false, ${JSON.stringify(text)});
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(text)} }));
+      return { ok: true };
+    `));
+    if (!result?.ok) throw new Error("Could not find Grok composer textbox");
+    return;
+  }
   const snapshot = await snapshotText(job);
-  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === CHATGPT_LABELS.composer);
+  const labels = labelsForJob(job);
+  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
   await agentBrowser(job, "fill", entry.ref, text);
 }
 
 function classifyChatPage({ job, url, snapshot, body, probe }) {
+  if (isGrokJob(job)) return classifyGrokPage({ url, snapshot, body });
   const text = `${snapshot}\n${body}`;
   const challengePatterns = [
     /just a moment/i,
@@ -791,6 +836,9 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
     /we detect suspicious activity/i,
   ];
   if (challengePatterns.some((pattern) => pattern.test(text))) {
+    if (/verification successful|waiting for chatgpt\.com to respond/i.test(text)) {
+      return { state: "unknown", message: "ChatGPT verification is still settling." };
+    }
     return { state: "challenge_blocking", message: "ChatGPT is showing a challenge/verification page" };
   }
 
@@ -851,6 +899,33 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   return { state: "unknown", message: "ChatGPT page is not ready yet." };
 }
 
+function hasGrokLoginCta(text) {
+  const lines = String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.some((line) => {
+    const accessibleControl = line.match(/^-\s*(?:button|link|menuitem)\s+"([^"]+)"/i)?.[1]?.trim();
+    const label = accessibleControl || line;
+    return /^(?:sign in|log in|continue with x|continue with google|create account)$/i.test(label);
+  });
+}
+
+function classifyGrokPage({ url, snapshot, body }) {
+  const text = `${snapshot}\n${body}`;
+  if (/captcha|cloudflare|verify you are human|unusual activity|suspicious activity/i.test(text)) {
+    return { state: "challenge_blocking", message: "Grok is showing a challenge/verification page" };
+  }
+  if (/something went wrong|network error|try again later|rate limit/i.test(text)) {
+    return { state: "transient_outage_error", message: "Grok is showing a transient outage/error page" };
+  }
+  const onGrokOrigin = typeof url === "string" && url.startsWith("https://grok.com");
+  if (onGrokOrigin && hasGrokLoginCta(text)) {
+    return { state: "login_required", message: "Grok login is required. Sign in to Grok in the configured browser profile and rerun /oracle-auth grok." };
+  }
+  const hasComposer = snapshot.includes(`button "${GROK_LABELS.addFiles}"`) && (snapshot.includes(`textbox "${GROK_LABELS.composer}"`) || snapshot.includes("contenteditable"));
+  if (onGrokOrigin && hasComposer) return { state: "authenticated_and_ready", message: "Grok is ready." };
+  if (url && !onGrokOrigin) return { state: "login_required", message: "Grok redirected away from grok.com. Sign in to Grok in the configured browser profile and rerun /oracle-auth grok if needed." };
+  return { state: "unknown", message: "Grok page is not ready yet." };
+}
+
 async function captureDiagnostics(job, reason) {
   if (!browserStarted) return;
   try {
@@ -870,7 +945,7 @@ async function captureDiagnostics(job, reason) {
 
 async function waitForOracleReady(job) {
   const startedAt = Date.now();
-  const timeoutAt = startedAt + 30_000;
+  const timeoutAt = startedAt + (isGrokJob(job) ? 30_000 : Math.min(job.config.auth.bootstrapTimeoutMs || 120_000, 120_000));
   let retriedOutage = false;
   let retriedAuthTransition = false;
 
@@ -937,11 +1012,12 @@ function detectResponseFailureText(text) {
   return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
 }
 
-function composerSnapshotSlice(snapshot) {
+function composerSnapshotSlice(snapshot, job = currentJob) {
   const lines = snapshot.split("\n");
+  const labels = labelsForJob(job);
   let composerIndex = -1;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index].includes(`textbox "${CHATGPT_LABELS.composer}"`)) {
+    if (lines[index].includes(`textbox "${labels.composer}"`) || (isGrokJob(job) && lines[index].includes("contenteditable"))) {
       composerIndex = index;
       break;
     }
@@ -952,8 +1028,8 @@ function composerSnapshotSlice(snapshot) {
   return lines.slice(startIndex, endIndex).join("\n");
 }
 
-function composerFileEntryCount(snapshot, fileLabel) {
-  const composerSlice = composerSnapshotSlice(snapshot);
+function composerFileEntryCount(snapshot, fileLabel, job = currentJob) {
+  const composerSlice = composerSnapshotSlice(snapshot, job);
   return parseSnapshotEntries(composerSlice).filter((candidate) => candidate.label === fileLabel).length;
 }
 
@@ -970,13 +1046,16 @@ async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
       throw new Error(`Upload error detected: ${errorText}`);
     }
 
+    const labels = labelsForJob(job);
     const sendEntry = findEntry(
       snapshot,
-      (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.send && !candidate.disabled,
+      (candidate) => candidate.kind === "button" && candidate.label === labels.send && !candidate.disabled,
     );
-    const fileCount = composerFileEntryCount(snapshot, fileLabel);
+    const fileCount = isGrokJob(job) && snapshot.includes(fileLabel)
+      ? baselineCount + 1
+      : composerFileEntryCount(snapshot, fileLabel, job);
 
-    if (sendEntry && fileCount > baselineCount) {
+    if ((sendEntry || isGrokJob(job)) && fileCount > baselineCount) {
       stableCount += 1;
       if (stableCount >= 2) return sendEntry;
     } else {
@@ -1000,18 +1079,28 @@ async function waitForSendReady(job) {
       throw new Error(`Upload error detected: ${errorText}`);
     }
 
+    const labels = labelsForJob(job);
     const entry = findEntry(
       snapshot,
-      (candidate) => candidate.kind === "button" && candidate.label === CHATGPT_LABELS.send && !candidate.disabled,
+      (candidate) => candidate.kind === "button" && candidate.label === labels.send && !candidate.disabled,
     );
     if (entry) return entry;
     await sleep(1000);
   }
-  throw new Error(`Timed out waiting for ${CHATGPT_LABELS.send} to become enabled`);
+  throw new Error(`Timed out waiting for ${labelsForJob(job).send} to become enabled`);
 }
 
 async function clickSend(job) {
   const entry = await waitForSendReady(job);
+  if (isGrokJob(job)) {
+    const result = await evalPage(job, toJsonScript(`
+      const button = document.querySelector('button[aria-label="Submit"]');
+      if (!button || button.disabled) return { ok: false };
+      button.click();
+      return { ok: true };
+    `));
+    if (result?.ok) return;
+  }
   await clickRef(job, entry.ref);
 }
 
@@ -1095,6 +1184,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
 }
 
 async function configureModel(job) {
+  if (isGrokJob(job)) return configureGrokModel(job);
   const initialSnapshot = await snapshotText(job);
   if (snapshotCanSafelySkipModelConfiguration(initialSnapshot, job.selection)) {
     await log(`Model already appears configured for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}; skipping reconfiguration`);
@@ -1169,6 +1259,30 @@ async function configureModel(job) {
   await waitForModelConfigurationToSettle(job, { stronglyVerified });
 }
 
+async function configureGrokModel(job) {
+  const snapshot = await snapshotText(job);
+  if (/\bHeavy\b/.test(snapshot) && !snapshot.includes(`button "${GROK_LABELS.modelSelect}"`)) {
+    await log("Grok model already appears configured for Heavy; skipping reconfiguration");
+    return;
+  }
+  const modelButton = findEntry(snapshot, (candidate) => candidate.kind === "button" && candidate.label === GROK_LABELS.modelSelect && !candidate.disabled);
+  if (!modelButton) throw new Error("Could not find Grok model selector");
+  await clickRef(job, modelButton.ref);
+  await agentBrowser(job, "wait", "500");
+  const menuSnapshot = await snapshotText(job);
+  const heavy = findEntry(menuSnapshot, (candidate) => ["menuitem", "menuitemradio", "option", "button"].includes(candidate.kind || "") && /^Heavy\b/i.test(String(candidate.label || "")) && !candidate.disabled);
+  if (!heavy) throw new Error("Could not find Grok Heavy model option");
+  await clickRef(job, heavy.ref);
+  await agentBrowser(job, "wait", "800");
+  const after = await snapshotText(job);
+  if (!/\bHeavy\b/i.test(after)) {
+    if (after.includes('link "Sign in"') || after.includes('button "Sign in"')) {
+      throw new Error("Grok Heavy requires a signed-in Grok session. Set defaults.provider='grok', run /oracle-auth, and retry.");
+    }
+    throw new Error("Could not verify Grok Heavy selection after model configuration");
+  }
+}
+
 async function uploadArchive(job) {
   if (!existsSync(job.archivePath)) {
     throw new Error(`Archive missing: ${job.archivePath}`);
@@ -1176,26 +1290,50 @@ async function uploadArchive(job) {
 
   const fileLabel = basename(job.archivePath);
   const addFilesSnapshot = await snapshotText(job);
-  const baselineComposerFileCount = composerFileEntryCount(addFilesSnapshot, fileLabel);
+  const baselineComposerFileCount = composerFileEntryCount(addFilesSnapshot, fileLabel, job);
+  const labels = labelsForJob(job);
   const addFilesEntry = findEntry(
     addFilesSnapshot,
-    (candidate) => candidate.label === CHATGPT_LABELS.addFiles && candidate.kind === "button",
+    (candidate) => candidate.label === labels.addFiles && candidate.kind === "button",
   );
   if (!addFilesEntry) {
-    throw new Error(`Could not find "${CHATGPT_LABELS.addFiles}" button`);
+    throw new Error(`Could not find "${labels.addFiles}" button`);
   }
 
   await clickRef(job, addFilesEntry.ref);
   await agentBrowser(job, "wait", "500");
   await agentBrowser(job, "upload", "input[type=file]", job.archivePath);
   await log(`Selected archive for upload: ${job.archivePath}`);
-  await waitForUploadConfirmed(job, fileLabel, baselineComposerFileCount);
+  if (isGrokJob(job)) {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    let stablePolls = 0;
+    while (Date.now() < deadline) {
+      await heartbeat();
+      const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
+      const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
+      if (errorText) {
+        throw new Error(`Upload error detected: ${errorText}`);
+      }
+      if (`${snapshot}\n${body}`.includes(fileLabel)) {
+        stablePolls += 1;
+        if (stablePolls >= 2) break;
+      } else {
+        stablePolls = 0;
+      }
+      await sleep(1000);
+    }
+    if (stablePolls < 2) throw new Error(`Timed out waiting for Grok upload confirmation for ${fileLabel}`);
+  } else {
+    await waitForUploadConfirmed(job, fileLabel, baselineComposerFileCount);
+  }
   await log(`Upload confirmed for: ${fileLabel}`);
+  if (isGrokJob(job)) await agentBrowser(job, "press", "Escape").catch(() => undefined);
   await rm(job.archivePath, { force: true });
   await mutateJob((current) => ({ ...current, archiveDeletedAfterUpload: true }));
 }
 
 async function assistantMessages(job) {
+  if (isGrokJob(job)) return grokAssistantMessages(job);
   const result = await evalPage(
     job,
     toJsonScript(`
@@ -1226,12 +1364,50 @@ async function assistantMessages(job) {
           .trim();
         return text;
       };
+      const headingMessages = headings.map((heading) => ({ text: renderText(heading.nextElementSibling) }));
+      const messageNodes = Array.from(document.querySelectorAll('[data-testid="assistant-message"], [data-message-author-role="assistant"]'));
+      const nodeMessages = messageNodes.map((node) => ({ text: renderText(node) }));
       return {
-        messages: headings.map((heading) => ({ text: renderText(heading.nextElementSibling) })),
+        messages: headingMessages.some((message) => message.text) ? headingMessages : nodeMessages,
       };
     `),
   );
 
+  if (!Array.isArray(result?.messages)) return [];
+  return result.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" }));
+}
+
+async function grokAssistantMessages(job) {
+  const result = await evalPage(
+    job,
+    toJsonScript(`
+      const normalize = (value) => String(value || '').split('\\n\\n\\n').join('\\n\\n').trim();
+      const renderText = (node) => {
+        if (!node) return '';
+        const clone = node.cloneNode(true);
+        clone.querySelectorAll('button,[aria-label="Copy"],[aria-label="Like"],[aria-label="Dislike"],[aria-label="Regenerate"],[aria-label="More actions"],.thinking-container').forEach((el) => el.remove());
+        const text = normalize(clone.innerText || clone.textContent || '');
+        const lines = text.split('\\n');
+        if (/^Thought for /i.test(lines[0] || '')) return lines.slice(1).join('\\n').trim();
+        return text;
+      };
+      const bubbles = Array.from(document.querySelectorAll('.message-bubble'));
+      const sourceNodes = bubbles.length > 0
+        ? bubbles
+        : Array.from(document.querySelectorAll('div')).filter((node) => {
+            const classText = String(node.className || '');
+            return classText.includes('group') && classText.includes('flex') && classText.includes('flex-col') && classText.includes('justify-center');
+          });
+      const messages = sourceNodes
+        .map((node) => node.closest('[data-message-author-role], [data-testid*="message"], .group') || node)
+        .filter((node, index, all) => all.indexOf(node) === index)
+        .filter((node) => node.getAttribute('data-testid') !== 'user-message' && node.getAttribute('data-message-author-role') !== 'user')
+        .filter((node) => !node.querySelector('button[aria-label="Edit"]'))
+        .map((node) => ({ text: renderText(node.querySelector('.message-bubble') || node) }))
+        .filter((message) => message.text && !message.text.toLowerCase().startsWith('executed code'));
+      return { messages };
+    `),
+  );
   if (!Array.isArray(result?.messages)) return [];
   return result.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" }));
 }
@@ -1264,9 +1440,9 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
-    const hasStopStreaming = snapshot.includes("Stop streaming");
+    const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming");
     const hasRetryButton = snapshot.includes('button "Retry"');
-    const copyResponseCount = (snapshot.match(/Copy response/g) || []).length;
+    const copyResponseCount = isGrokJob(job) ? (snapshot.match(/button "Copy"/g) || []).length : (snapshot.match(/Copy response/g) || []).length;
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const messages = await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
@@ -1289,17 +1465,17 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
           continue;
         }
       }
-      throw new Error(`ChatGPT response failed: ${responseFailureText}`);
+      throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} response failed: ${responseFailureText}`);
     }
 
     let completionSignature;
-    if (!hasStopStreaming && hasTargetCopyResponse && targetText) {
+    if (!hasStopStreaming && targetText && (hasTargetCopyResponse || isGrokJob(job))) {
       completionSignature = deriveAssistantCompletionSignature({
         hasStopStreaming,
-        hasTargetCopyResponse,
+        hasTargetCopyResponse: hasTargetCopyResponse || isGrokJob(job),
         responseText: targetText,
       });
-    } else if (!hasStopStreaming && !targetText) {
+    } else if (!hasStopStreaming && hasTargetCopyResponse && !targetText) {
       const artifactSignals = await collectArtifactCandidates(job, baselineAssistantCount, targetText).catch(() => ({ candidates: [], suspiciousLabels: [] }));
       completionSignature = deriveAssistantCompletionSignature({
         hasStopStreaming,
@@ -1325,7 +1501,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     await sleep(job.config.worker.pollMs);
   }
 
-  throw new Error("Timed out waiting for ChatGPT response completion");
+  throw new Error(`Timed out waiting for ${isGrokJob(job) ? "Grok" : "ChatGPT"} response completion`);
 }
 
 async function sha256(path) {
@@ -1657,6 +1833,11 @@ async function flushArtifactsState(artifacts) {
 }
 
 async function downloadArtifacts(job, responseIndex, responseText = "") {
+  if (isGrokJob(job)) {
+    await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
+    await mutateJob((current) => ({ ...current, artifactPaths: [] }));
+    return [];
+  }
   if (!job.config.artifacts.capture) {
     await secureWriteText(`${jobDir}/artifacts.json`, "[]\n");
     await mutateJob((current) => ({ ...current, artifactPaths: [] }));
@@ -1795,14 +1976,14 @@ async function run() {
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "verifying_auth", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: "Verifying the imported ChatGPT auth session.",
+      message: `Verifying the imported ${isGrokJob(currentJob) ? "Grok" : "ChatGPT"} browser session.`,
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await waitForOracleReady(currentJob);
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "configuring_model", {
       at: new Date().toISOString(),
       source: "oracle:worker",
-      message: "Configuring the requested ChatGPT model selection.",
+      message: `Configuring the requested ${isGrokJob(currentJob) ? "Grok" : "ChatGPT"} model selection.`,
       patch: { heartbeatAt: new Date().toISOString() },
     }));
     await configureModel(currentJob);
@@ -1820,16 +2001,35 @@ async function run() {
     await log(`Waiting ${POST_SEND_SETTLE_MS}ms after send to avoid streaming interruption`);
     await sleep(POST_SEND_SETTLE_MS);
 
-    const chatUrl = await waitForStableChatUrl(currentJob, currentJob.chatUrl);
-    const conversationId = parseConversationId(chatUrl) || currentJob.conversationId;
+    const observedChatUrl = isGrokJob(currentJob)
+      ? stripQuery(await currentUrl(currentJob))
+      : await waitForStableChatUrl(currentJob, currentJob.chatUrl);
+    const observedConversationId = parseConversationId(observedChatUrl) || currentJob.conversationId;
+    const awaitingResponsePatch = {
+      heartbeatAt: new Date().toISOString(),
+      ...(observedConversationId ? { chatUrl: observedChatUrl, conversationId: observedConversationId } : {}),
+    };
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "awaiting_response", {
       at: new Date().toISOString(),
       source: "oracle:worker",
       message: "Waiting for the assistant response to finish streaming.",
-      patch: { chatUrl, conversationId, heartbeatAt: new Date().toISOString() },
+      patch: awaitingResponsePatch,
     }));
 
     const completion = await waitForChatCompletion(currentJob, baselineAssistantCount);
+    if (isGrokJob(currentJob) && !currentJob.conversationId) {
+      const stableGrokChatUrl = await waitForStableChatUrl(currentJob, undefined);
+      const stableGrokConversationId = parseConversationId(stableGrokChatUrl);
+      if (!stableGrokConversationId) {
+        throw new Error(`Grok response completed but the conversation URL did not stabilize; current URL: ${stableGrokChatUrl || "(unknown)"}`);
+      }
+      currentJob = await mutateJob((job) => ({
+        ...job,
+        chatUrl: stableGrokChatUrl,
+        conversationId: stableGrokConversationId,
+        heartbeatAt: new Date().toISOString(),
+      }));
+    }
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "extracting_response", {
       at: new Date().toISOString(),
       source: "oracle:worker",
