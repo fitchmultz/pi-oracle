@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-05-18
+
+### Changed
+- updated the local pi development baseline to `@earendil-works/pi-coding-agent` `0.75.3` and refreshed the npm lockfile
+- raised the local Node.js tooling floor and sanity checks to `>=22.19.0`
+- refreshed the `protobufjs` override to `7.5.6` for the current patched dependency graph
+- removed tracked CueLoop runtime state from the repository and ignored local `.cueloop/` artifacts
+
+### Compatibility
+- reviewed current pi `0.75.3` package and extension guidance and confirmed the oracle extension remains compatible with current extension lifecycle and package install/update guidance
+
+
 ## 0.7.0 - 2026-05-17
 
 ### Added
