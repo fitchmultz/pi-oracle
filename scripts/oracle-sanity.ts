@@ -3551,14 +3551,14 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
-  assert(pkg.engines?.node === ">=22", "package.json should advertise the actual Node.js support floor");
+  assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor");
   assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version");
-  assert(pkg.overrides?.protobufjs === "7.5.5", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
+  assert(pkg.overrides?.protobufjs === "7.5.6", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
   assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
