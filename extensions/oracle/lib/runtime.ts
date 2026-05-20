@@ -4,9 +4,10 @@
 // Usage: Imported by jobs, tools, and queue logic to provision or tear down isolated oracle browser runtimes.
 // Invariants/Assumptions: Lease metadata is the admission source of truth, tracked worker identity checks defend against PID reuse, and runtime cleanup always attempts lease release.
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
-import { access, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, extname, join } from "node:path";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
@@ -14,7 +15,7 @@ import type { OracleConfig } from "./config.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
-const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
+const DEFAULT_ORACLE_JOBS_DIR = process.platform === "win32" ? tmpdir() : "/tmp";
 const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE_JOBS_DIR;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
@@ -401,6 +402,18 @@ function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDi
   return ["-R", sourceDir, destinationDir];
 }
 
+function terminateSubprocessTree(child: ReturnType<typeof spawn>, force = false): void {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      execFileSync("taskkill", ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])], { stdio: "ignore" });
+      return;
+    } catch {
+      // Fall back to Node's best-effort process termination below.
+    }
+  }
+  child.kill(force ? "SIGKILL" : "SIGTERM");
+}
+
 async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn("cp", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -417,9 +430,9 @@ async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promis
     if ((options?.timeoutMs ?? 0) > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        terminateSubprocessTree(child);
         killGraceTimer = setTimeout(() => {
-          child.kill("SIGKILL");
+          terminateSubprocessTree(child, true);
         }, ORACLE_SUBPROCESS_KILL_GRACE_MS);
         killGraceTimer.unref?.();
       }, options?.timeoutMs);
@@ -445,6 +458,67 @@ async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promis
   });
 }
 
+async function spawnRobocopy(sourceDir: string, destinationDir: string, options?: { timeoutMs?: number }): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("robocopy", [
+      sourceDir,
+      destinationDir,
+      "/E",
+      "/COPY:DAT",
+      "/DCOPY:DAT",
+      "/R:0",
+      "/W:0",
+      "/NFL",
+      "/NDL",
+      "/NJH",
+      "/NJS",
+      "/NP",
+    ], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    let killGraceTimer: NodeJS.Timeout | undefined;
+
+    const clearTimers = () => {
+      if (killTimer) clearTimeout(killTimer);
+      if (killGraceTimer) clearTimeout(killGraceTimer);
+    };
+
+    if ((options?.timeoutMs ?? 0) > 0) {
+      killTimer = setTimeout(() => {
+        timedOut = true;
+        terminateSubprocessTree(child);
+        killGraceTimer = setTimeout(() => {
+          terminateSubprocessTree(child, true);
+        }, ORACLE_SUBPROCESS_KILL_GRACE_MS);
+        killGraceTimer.unref?.();
+      }, options?.timeoutMs);
+      killTimer.unref?.();
+    }
+
+    child.stdout.on("data", (data) => {
+      stdout += String(data);
+    });
+    child.stderr.on("data", (data) => {
+      stderr += String(data);
+    });
+    child.on("error", (error) => {
+      clearTimers();
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimers();
+      if (timedOut) {
+        reject(new Error(stderr || stdout || `robocopy timed out after ${options?.timeoutMs}ms`));
+        return;
+      }
+      if (typeof code === "number" && code <= 7) resolve();
+      else reject(new Error(stderr || stdout || `robocopy exited with code ${code}`));
+    });
+  });
+}
+
 async function copyProfileDirectory(
   config: OracleConfig,
   sourceDir: string,
@@ -452,10 +526,19 @@ async function copyProfileDirectory(
   options?: { timeoutMs?: number },
 ): Promise<void> {
   if (process.platform === "win32") {
-    await cp(sourceDir, destinationDir, { recursive: true });
+    await spawnRobocopy(sourceDir, destinationDir, options);
     return;
   }
   await spawnCp(profileCloneArgs(config, sourceDir, destinationDir), options);
+}
+
+async function removeChromiumProcessSingletonArtifacts(profileDir: string): Promise<void> {
+  await Promise.all([
+    rm(join(profileDir, "SingletonLock"), { force: true }),
+    rm(join(profileDir, "SingletonSocket"), { force: true }),
+    rm(join(profileDir, "SingletonCookie"), { force: true }),
+    rm(join(profileDir, "DevToolsActivePort"), { force: true }),
+  ]);
 }
 
 export async function cloneSeedProfileToRuntime(
@@ -470,6 +553,7 @@ export async function cloneSeedProfileToRuntime(
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await mkdir(dirname(runtimeProfileDir), { recursive: true, mode: 0o700 }).catch(() => undefined);
     await copyProfileDirectory(config, seedDir, runtimeProfileDir, { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
+    await removeChromiumProcessSingletonArtifacts(runtimeProfileDir);
   });
 
   return getSeedGeneration(config);
@@ -501,9 +585,9 @@ async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<s
 
     timeout = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      terminateSubprocessTree(child);
       setTimeout(() => {
-        child.kill("SIGKILL");
+        terminateSubprocessTree(child, true);
         finish(`Timed out closing agent-browser session ${runtimeSessionName} after ${AGENT_BROWSER_CLOSE_TIMEOUT_MS}ms`);
       }, 2_000).unref?.();
     }, AGENT_BROWSER_CLOSE_TIMEOUT_MS);

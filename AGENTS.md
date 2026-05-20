@@ -2,6 +2,15 @@
 
 This file contains project-specific guidance for this repository.
 
+## Project map
+- `extensions/oracle/index.ts` registers the pi extension.
+- `extensions/oracle/lib/` contains the agent-facing tools, slash commands, config, queue/job state, runtime/profile coordination, and poller logic.
+- `extensions/oracle/worker/` contains the detached browser worker, auth bootstrap, browser UI helpers, cookie policy, and artifact heuristics.
+- `extensions/oracle/shared/` contains cross-process lifecycle, observability, process, and state-coordination helpers used by both extension and worker code.
+- `prompts/` contains the `/oracle` and `/oracle-followup` prompt templates.
+- `scripts/oracle-sanity.ts` is the main regression/source-contract sanity harness; `npm run verify:oracle` is the local full gate.
+- `README.md` is the user-facing entry point; `docs/ORACLE_DESIGN.md` is the durable design/source-of-truth detail.
+
 ## Single-operator ownership
 - Treat this repository as single-operator: no human or external agent is working here except the current pi agent.
 - Assume every lingering change, background process, temp file, queue entry, job directory, or other artifact was created by a prior version of you or by one of your delegated runs.
@@ -16,5 +25,7 @@ This file contains project-specific guidance for this repository.
 
 ## Temporary working files
 - `progress.md` and `review.md` are temporary working artifacts.
-- Ignore them locally or delete them once they have been consumed and are no longer needed.
-- Do not leave them around as untracked repo noise after they are no longer useful.
+- If `progress.md` exists, read it at the start of a continuation to recover current branch/task state; keep it concise and current during active work.
+- Do not put changelog/history in `AGENTS.md`; use `progress.md` for transient handoff state and delete it once the work is committed or no longer useful.
+- Ignore temporary artifacts locally or delete them once they have been consumed.
+- Do not leave temporary working files around as untracked repo noise after they are no longer useful.

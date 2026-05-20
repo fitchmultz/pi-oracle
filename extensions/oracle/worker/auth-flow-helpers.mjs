@@ -82,6 +82,9 @@ export function classifyChatAuthPage(args) {
     /we detect suspicious activity/i,
   ];
   if (challengePatterns.some((pattern) => pattern.test(text))) {
+    if (/verification successful|waiting for chatgpt\.com to respond/i.test(text)) {
+      return { state: "unknown", message: "ChatGPT verification is still settling." };
+    }
     return {
       state: "challenge_blocking",
       message:

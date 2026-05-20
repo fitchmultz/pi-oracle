@@ -12,7 +12,7 @@ Compatibility target:
 
 ## Goal
 
-Create a `pi` extension that lets the user or agent consult ChatGPT.com through the web product instead of the API, with:
+Create a `pi` extension that lets the user or agent consult ChatGPT.com or Grok through the web product instead of the API, with:
 
 - manual invocation via `/oracle ...`
 - automatic invocation by the agent in rare high-difficulty cases
@@ -34,7 +34,7 @@ The production architecture is now:
 - clone that seed into a **per-job runtime profile** for each oracle run
 - launch each job in its own **runtime browser session**
 - persist same-thread continuity by saved `chatUrl`, not by keeping tabs or browsers alive
-- allow parallel jobs only when they do not target the same ChatGPT conversation
+- allow parallel jobs only when they do not target the same provider conversation
 
 ## Rejected production path
 
@@ -67,13 +67,13 @@ The extension now follows the current `pi` session lifecycle model:
   - intentionally uses native pi prompt/template queueing so submissions survive streaming and compaction
 - `/oracle-followup <job-id> <request>`
   - implemented as a prompt template, not an extension command
-  - asks the agent to continue an earlier oracle job in the same ChatGPT thread via `followUpJobId`
+  - asks the agent to continue an earlier oracle job in the same provider thread via `followUpJobId`
   - keeps same-thread continuation available to normal users without requiring raw tool-call syntax
 
 ### Commands
 
-- `/oracle-auth`
-  - syncs ChatGPT cookies from the configured local browser profile into the isolated oracle profile and verifies them there
+- `/oracle-auth [chatgpt|grok]`
+  - syncs ChatGPT or Grok cookies from the configured local browser profile into the isolated oracle profile and verifies them there, based on the configured default provider or explicit command argument
 - `/oracle-read [job-id]`
   - shows job status plus the saved response preview
 - `/oracle-status [job-id]`
@@ -87,13 +87,14 @@ The extension now follows the current `pi` session lifecycle model:
 
 - `oracle_preflight`
   - lightweight agent-facing readiness check for persisted-session and local oracle prerequisites
+  - accepts optional `provider` and `followUpJobId` so readiness checks use the same auth seed/provider that submission will use
   - intended to run before expensive `/oracle` context gathering
 - `oracle_auth`
   - agent-facing auth refresh tool that mirrors `/oracle-auth` for stale-auth recovery before a retry
 - `oracle_submit`
   - low-level agent-facing dispatch tool
   - creates archive and launches a detached worker
-  - supports optional `followUpJobId` to continue the same ChatGPT thread by persisted URL
+  - supports optional `followUpJobId` to continue the same provider thread by persisted URL
 - `oracle_read`
   - reads job status and outputs
 - `oracle_cancel`
@@ -103,16 +104,16 @@ The extension now follows the current `pi` session lifecycle model:
 
 ### `/oracle ...`
 
-`/oracle <request>` should not directly drive ChatGPT.
+`/oracle <request>` should not directly drive ChatGPT or Grok.
 It expands through the prompt-template path so pi can apply its native queueing semantics before the agent starts work.
 
 Instead it instructs the agent to:
 
-1. call `oracle_preflight` immediately
+1. call `oracle_preflight` immediately, passing `provider: "grok"` when the user explicitly asks for Grok
 2. stop right away if preflight reports the session or local oracle setup is not ready
 3. understand whether the request is explicitly narrow or genuinely broad
-4. if the immediately preceding oracle run failed because ChatGPT login is required or the worker explicitly said to rerun `/oracle-auth`, call `oracle_auth` once before retrying
-5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the 250 MB ceiling
+4. if the immediately preceding oracle run failed because ChatGPT or Grok login is required or the worker explicitly said to rerun `/oracle-auth`, call `oracle_auth` once before retrying
+5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the provider ceiling: 250 MB for ChatGPT and 200 MiB for Grok
 6. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
 7. if the request is broad/repo-wide, gather broader context and usually archive `.`
 8. if `oracle_submit` fails before dispatch with an `archive_too_large` / upload-limit error, treat that as retryable: use the reported size summary plus any auto-pruned paths to cut scope and retry automatically with a smaller archive
@@ -127,7 +128,7 @@ Auth bootstrap flow:
 
 1. load oracle config
 2. acquire the global auth-maintenance lock
-3. read ChatGPT cookies directly from the configured local browser cookie store in read-only mode
+3. read ChatGPT or Grok cookies directly from the configured local browser cookie store in read-only mode, depending on `defaults.provider`
    - configurable source profile / cookie DB path
    - optional configured Chromium Keychain source for browsers outside the default importer
    - no launch or mutation of the real browser profile
@@ -137,23 +138,23 @@ Auth bootstrap flow:
    - dedicated auth `--session`
    - dedicated staged seed `--profile`
    - configured executable path / user agent / launch args if set
-7. clear isolated browser cookies and seed the staged profile with imported ChatGPT cookies
-8. open ChatGPT in the isolated browser
-9. verify auth with `/backend-api/me` plus ChatGPT UI readiness checks
+7. clear isolated browser cookies and seed the staged profile with imported provider cookies
+8. open the configured provider in the isolated browser
+9. verify auth with provider-specific readiness checks
 10. on success, close the isolated browser so Chrome flushes profile state cleanly
 11. atomically swap the staged profile into `browser.authSeedProfileDir`, keeping `*.prev` as rollback
 12. write a seed-generation marker used by future runtime clones
-13. if ChatGPT presents a challenge page, leave the staged auth browser/profile open for the user to solve and reuse
+13. if the provider presents a challenge page, leave the staged auth browser/profile open for the user to solve and reuse
 
-This keeps production oracle jobs off the user’s real Chrome while using the user’s existing authenticated ChatGPT cookies as the bootstrap source.
+This keeps production oracle jobs off the user’s real Chrome while using the user’s existing authenticated provider cookies as the bootstrap source.
 
 The authenticated seed profile remains the source of truth for future oracle runtimes.
 
 ### `oracle_submit`
 
-Agent-facing submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. **`preset` is the only model-selection parameter** on `oracle_submit`. There are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting `preset` and using the configured default unless the task clearly needs a different model or the user explicitly asked for one. It also biases toward context-rich archives up to the 250 MB ceiling, narrowing only when the user explicitly asks for a tight archive, privacy/sensitivity requires it, or size pressure forces it. When local archive creation still exceeds that ceiling after default exclusions and whole-repo auto-pruning, prompt guidance now treats the failure as a retryable archive-selection miss rather than a terminal dead end: agents should cut scope automatically, retry once or twice, and only surface the cut decisions if the archive still cannot fit.
+Agent-facing submissions resolve a provider first. ChatGPT submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. Grok submissions use **`mode: "heavy"`** today and reject ChatGPT-only presets. For ChatGPT, **`preset` is the only model-selection parameter** on `oracle_submit`; there are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting provider/model fields and using configured defaults unless the task or user explicitly asks for one. It also biases toward context-rich archives up to the provider ceiling, narrowing only when the user explicitly asks for a tight archive, privacy/sensitivity requires it, or size pressure forces it. When local archive creation still exceeds that ceiling after default exclusions and whole-repo auto-pruning, prompt guidance now treats the failure as a retryable archive-selection miss rather than a terminal dead end: agents should cut scope automatically, retry once or twice, and only surface the cut decisions if the archive still cannot fit.
 
-1. resolve the preset (submit-time or config default) into an execution snapshot
+1. resolve the provider and preset/mode (submit-time or config default) into an execution snapshot
 2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`
 3. build the archive first into a temporary path
 4. allocate a unique runtime:
@@ -182,13 +183,13 @@ Per job:
    - headless by default
 3. open either:
    - the saved `chatUrl` for follow-up jobs, or
-   - the configured default ChatGPT URL
+   - the configured provider URL
 4. classify page state before touching the UI
 5. fail fast on:
    - login required
    - challenge/verification page
    - transient outage after one retry
-6. configure model family / effort
+6. configure ChatGPT model family/effort or Grok Heavy
 7. upload archive
 8. wait for upload confirmation scoped to the active composer
 9. fill prompt
@@ -205,7 +206,7 @@ Per job:
 
 Default and recommended:
 
-- auth seed via `--profile <authSeedProfileDir>` for durable ChatGPT authentication state
+- auth seed via `--profile <authSeedProfileDir>` for durable provider authentication state
 - per-job runtime via unique `--session <runtimeSessionName>` + unique `--profile <runtimeProfileDir>`
 
 Not the default:
@@ -236,7 +237,9 @@ Browser/auth settings are global-only because they control local privileged brow
 ```json
 {
   "defaults": {
-    "preset": "<preset id from ORACLE_SUBMIT_PRESETS>"
+    "provider": "chatgpt",
+    "preset": "<preset id from ORACLE_SUBMIT_PRESETS>",
+    "grokMode": "heavy"
   },
   "browser": {
     "sessionPrefix": "oracle",
@@ -289,11 +292,11 @@ When both `auth.chromeCookiePath` and `auth.chromiumKeychain` are present, auth 
 2. snapshots the Chromium `Cookies` DB plus `Cookies-wal` / `Cookies-shm` sidecars, tolerating sidecars that disappear while the browser is closing
 3. decrypts Chromium AES-CBC cookie values, including Chromium v24+ host-hash-prefixed values
 4. dedupes duplicate cookie rows by keeping the first row after newest-expiry ordering
-5. filters importable ChatGPT auth cookies and seeds the isolated oracle auth profile
+5. filters importable provider auth cookies and seeds the isolated oracle auth profile
 
 Operational requirements for this path:
 
-- ChatGPT must already be logged in in the configured browser profile.
+- ChatGPT or Grok must already be logged in in the configured browser profile, depending on the provider being synced.
 - The target browser should be fully quit before `/oracle-auth` so the cookie DB snapshot is stable.
 - The configured Keychain item must be accessible to the current macOS user; allow Keychain access if prompted.
 - `browser.executablePath` should point at the same Chromium-family browser so the headed auth/bootstrap browser uses the intended app.
@@ -325,10 +328,10 @@ Cleanup warnings are treated as diagnostics, not silent no-ops:
 
 ## Job layout under the configured jobs dir
 
-Default location: `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`
+Default location: `${PI_ORACLE_JOBS_DIR}` when set, otherwise `/tmp/oracle-<job-id>/` on macOS or `%TEMP%\\oracle-<job-id>\\` on Windows.
 
 ```text
-${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/
+<oracle-jobs-dir>/oracle-<job-id>/
   job.json
   prompt.md
   context-<job-id>.tar.zst
@@ -359,7 +362,7 @@ Important fields include:
 - `sessionId`
 - `originSessionFile`
 - `requestSource`
-- `selection`: resolved execution snapshot with `{ preset, modelFamily, effort?, autoSwitchToThinking }`
+- `selection`: resolved execution snapshot with `{ provider, preset?, mode?, modelFamily, effort?, autoSwitchToThinking }`
 - `followUpToJobId`
 - `chatUrl`
 - `conversationId`
@@ -490,7 +493,7 @@ Same-thread continuity is persisted as data, not runtime browser state.
 
 Approach:
 
-- expose `/oracle-followup <job-id> <request>` as the user-facing way to continue the same ChatGPT thread later
+- expose `/oracle-followup <job-id> <request>` as the user-facing way to continue the same provider thread later
 - store `chatUrl` only after the conversation URL stabilizes
 - derive and persist `conversationId` from that URL when possible
 - for a follow-up job, resolve `followUpJobId` to the prior `chatUrl`

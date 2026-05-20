@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-05-18
+
+### Changed
+- updated the local pi development baseline to `@earendil-works/pi-coding-agent` `0.75.3` and refreshed the npm lockfile
+- raised the local Node.js tooling floor and sanity checks to `>=22.19.0`
+- refreshed the `protobufjs` override to `7.5.6` for the current patched dependency graph
+- removed tracked CueLoop runtime state from the repository and ignored local `.cueloop/` artifacts
+
+### Compatibility
+- reviewed current pi `0.75.3` package and extension guidance and confirmed the oracle extension remains compatible with current extension lifecycle and package install/update guidance
+
+
+## 0.7.0 - 2026-05-17
+
+### Added
+- added Grok Heavy as a second oracle provider, with `provider: "grok"`, Grok-only `mode: "heavy"`, `/oracle-auth grok`, separate Grok auth seed profiles, and provider defaults in oracle config
+- added provider-aware `oracle_preflight` support, including explicit Grok checks and follow-up readiness checks that use the prior job's provider
+- added Grok web worker support for auth readiness, Heavy selection, archive upload, prompt submission, response extraction, and same-thread follow-ups
+
+### Changed
+- documented provider selection, Grok's 200 MiB upload ceiling, ChatGPT's 250 MiB ceiling, and same-provider-only follow-up behavior in README, design docs, and prompt templates
+- updated oracle job summaries to report Grok provider/mode selections, not only ChatGPT presets
+
+### Fixed
+- preserved Cloudflare continuity cookies for current ChatGPT verification flows and removed Chromium singleton artifacts when cloning runtime profiles
+- tightened Grok/X cookie import to an explicit auth-cookie allowlist and made Grok jobs fail clearly if a completed response never produces a stable conversation URL
+- improved ChatGPT response extraction fallback behavior when the UI no longer exposes the old `ChatGPT said:` heading structure
+
+### Validation
+- verified Grok Heavy live submission and same-thread Grok follow-up using isolated local-extension `pi` sessions
+- verified a final ChatGPT `instant` live smoke using an isolated local-extension `pi` session before release
+
 ## 0.6.17 - 2026-05-10
 
 ### Changed

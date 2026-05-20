@@ -1,7 +1,7 @@
 {
   "name": "pi-oracle",
-  "version": "0.6.17",
-  "description": "ChatGPT web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
+  "version": "0.7.1",
+  "description": "ChatGPT and Grok web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
   "author": "Mitch Fultz (https://github.com/fitchmultz)",
@@ -12,6 +12,7 @@
     "pi-extension",
     "extension",
     "chatgpt",
+    "grok",
     "oracle"
   ],
   "repository": {
@@ -61,7 +62,7 @@
   },
   "overrides": {
     "basic-ftp": "6.0.1",
-    "protobufjs": "7.5.5"
+    "protobufjs": "7.5.6"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.75.4",
@@ -73,7 +74,7 @@
     "@earendil-works/pi-ai": "^0.75.4"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "os": [
     "darwin",

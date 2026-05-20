@@ -6,6 +6,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -47,7 +48,7 @@ const ORACLE_JOB_DIR_RM_MAX_RETRIES = 5;
 const ORACLE_JOB_DIR_RM_RETRY_DELAY_MS = 50;
 const ORACLE_COMPLETE_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
+export const DEFAULT_ORACLE_JOBS_DIR = process.platform === "win32" ? tmpdir() : "/tmp";
 export const ORACLE_JOBS_DIR_ENV = "PI_ORACLE_JOBS_DIR";
 const ORACLE_JOBS_DIR = process.env[ORACLE_JOBS_DIR_ENV]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
 
@@ -943,7 +944,7 @@ export async function createJob(
     requestSource: input.requestSource,
     selection: input.selection,
     followUpToJobId: input.followUpToJobId,
-    chatUrl: input.followUpToJobId ? input.chatUrl : undefined,
+    chatUrl: input.chatUrl,
     conversationId,
     responseFormat: "text/plain",
     artifactPaths: [],

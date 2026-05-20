@@ -1,14 +1,14 @@
-// Purpose: Bootstrap isolated oracle browser auth by importing real Chromium-family cookies and validating ChatGPT session readiness.
+// Purpose: Bootstrap isolated oracle browser auth by importing real Chromium-family cookies and validating provider session readiness.
 // Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
 // Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
 // Invariants/Assumptions: Runs against a local Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, parse, resolve, sep } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
@@ -51,6 +51,7 @@ const CHATGPT_COOKIE_ORIGINS = [
   "https://sentinel.openai.com",
   "https://ws.chatgpt.com",
 ];
+const GROK_COOKIE_ORIGINS = ["https://grok.com", "https://x.ai", "https://x.com"];
 let DIAGNOSTICS_DIR;
 let LOG_PATH = "(oracle-auth log path unavailable)";
 let URL_PATH = "(oracle-auth url path unavailable)";
@@ -58,7 +59,7 @@ let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
 const REAL_CHROME_USER_DATA_DIR = defaultChromeUserDataDir();
-const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+const DEFAULT_ORACLE_STATE_DIR = process.platform === "win32" ? join(tmpdir(), "pi-oracle-state") : "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
@@ -75,6 +76,7 @@ function readPositiveIntEnv(name, fallback) {
 const AGENT_BROWSER_COMMAND_TIMEOUT_MS = readPositiveIntEnv("PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS", 30_000);
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = readPositiveIntEnv("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS", 10_000);
 const AGENT_BROWSER_KILL_GRACE_MS = readPositiveIntEnv("PI_ORACLE_AUTH_KILL_GRACE_MS", 2_000);
+const COOKIE_READ_TIMEOUT_MS = readPositiveIntEnv("PI_ORACLE_AUTH_COOKIE_READ_TIMEOUT_MS", 30_000);
 
 let runtimeProfileDir = config.browser.authSeedProfileDir;
 
@@ -156,6 +158,23 @@ async function log(message) {
   await chmod(LOG_PATH, 0o600).catch(() => undefined);
 }
 
+function terminateSubprocessTree(child, force = false) {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      execFileSync("taskkill", ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])], { stdio: "ignore" });
+      return;
+    } catch {
+      // Fall back to Node's best-effort process termination below.
+    }
+  }
+  child.kill(force ? "SIGKILL" : "SIGTERM");
+}
+
+function isUnsafeProfileRoot(pathValue) {
+  const normalized = comparablePath(pathValue);
+  return normalized === comparablePath(parse(pathValue).root) || normalized === comparablePath(homedir());
+}
+
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
@@ -172,8 +191,8 @@ function spawnCommand(command, args, options = {}) {
     if (typeof timeoutMs === "number" && timeoutMs > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        killGraceTimer = setTimeout(() => child.kill("SIGKILL"), AGENT_BROWSER_KILL_GRACE_MS);
+        terminateSubprocessTree(child);
+        killGraceTimer = setTimeout(() => terminateSubprocessTree(child, true), AGENT_BROWSER_KILL_GRACE_MS);
         killGraceTimer.unref?.();
       }, timeoutMs);
       killTimer.unref?.();
@@ -283,7 +302,7 @@ async function createProfilePlan(profileDir) {
   if (!isAbsolute(targetDir)) {
     throw new Error(`Oracle profileDir must be an absolute path: ${profileDir}`);
   }
-  if (targetDir === "/" || targetDir === homedir()) {
+  if (isUnsafeProfileRoot(targetDir)) {
     throw new Error(`Oracle profileDir is unsafe: ${targetDir}`);
   }
   if (REAL_CHROME_USER_DATA_DIR && pathEqualsOrIsInside(targetDir, REAL_CHROME_USER_DATA_DIR)) {
@@ -474,8 +493,21 @@ function stripQuery(url) {
   }
 }
 
+function preferredProvider() {
+  return config?.defaults?.provider === "grok" ? "grok" : "chatgpt";
+}
+
+function providerChatUrl() {
+  return preferredProvider() === "grok" ? "https://grok.com/" : config.browser.chatUrl;
+}
+
+function providerName() {
+  return preferredProvider() === "grok" ? "Grok" : "ChatGPT";
+}
+
 function cookieOrigins() {
-  return Array.from(new Set([stripQuery(config.browser.chatUrl), ...CHATGPT_COOKIE_ORIGINS]));
+  const providerOrigins = preferredProvider() === "grok" ? GROK_COOKIE_ORIGINS : CHATGPT_COOKIE_ORIGINS;
+  return Array.from(new Set([stripQuery(providerChatUrl()), ...providerOrigins]));
 }
 
 function cookieSource() {
@@ -532,13 +564,13 @@ function formatAuthFailureGuidance(error) {
   if (usesConfiguredChromiumCookieSource()) {
     lines.push(
       "- the configured cookie DB is stale or from the wrong browser profile",
-      "- ChatGPT is logged out in that browser profile",
+      `- ${providerName()} is logged out in that browser profile`,
       "- auth.chromiumKeychain does not match the browser safe-storage item for that cookie DB",
       "- the target browser was still running while /oracle-auth read its Cookies DB",
       "",
       "Next:",
       "1. Open the configured browser profile.",
-      "2. Confirm ChatGPT works there.",
+      `2. Confirm ${providerName()} works there.`,
       "3. Quit the browser fully.",
       "4. Confirm auth.chromeCookiePath points at that profile's Cookies DB.",
       "5. Confirm auth.chromiumKeychain.services names the browser's safe-storage Keychain service.",
@@ -546,13 +578,13 @@ function formatAuthFailureGuidance(error) {
     );
   } else {
     lines.push(
-      "- ChatGPT is logged out in the configured local browser profile",
+      `- ${providerName()} is logged out in the configured local browser profile`,
       "- auth.chromeProfile or auth.chromeCookiePath points at the wrong profile",
       "- the profile cookie store is stale or unreadable",
       "",
       "Next:",
       "1. Open the configured local browser profile.",
-      "2. Confirm ChatGPT works there.",
+      `2. Confirm ${providerName()} works there.`,
       "3. Quit the browser fully.",
       "4. Re-run /oracle-auth.",
     );
@@ -580,29 +612,29 @@ async function readRawSourceCookies() {
       keychain: config.auth.chromiumKeychain,
       origins: cookieOrigins(),
       profile: config.auth.chromeProfile,
-      timeoutMs: 5_000,
+      timeoutMs: COOKIE_READ_TIMEOUT_MS,
     });
   }
 
   return await getCookies({
-    url: config.browser.chatUrl,
+    url: providerChatUrl(),
     origins: cookieOrigins(),
     browsers: ["chrome"],
     mode: "merge",
     chromeProfile: cookieSource(),
-    timeoutMs: 5_000,
+    timeoutMs: COOKIE_READ_TIMEOUT_MS,
   });
 }
 
 async function readSourceCookies() {
-  await log(`Reading ChatGPT cookies from ${cookieSourceLabel()}`);
+  await log(`Reading ${providerName()} cookies from ${cookieSourceLabel()}`);
   const { cookies, warnings } = await readRawSourceCookies();
 
   if (warnings.length) {
     await log(`Cookie source warnings: ${warnings.join(" | ")}`);
   }
 
-  const filtered = filterImportableAuthCookies(cookies, config.browser.chatUrl);
+  const filtered = filterImportableAuthCookies(cookies, providerChatUrl());
   let normalizedCookies = filtered.cookies;
   await log(
     `Read ${normalizedCookies.length} filtered auth cookies: ${normalizedCookies.map((cookie) => `${cookie.name}@${cookie.domain}`).join(", ")}`,
@@ -617,6 +649,13 @@ async function readSourceCookies() {
   const hasSessionToken = normalizedCookies.some((cookie) => cookie.name.startsWith("__Secure-next-auth.session-token"));
   const hasAccountCookie = normalizedCookies.some((cookie) => cookie.name === "_account");
   await log(`Cookie presence: sessionToken=${hasSessionToken} account=${hasAccountCookie}`);
+
+  if (preferredProvider() === "grok") {
+    if (normalizedCookies.length === 0) {
+      throw new Error(`No Grok cookies were found in ${cookieSourceLabel()}. Make sure Grok is logged into that browser profile. ${authConfigRemediation()}`);
+    }
+    return normalizedCookies;
+  }
 
   if (!hasSessionToken) {
     throw new Error(
@@ -645,7 +684,7 @@ function cookieSetArgs(cookie) {
 }
 
 async function seedCookiesIntoTarget(cookies) {
-  await log("Clearing isolated browser cookies before seeding fresh ChatGPT cookies");
+  await log(`Clearing isolated browser cookies before seeding fresh ${providerName()} cookies`);
   await targetCommand("cookies", "clear", { logLabel: "cookies clear" });
 
   let applied = 0;
@@ -783,6 +822,7 @@ async function captureDiagnostics(reason) {
 }
 
 function classifyChatPage({ url, snapshot, body, probe }) {
+  if (preferredProvider() === "grok") return classifyGrokAuthPage({ url, snapshot, body });
   return classifyChatAuthPage({
     url,
     snapshot,
@@ -795,6 +835,31 @@ function classifyChatPage({ url, snapshot, body, probe }) {
     composerLabel: CHATGPT_LABELS.composer,
     addFilesLabel: CHATGPT_LABELS.addFiles,
   });
+}
+
+function hasGrokLoginCta(text) {
+  const lines = String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.some((line) => {
+    const accessibleControl = line.match(/^-\s*(?:button|link|menuitem)\s+"([^"]+)"/i)?.[1]?.trim();
+    const label = accessibleControl || line;
+    return /^(?:sign in|log in|continue with x|continue with google|create account)$/i.test(label);
+  });
+}
+
+function classifyGrokAuthPage({ url, snapshot, body }) {
+  const text = `${snapshot}\n${body}`;
+  if (/captcha|cloudflare|verify you are human|unusual activity|suspicious activity/i.test(text)) {
+    return { state: "challenge_blocking", message: "Grok is showing a challenge/verification page" };
+  }
+  if (/something went wrong|network error|try again later|rate limit/i.test(text)) {
+    return { state: "transient_outage_error", message: "Grok is showing a transient outage/error page" };
+  }
+  const onGrokOrigin = typeof url === "string" && url.startsWith("https://grok.com");
+  const hasComposer = snapshot.includes('button "Attach"') && (snapshot.includes('textbox "Ask Grok anything"') || snapshot.includes("contenteditable"));
+  if (onGrokOrigin && hasGrokLoginCta(text)) return { state: "login_required", message: `Grok login is required. Sign in to Grok in ${cookieSourceLabel()}.` };
+  if (onGrokOrigin && hasComposer) return { state: "authenticated_and_ready", message: "Grok is authenticated and ready." };
+  if (url && !onGrokOrigin) return { state: "login_required", message: "Grok redirected away from grok.com." };
+  return { state: "unknown", message: "Grok page is not ready yet." };
 }
 
 async function maybeSelectAccountIdentity(snapshot, probe) {
@@ -846,7 +911,7 @@ async function waitForImportedAuthReady() {
     await writeFile(BODY_PATH, `${body}\n`, { mode: 0o600 }).catch(() => undefined);
     const classification = classifyChatPage({ url, snapshot, body, probe });
     await log(
-      `poll ${iteration}: url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${snapshot.includes(`textbox \"${CHATGPT_LABELS.composer}\"`)} hasAddFiles=${snapshot.includes(`button \"${CHATGPT_LABELS.addFiles}\"`)}`,
+      `poll ${iteration}: url=${JSON.stringify(url)} probe=${JSON.stringify(probe)} classification=${classification.state} hasComposer=${preferredProvider() === "grok" ? snapshot.includes('Ask Grok anything') || snapshot.includes('contenteditable') : snapshot.includes(`textbox \"${CHATGPT_LABELS.composer}\"`)} hasAddFiles=${preferredProvider() === "grok" ? snapshot.includes('button \"Attach\"') : snapshot.includes(`button \"${CHATGPT_LABELS.addFiles}\"`)}`,
     );
     if (classification.state === "authenticated_and_ready") return classification;
     if (classification.state === "auth_transitioning") {
@@ -899,7 +964,7 @@ async function waitForImportedAuthReady() {
     await sleep(config.auth.pollMs);
   }
   await captureDiagnostics("timeout");
-  throw new Error(`Timed out verifying synced ChatGPT cookies in the isolated oracle profile. Logs: ${LOG_PATH}`);
+  throw new Error(`Timed out verifying synced ${providerName()} cookies in the isolated oracle profile. Logs: ${LOG_PATH}`);
 }
 
 async function run() {
@@ -920,7 +985,7 @@ async function run() {
       await launchTargetBrowser();
       const appliedCount = await seedCookiesIntoTarget(cookies);
       await log(`Cookie seeding complete: applied=${appliedCount}`);
-      await openUrl(config.browser.chatUrl, config.browser.chatUrl);
+      await openUrl(providerChatUrl(), providerChatUrl());
       const classification = await waitForImportedAuthReady();
       await log(`Auth bootstrap success: ${classification.message}`);
       await closeTargetBrowser();

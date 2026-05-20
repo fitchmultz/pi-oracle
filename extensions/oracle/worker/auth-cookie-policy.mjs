@@ -1,4 +1,4 @@
-// Purpose: Define the allowlist/drop policy for importing ChatGPT/OpenAI auth cookies into the isolated oracle browser profile.
+// Purpose: Define the allowlist/drop policy for importing provider auth cookies into the isolated oracle browser profile.
 // Responsibilities: Recognize required auth cookies, drop noisy/irrelevant cookies, and normalize cookie import decisions.
 // Scope: Pure cookie-policy logic only; reading cookies from Chrome and writing them into the isolated profile happen elsewhere.
 // Usage: Imported by auth-bootstrap and sanity tests to keep cookie import behavior deterministic and reviewable.
@@ -14,6 +14,17 @@ const AUTH_COOKIE_NAME_PATTERNS = [
   /^auth-session-minimized(?:-client-checksum)?$/,
   /^(?:login_session|auth_provider|hydra_redirect|iss_context|rg_context)$/,
   /^cf_clearance$/,
+  /^__(?:cf_bm|cflb)$/,
+  /^_cfuvid$/,
+];
+
+const GROK_AUTH_COOKIE_NAME_PATTERNS = [
+  /^sso(?:-rw)?$/,
+  /^auth_token$/,
+  /^ct0$/,
+  /^cf_clearance$/,
+  /^__(?:cf_bm|cflb)$/,
+  /^_cfuvid$/,
 ];
 
 const DROPPED_COOKIE_NAME_PATTERNS = [
@@ -21,9 +32,6 @@ const DROPPED_COOKIE_NAME_PATTERNS = [
   /^_uet/,
   /^_rdt_uuid$/,
   /^(?:marketing|analytics)_consent$/,
-  /^__cf_bm$/,
-  /^__cflb$/,
-  /^_cfuvid$/,
   /^_dd_s$/,
   /^g_state$/,
   /^country$/,
@@ -41,6 +49,9 @@ const BASE_ALLOWED_COOKIE_HOSTS = new Set([
   'sentinel.openai.com',
   'atlas.openai.com',
   'ws.chatgpt.com',
+  'grok.com',
+  'x.ai',
+  'x.com',
 ]);
 
 function normalizeSameSite(value) {
@@ -101,6 +112,9 @@ export function normalizeImportedCookie(cookie, fallbackHost) {
 export function classifyImportedCookie(cookie, chatUrl) {
   if (matchesAny(DROPPED_COOKIE_NAME_PATTERNS, cookie.name)) return 'noise';
   if (!isAllowedCookieDomain(cookie.domain, chatUrl)) return 'foreign-domain';
+  if (['grok.com', 'x.ai', 'x.com'].includes(cookie.domain)) {
+    return matchesAny(GROK_AUTH_COOKIE_NAME_PATTERNS, cookie.name) ? 'keep' : 'non-auth';
+  }
   if (!matchesAny(AUTH_COOKIE_NAME_PATTERNS, cookie.name)) return 'non-auth';
   return 'keep';
 }

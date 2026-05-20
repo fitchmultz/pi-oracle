@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
+import type { OracleProvider } from "./config.js";
 import {
   cancelOracleJob,
   getJobDir,
@@ -65,13 +66,23 @@ function readScopedJob(jobId: string, cwd: string) {
   return job;
 }
 
+function parseOracleAuthProvider(args: string): OracleProvider | undefined {
+  const value = args.trim().toLowerCase();
+  if (!value) return undefined;
+  if (value === "chatgpt" || value === "chat-gpt" || value === "openai") return "chatgpt";
+  if (value === "grok" || value === "xai" || value === "x.ai") return "grok";
+  throw new Error("Usage: /oracle-auth [chatgpt|grok]");
+}
+
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
-    description: "Sync ChatGPT cookies from the configured local browser profile into the oracle auth seed profile",
-    handler: async (_args, ctx) => {
-      ctx.ui.notify("Syncing ChatGPT cookies from the configured local browser profile into the oracle auth seed profile…", "info");
+    description: "Sync ChatGPT or Grok cookies from the configured local browser profile into the provider auth seed profile",
+    handler: async (args, ctx) => {
       try {
-        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd);
+        const provider = parseOracleAuthProvider(args);
+        const providerLabel = provider === "grok" ? "Grok" : provider === "chatgpt" ? "ChatGPT" : "configured provider";
+        ctx.ui.notify(`Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
+        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider);
         ctx.ui.notify(result, "info");
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");

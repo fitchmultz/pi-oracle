@@ -51,13 +51,17 @@ function formatAutoPrunedArchiveMessage(autoPrunedPrefixes) {
  * @returns {string | undefined}
  */
 function formatOracleSelection(selection) {
-  if (!selection?.preset || !selection.modelFamily) return undefined;
+  if (!selection?.modelFamily) return undefined;
   const details = [
+    selection.provider ? `provider=${selection.provider}` : undefined,
     `family=${selection.modelFamily}`,
+    selection.mode ? `mode=${selection.mode}` : undefined,
     selection.effort ? `effort=${selection.effort}` : undefined,
     selection.autoSwitchToThinking === true ? "auto-switch-to-thinking=true" : undefined,
   ].filter(Boolean).join(", ");
-  return `Model preset: ${selection.preset}${details ? ` (${details})` : ""}`;
+  if (selection.preset) return `Model preset: ${selection.preset}${details ? ` (${details})` : ""}`;
+  if (selection.provider === "grok") return `Provider model: Grok${selection.mode ? ` ${selection.mode}` : ""}${details ? ` (${details})` : ""}`;
+  return `Model selection: ${details}`;
 }
 
 const ACTIVE_SUMMARY_STATUSES = new Set(["preparing", "submitted", "waiting"]);

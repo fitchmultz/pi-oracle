@@ -5,6 +5,8 @@
 // Invariants/Assumptions: All lock/lease paths live under the single configured oracle state directory for this machine.
 
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   acquireStateLock,
   createStateLease,
@@ -21,7 +23,7 @@ import {
   writeStateLeaseMetadata,
 } from "../shared/state-coordination-helpers.mjs";
 
-export const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
+export const DEFAULT_ORACLE_STATE_DIR = process.platform === "win32" ? join(tmpdir(), "pi-oracle-state") : "/tmp/pi-oracle-state";
 export const ORACLE_STATE_DIR_ENV = "PI_ORACLE_STATE_DIR";
 const ORACLE_STATE_DIR = process.env[ORACLE_STATE_DIR_ENV]?.trim() || DEFAULT_ORACLE_STATE_DIR;
 

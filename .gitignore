@@ -1,17 +1,11 @@
 node_modules/
 .DS_Store
+*.tgz
 .pi/
 .oracle-context/
 .scratchpad.md
 progress.md
 review.md
 
-# CueLoop local/runtime artifacts (do not commit)
-.cueloop/cache/
-.cueloop/logs/
-.cueloop/workspaces/
-.cueloop/lock/
-.cueloop/undo/
-.cueloop/webhooks/
-.cueloop/trust.json
-.cueloop/trust.jsonc
+# CueLoop local/runtime state (do not commit)
+.cueloop/
