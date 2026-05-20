@@ -56,19 +56,21 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "typebox": "*",
+    "@earendil-works/pi-ai": "*"
   },
   "overrides": {
     "basic-ftp": "6.0.1",
     "protobufjs": "7.5.5"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.75.4",
     "@types/node": "^25.6.1",
     "esbuild": "^0.28.0",
     "tsx": "^4.21.0",
     "typebox": "^1.1.38",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "@earendil-works/pi-ai": "^0.75.4"
   },
   "engines": {
     "node": ">=22"
