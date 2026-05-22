@@ -29,11 +29,15 @@ const AUTO_SWITCH_LABEL = "Auto-switch to Thinking";
 const THINKING_EFFORT_COMBOBOX_LABEL = "Thinking effort";
 const PRO_THINKING_EFFORT_COMBOBOX_LABEL = "Pro thinking effort";
 const EFFORT_LABELS = new Set(["Light", "Standard", "Extended", "Heavy"]);
+const COMPACT_INTELLIGENCE_MENU_PATTERN = /Intelligence.*Instant.*Medium.*High.*Pro/i;
+const COMPACT_INTELLIGENCE_CONTROL_PATTERN = /^(?:Instant(?:\s+5s)?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Pro(?:\s+5\+\s*min)?)$/i;
+const COMPACT_INTELLIGENCE_OPENER_PATTERN = /^(?:Instant|Medium|High|Pro)$/i;
 const BARE_EFFORT_PATTERN = /^(light|standard|extended|heavy)(?:, click to remove)?$/i;
 const INSTANT_CHIP_PATTERN = /^instant(?:, click to remove)?$/i;
 const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
 const PRO_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?pro(?:, click to remove)?$/i;
 const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"]);
+const COMPACT_INTELLIGENCE_CONTROL_KINDS = new Set(["button", "menuitemradio"]);
 
 /**
  * @param {string | undefined} url
@@ -151,9 +155,151 @@ function parseComposerChipSelection(label) {
   return undefined;
 }
 
+function parseCompactIntelligenceSelection(label) {
+  if (/click to remove/i.test(String(label || ""))) return undefined;
+  const normalized = normalizeChipLabel(label);
+  if (!COMPACT_INTELLIGENCE_CONTROL_PATTERN.test(normalized)) return undefined;
+
+  if (/^Instant(?:\s+5s)?$/i.test(normalized)) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("instant"),
+      compactTier: "instant",
+    };
+  }
+  if (/^Medium(?:\s+5\s*[–-]\s*30s)?$/i.test(normalized)) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("thinking"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ ("standard"),
+      compactTier: "medium",
+    };
+  }
+  if (/^High(?:\s+15\s*[–-]\s*60s)?$/i.test(normalized)) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("thinking"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ ("extended"),
+      compactTier: "high",
+    };
+  }
+  if (/^Pro(?:\s+5\+\s*min)?$/i.test(normalized)) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
+      compactTier: "pro",
+    };
+  }
+
+  return undefined;
+}
+
+function hasRemovableComposerModelChip(entries) {
+  return entries.some(
+    (entry) => entry.kind === "button" && /click to remove/i.test(String(entry.label || "")) && parseComposerChipSelection(entry.label),
+  );
+}
+
+function hasCompactIntelligenceMenuContext(entries) {
+  return entries.some((entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)))
+    || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && /\d/.test(String(entry.label || "")) && parseCompactIntelligenceSelection(entry.label));
+}
+
+function hasCompactComposerContext(entries) {
+  const hasComposer = entries.some((entry) => entry.kind === "textbox" && entry.label === "Chat with ChatGPT" && !entry.disabled);
+  const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === "Add files and more" && !entry.disabled);
+  return hasComposer || hasAddFiles;
+}
+
+function hasLegacyEffortCombobox(entries) {
+  return entries.some((entry) => {
+    if (entry.disabled || entry.kind !== "combobox") return false;
+    const label = normalizeText(entry.label).toLowerCase();
+    return label === THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase() || label === PRO_THINKING_EFFORT_COMBOBOX_LABEL.toLowerCase();
+  });
+}
+
+function compactSelectionFromEntry(entry, entries, { allowClosedButtons = true } = {}) {
+  if (entry.disabled || !COMPACT_INTELLIGENCE_CONTROL_KINDS.has(entry.kind || "")) return undefined;
+  const normalizedLabel = normalizeChipLabel(entry.label);
+
+  if (entry.kind === "menuitemradio") {
+    if (!/\d/.test(String(entry.label || ""))) return undefined;
+    return parseCompactIntelligenceSelection(entry.label);
+  }
+
+  if (entry.kind !== "button" || !allowClosedButtons || /\bexpanded=true\b/.test(String(entry.line || ""))) return undefined;
+  if (/^(?:Medium|High)$/i.test(normalizedLabel)) return parseCompactIntelligenceSelection(entry.label);
+  if (/^(?:Instant|Pro)$/i.test(normalizedLabel) && (hasCompactIntelligenceMenuContext(entries) || hasCompactComposerContext(entries))) {
+    return parseCompactIntelligenceSelection(entry.label);
+  }
+  return undefined;
+}
+
+function compactSelectionMatchesRequested(selection, compactSelection) {
+  if (!compactSelection || compactSelection.modelFamily !== selection.modelFamily) return false;
+
+  if (selection.modelFamily === "instant") {
+    // The compact Intelligence picker has no explicit auto-switch toggle. Treat
+    // Instant 5s as the closest available target for both instant presets.
+    return compactSelection.compactTier === "instant";
+  }
+
+  if (selection.modelFamily === "pro") {
+    // The compact picker exposes one Pro tier instead of separate Pro efforts.
+    return compactSelection.compactTier === "pro";
+  }
+
+  if (selection.modelFamily === "thinking") {
+    const requestedEffort = selection.effort || "standard";
+    if (compactSelection.compactTier === "medium") return requestedEffort === "light" || requestedEffort === "standard";
+    if (compactSelection.compactTier === "high") return requestedEffort === "extended" || requestedEffort === "heavy";
+  }
+
+  return false;
+}
+
+function compactSelectionMatchesRequestedInSnapshot(snapshot, selection, compactSelection, { weak = false } = {}) {
+  if (!compactSelectionMatchesRequested(selection, compactSelection)) return false;
+  if (selection.modelFamily !== "instant") return true;
+
+  const autoSwitchState = autoSwitchToThinkingSelectionVisible(snapshot);
+  if (autoSwitchState === undefined) return true;
+  if (weak) return selection.autoSwitchToThinking ? autoSwitchState !== false : autoSwitchState !== true;
+  return selection.autoSwitchToThinking ? autoSwitchState === true : autoSwitchState !== true;
+}
+
+function detectCompactIntelligenceSelection(entries) {
+  if (hasRemovableComposerModelChip(entries)) return undefined;
+  if (hasLegacyEffortCombobox(entries)) return undefined;
+
+  for (const entry of entries) {
+    if (entry.kind !== "menuitemradio" || checkedState(entry) !== true) continue;
+    const compactSelection = compactSelectionFromEntry(entry, entries, { allowClosedButtons: false });
+    if (compactSelection) return compactSelection;
+  }
+
+  if (hasCompactIntelligenceMenuContext(entries)) return undefined;
+
+  for (const entry of entries) {
+    if (entry.kind !== "button") continue;
+    const compactSelection = compactSelectionFromEntry(entry, entries);
+    if (!compactSelection) continue;
+    return compactSelection;
+  }
+  return undefined;
+}
+
+export function matchesRequestedModelControlLabel(label, selection) {
+  const compactSelection = parseCompactIntelligenceSelection(label);
+  if (compactSelection) return compactSelectionMatchesRequested(selection, compactSelection);
+  return matchesModelFamilyLabel(label, selection.modelFamily);
+}
+
+export function matchesCompactIntelligenceOpenerLabel(label) {
+  return COMPACT_INTELLIGENCE_OPENER_PATTERN.test(normalizeChipLabel(label));
+}
+
 function detectComposerChipSelection(entries) {
   for (const entry of entries) {
     if (entry.disabled || entry.kind !== "button") continue;
+    if (/\bexpanded=true\b/.test(String(entry.line || "")) && !/click to remove/i.test(String(entry.label || ""))) continue;
     const selection = parseComposerChipSelection(entry.label);
     if (selection) return selection;
   }
@@ -168,6 +314,9 @@ function checkedState(entry) {
 }
 
 function detectSelectedModelFamily(entries) {
+  const compactSelection = detectCompactIntelligenceSelection(entries);
+  if (compactSelection) return compactSelection.modelFamily;
+
   for (const entry of entries) {
     if (entry.disabled || !MODEL_FAMILY_CONTROL_KINDS.has(entry.kind || "") || checkedState(entry) !== true) continue;
     for (const family of /** @type {OracleUiModelFamily[]} */ (["instant", "thinking", "pro"])) {
@@ -213,8 +362,15 @@ export function effortSelectionVisible(snapshot, effortLabel) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
   const normalizedEffort = effortLabel.toLowerCase();
+  const compactClosedButtonsAllowed = !hasRemovableComposerModelChip(entries) && !hasLegacyEffortCombobox(entries) && !hasCompactIntelligenceMenuContext(entries);
   return entries.some((entry) => {
     if (entry.disabled) return false;
+    const compactSelection = compactSelectionFromEntry(entry, entries, { allowClosedButtons: compactClosedButtonsAllowed });
+    if (compactSelection && entry.kind === "menuitemradio" && checkedState(entry) !== true) return false;
+    if (compactSelection?.modelFamily === "thinking") {
+      return compactSelectionMatchesRequested({ modelFamily: "thinking", effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (normalizedEffort), autoSwitchToThinking: false }, compactSelection);
+    }
+    if (compactSelection?.modelFamily === "pro") return true;
     if (entry.kind === "combobox" && normalizeText(entry.value).toLowerCase() === normalizedEffort) return true;
     const chipSelection = entry.kind === "button" ? parseComposerChipSelection(entry.label) : undefined;
     if (chipSelection?.effort === normalizedEffort) return true;
@@ -255,12 +411,18 @@ export function snapshotHasModelConfigurationUi(snapshot) {
           .filter((family) => matchesModelFamilyLabel(entry.label, family)),
       ),
   );
+  const visibleCompactControls = entries.filter(
+    (entry) => !entry.disabled && entry.kind === "menuitemradio" && /\d/.test(String(entry.label || "")) && parseCompactIntelligenceSelection(entry.label),
+  );
+  const hasCompactIntelligenceMenu = entries.some(
+    (entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)),
+  );
   const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
   const hasIntelligenceHeading = entries.some((entry) => entry.kind === "heading" && normalizeText(entry.label) === "Intelligence" && !entry.disabled);
   const hasEffortCombobox = entries.some(
     (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,
   );
-  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || hasCloseButton || hasIntelligenceHeading || hasEffortCombobox;
+  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasCloseButton || hasIntelligenceHeading || hasEffortCombobox;
 }
 
 /**
@@ -287,6 +449,7 @@ export function snapshotHasModelOpener(snapshot) {
     const label = normalizeChipLabel(entry.label);
     return label === "Model"
       || label === "Model selector"
+      || COMPACT_INTELLIGENCE_OPENER_PATTERN.test(label)
       || EFFORT_LABELS.has(label)
       || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {OracleUiModelFamily} */ (family)))
       || THINKING_CHIP_PATTERN.test(label)
@@ -325,6 +488,10 @@ export function autoSwitchToThinkingSelectionVisible(snapshot) {
  */
 export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
   if (!snapshotStronglyMatchesRequestedModel(snapshot, selection)) return false;
+  const hasBareProPill = selection.modelFamily === "pro" && parseSnapshotEntries(snapshot).some(
+    (entry) => entry.kind === "button" && !entry.disabled && normalizeChipLabel(entry.label) === "Pro",
+  );
+  if (hasBareProPill && !snapshotHasModelConfigurationUi(snapshot)) return false;
   if (selection.modelFamily === "instant" && selection.autoSwitchToThinking) {
     return autoSwitchToThinkingSelectionVisible(snapshot) === true;
   }
@@ -339,6 +506,9 @@ export function snapshotCanSafelySkipModelConfiguration(snapshot, selection) {
 export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  const compactSelection = detectCompactIntelligenceSelection(entries);
+  if (compactSelection) return compactSelectionMatchesRequestedInSnapshot(snapshot, selection, compactSelection);
+
   const chipSelection = detectComposerChipSelection(entries);
   if (chipSelection) return selectionMatchesChipSelection(selection, chipSelection);
 
@@ -366,6 +536,9 @@ export function snapshotStronglyMatchesRequestedModel(snapshot, selection) {
 export function snapshotWeaklyMatchesRequestedModel(snapshot, selection) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
+  const compactSelection = detectCompactIntelligenceSelection(entries);
+  if (compactSelection) return compactSelectionMatchesRequestedInSnapshot(snapshot, selection, compactSelection, { weak: true });
+
   const chipSelection = detectComposerChipSelection(entries);
   if (chipSelection) return selectionMatchesChipSelection(selection, chipSelection);
 

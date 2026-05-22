@@ -32,6 +32,9 @@ import {
   buildAllowedChatGptOrigins,
   buildAssistantCompletionSignature,
   deriveAssistantCompletionSignature,
+  effortSelectionVisible,
+  matchesCompactIntelligenceOpenerLabel,
+  matchesRequestedModelControlLabel,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasModelConfigurationUi,
   snapshotHasModelOpener,
@@ -4678,6 +4681,12 @@ function testChatGptUiHelpers(): void {
     "plain instant chips should not verify auto-switch instant presets",
   );
 
+  const expandedRemovableThinkingChipSnapshot = '- button "Thinking, click to remove" [expanded=true, ref=e110]';
+  assert(
+    snapshotStronglyMatchesRequestedModel(expandedRemovableThinkingChipSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "expanded removable model chips should still verify their encoded selection",
+  );
+
   const closedExtendedThinkingSnapshot = [
     '- button "Extended thinking, click to remove" [ref=e120]',
     '- button "Extended thinking" [expanded=false, ref=e121]',
@@ -4724,6 +4733,10 @@ function testChatGptUiHelpers(): void {
     '- menuitemradio "Thinking" [checked=false, ref=e221]',
     '- menuitemradio "Pro" [checked=true, ref=e222]',
   ].join("\n");
+  assert(
+    !snapshotHasModelConfigurationUi(topMenuProSnapshot),
+    "legacy top-level family menus alone should not be mistaken for compact Intelligence configuration UI",
+  );
   assert(
     !snapshotStronglyMatchesRequestedModel(topMenuProSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
     "top-level family menus alone should not strongly verify effort-sensitive pro presets before the configure modal reveals the effort selector",
@@ -4812,6 +4825,156 @@ function testChatGptUiHelpers(): void {
     !snapshotStronglyMatchesRequestedModel(latestModelDialogSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
     "latest-model dialogs should not infer thinking from a visible effort combobox when no family is selected",
   );
+
+  const legacyProStandardDialogSnapshot = [
+    '- heading "Intelligence" [level=2, ref=e3]',
+    '- button "Pro" [ref=e8]',
+    '- combobox "Pro thinking effort" [expanded=false, ref=e2]: Standard',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(legacyProStandardDialogSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "legacy Pro family controls should not satisfy compact Pro effort matching when a Pro effort combobox is visible",
+  );
+  const legacyThinkingHeavyDialogSnapshot = [
+    '- heading "Intelligence" [level=2, ref=e3]',
+    '- button "Medium" [ref=e8]',
+    '- combobox "Thinking effort" [expanded=false, ref=e2]: Heavy',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(legacyThinkingHeavyDialogSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "legacy effort comboboxes should prevent compact-looking family buttons from overriding the visible effort",
+  );
+
+  const compactProMenuSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e105]',
+    '- textbox "Chat with ChatGPT" [ref=e102]',
+    '- button "Pro" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=false, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=true, ref=e112]',
+    '- menuitem "GPT-5.5" [expanded=false, ref=e113]',
+  ].join("\n");
+  assert(snapshotHasModelConfigurationUi(compactProMenuSnapshot), "compact Intelligence menus should be recognized as model configuration UI");
+  assert(
+    snapshotHasModelConfigurationUi('- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]'),
+    "compact Intelligence menu labels should match even when tier names are concatenated in the accessibility label",
+  );
+  assert(matchesCompactIntelligenceOpenerLabel("Medium"), "compact Medium pills should be available to the worker as configuration openers");
+  assert(matchesCompactIntelligenceOpenerLabel("High"), "compact High pills should be available to the worker as configuration openers");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "compact Pro 5+ min selection should verify extended Pro presets when separate Pro efforts are absent",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "compact Pro 5+ min selection should verify standard Pro presets when separate Pro efforts are absent",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "compact Pro selection should not verify thinking presets",
+  );
+
+  const compactMediumMenuSnapshot = [
+    '- button "Medium" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=true, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=false, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactMediumMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "compact Medium 5–30s selection should verify standard thinking presets",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactMediumMenuSnapshot, { modelFamily: "thinking", effort: "light", autoSwitchToThinking: false }),
+    "compact Medium 5–30s selection should be the closest available target for light thinking presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(compactMediumMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "compact Medium 5–30s selection should not verify high thinking presets",
+  );
+
+  const compactHighMenuSnapshot = [
+    '- button "High" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=true, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "compact High 15–60s selection should verify extended thinking presets",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "compact High 15–60s selection should be the closest available target for heavy thinking presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "compact High 15–60s selection should not verify medium thinking presets",
+  );
+  assert(
+    !effortSelectionVisible(compactHighMenuSnapshot, "Standard"),
+    "unchecked compact Medium rows should not satisfy effort verification while High is selected",
+  );
+  assert(
+    effortSelectionVisible(compactHighMenuSnapshot, "Extended"),
+    "checked compact High rows should satisfy extended effort verification",
+  );
+
+  const staleMediumPillHighMenuSnapshot = [
+    '- button "Medium" [expanded=false, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=true, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(staleMediumPillHighMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "checked compact menu rows should take precedence over stale closed tier pills",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(staleMediumPillHighMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "checked compact High rows should verify even when a stale Medium pill is still visible",
+  );
+  assert(
+    !effortSelectionVisible(staleMediumPillHighMenuSnapshot, "Standard"),
+    "stale closed tier pills should not satisfy effort verification while a compact menu is open",
+  );
+
+  const compactInstantMenuSnapshot = [
+    '- button "Instant" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=true, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=false, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactInstantMenuSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "compact Instant 5s selection should verify plain instant presets",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactInstantMenuSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
+    "compact Instant 5s selection should be accepted for auto-switch instant presets when the alternate UI omits the switch",
+  );
+  assert(snapshotHasModelOpener('- button "Medium" [expanded=false, ref=e106]'), "compact Medium composer pills should be recognized as model openers");
+  assert(
+    snapshotStronglyMatchesRequestedModel('- button "Medium" [expanded=false, ref=e106]', { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills should verify standard thinking after the menu closes",
+  );
+  assert(
+    !snapshotCanSafelySkipModelConfiguration('- button "Pro" [expanded=false, ref=e106]', { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "closed compact Pro composer pills should reopen configuration for effort-sensitive verification instead of blindly skipping",
+  );
+  assert(matchesRequestedModelControlLabel("Medium 5–30s", { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }), "compact Medium controls should target standard thinking");
+  assert(matchesRequestedModelControlLabel("High 15–60s", { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }), "compact High controls should target extended thinking");
+  assert(matchesRequestedModelControlLabel("Pro 5+ min", { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }), "compact Pro controls should target extended Pro");
 
   const allowedOrigins = buildAllowedChatGptOrigins("https://chatgpt.com/", "https://chatgpt.com/auth/login");
   assert(allowedOrigins.includes("https://chatgpt.com"), "allowed ChatGPT origins should include chatgpt.com");

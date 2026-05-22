@@ -23,7 +23,9 @@ import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABE
 import {
   buildAllowedChatGptOrigins,
   deriveAssistantCompletionSignature,
+  matchesCompactIntelligenceOpenerLabel,
   matchesModelFamilyLabel,
+  matchesRequestedModelControlLabel,
   requestedEffortLabel,
   effortSelectionVisible,
   snapshotCanSafelySkipModelConfiguration,
@@ -740,11 +742,42 @@ function matchesModelFamilyControl(candidate, family) {
   return ["button", "radio", "menuitemradio"].includes(candidate.kind || "") && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
 }
 
+function normalizeSnapshotLabel(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function snapshotHasLegacyEffortCombobox(snapshot) {
+  return Boolean(findEntry(snapshot, (candidate) => {
+    if (candidate.kind !== "combobox" || candidate.disabled) return false;
+    return /^(?:Thinking effort|Pro thinking effort)$/i.test(normalizeSnapshotLabel(candidate.label));
+  }));
+}
+
+function snapshotHasCompactIntelligenceMenuControls(snapshot) {
+  return Boolean(findEntry(snapshot, (candidate) => {
+    if (candidate.disabled) return false;
+    const label = normalizeSnapshotLabel(candidate.label);
+    return (candidate.kind === "menu" && /Intelligence.*Instant.*Medium.*High.*Pro/i.test(label))
+      || (candidate.kind === "menuitemradio" && /^(?:Instant\s+5s|Medium\s+5\s*[–-]\s*30s|High\s+15\s*[–-]\s*60s|Pro\s+5\+\s*min)$/i.test(label));
+  }));
+}
+
+function matchesRequestedModelControl(candidate, selection, options = {}) {
+  if (!["button", "radio", "menuitemradio"].includes(candidate.kind || "") || typeof candidate.label !== "string" || candidate.disabled) return false;
+  if (candidate.kind === "button") {
+    if (/\bexpanded=true\b/.test(String(candidate.line || ""))) return false;
+    if (options.ignoreCompactTierButtons && /^(?:Instant|Medium|High|Pro)$/i.test(candidate.label)) return false;
+    if (options.ignoreCompactOnlyButtons && /^(?:Medium|High)$/i.test(candidate.label)) return false;
+  }
+  return matchesRequestedModelControlLabel(candidate.label, selection);
+}
+
 function matchesModelConfigurationOpener(candidate) {
   if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
   const label = String(candidate.label || "");
   return candidate.label === "Model"
     || candidate.label === "Model selector"
+    || matchesCompactIntelligenceOpenerLabel(label)
     || /^(?:Light|Standard|Extended|Heavy)(?:, click to remove)?$/i.test(label)
     || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
@@ -1213,19 +1246,33 @@ async function configureModel(job) {
   let verificationSnapshot = familySnapshot;
 
   const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
-  let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
+  const legacyEffortComboboxVisible = snapshotHasLegacyEffortCombobox(familySnapshot);
+  const familyAlreadySelectedInUi = !alreadyConfiguredInUi && legacyEffortComboboxVisible && snapshotWeaklyMatchesRequestedModel(familySnapshot, job.selection);
+  const controlOptions = {
+    ignoreCompactTierButtons: snapshotHasCompactIntelligenceMenuControls(familySnapshot),
+    ignoreCompactOnlyButtons: legacyEffortComboboxVisible,
+  };
+  let familyEntry = alreadyConfiguredInUi || familyAlreadySelectedInUi
+    ? undefined
+    : findEntry(familySnapshot, (candidate) => matchesRequestedModelControl(candidate, job.selection, controlOptions));
   if (alreadyConfiguredInUi) {
     await log("Model configuration UI opened with requested settings already selected");
+  } else if (familyAlreadySelectedInUi) {
+    await log("Model family already appears selected; verifying effort-specific settings");
   } else if (!familyEntry) {
     throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
   }
 
-  if (!alreadyConfiguredInUi && familyEntry) {
+  if (!alreadyConfiguredInUi && !familyAlreadySelectedInUi && familyEntry) {
     await clickRef(job, familyEntry.ref);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
     verificationSnapshot = familySnapshot;
-    familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
+    const postClickControlOptions = {
+      ignoreCompactTierButtons: snapshotHasCompactIntelligenceMenuControls(familySnapshot),
+      ignoreCompactOnlyButtons: snapshotHasLegacyEffortCombobox(familySnapshot),
+    };
+    familyEntry = findEntry(familySnapshot, (candidate) => matchesRequestedModelControl(candidate, job.selection, postClickControlOptions));
     if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
       throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
     }
@@ -1257,7 +1304,8 @@ async function configureModel(job) {
   if (job.selection.modelFamily === "instant") {
     const desiredAutoSwitchState = job.selection.autoSwitchToThinking === true;
     const currentAutoSwitchState = autoSwitchToThinkingSelectionVisible(familySnapshot);
-    if (currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
+    const compactInstantAlreadyVerified = desiredAutoSwitchState && currentAutoSwitchState === undefined && snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
+    if (!compactInstantAlreadyVerified && currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
       await clickAutoSwitchToThinkingControl(job);
       await agentBrowser(job, "wait", "400");
       verificationSnapshot = await snapshotText(job);
