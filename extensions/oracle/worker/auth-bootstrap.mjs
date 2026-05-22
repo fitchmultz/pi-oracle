@@ -12,7 +12,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import {
   assertNotKnownBrowserUserDataPath,
-  scrubSweetCookieSafeStoragePasswordEnv,
   sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../shared/browser-profile-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
@@ -601,13 +600,11 @@ async function readRawSourceCookies() {
 
 async function readSourceCookies() {
   await log(`Reading ${providerName()} cookies from ${cookieSourceLabel()}`);
-  let sourceResult;
-  try {
-    sourceResult = await readRawSourceCookies();
-  } finally {
-    scrubSweetCookieSafeStoragePasswordEnv();
-  }
-  const { cookies, warnings } = sourceResult;
+  // Sweet Cookie reads Linux safe-storage overrides directly from process.env.
+  // Keep the worker's environment stable for the rest of this short-lived
+  // bootstrap process, but scrub every helper/browser subprocess via
+  // spawnCommand's sweetCookieSafeStoragePasswordScrubbedEnv().
+  const { cookies, warnings } = await readRawSourceCookies();
 
   if (warnings.length) {
     await log(`Cookie source warnings: ${warnings.join(" | ")}`);

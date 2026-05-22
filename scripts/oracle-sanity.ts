@@ -3761,6 +3761,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS"), "auth bootstrap should allow shorter timeout overrides for close-time smoke tests");
   assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
   assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
+  assert(!authBootstrapSource.includes("scrubSweetCookieSafeStoragePasswordEnv"), "auth bootstrap should avoid mutating process.env while handling Sweet Cookie safe-storage overrides");
+  assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv"), "auth bootstrap should still scrub Sweet Cookie safe-storage passwords from helper subprocess environments");
   assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
   assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");
   assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
