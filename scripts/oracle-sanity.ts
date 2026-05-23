@@ -3513,7 +3513,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version");
-  assert(pkg.overrides?.protobufjs === "7.5.6", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
+  assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
   assert(commandsSource.includes("recently woken jobs may stay retained briefly"), "oracle-clean help text should mention the short post-send retention grace window");
