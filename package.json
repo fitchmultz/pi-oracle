@@ -64,8 +64,8 @@
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.75.5",
-    "@earendil-works/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-ai": "^0.76.0",
+    "@earendil-works/pi-coding-agent": "^0.76.0",
     "@types/node": "^25.9.1",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",
@@ -73,7 +73,7 @@
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=22 <25"
+    "node": ">=22.19.0 <25"
   },
   "os": [
     "darwin"
