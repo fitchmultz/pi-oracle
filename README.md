@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Validated primarily on macOS with Google Chrome/Chromium and `pi` 0.65.0+. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Validated primarily on macOS with Google Chrome/Chromium and the current pi package baseline. Pi-bundled runtime packages are optional wildcard peers so npm peer ranges do not block users from trying newer pi releases, though runtime behavior is only verified against the tested baseline until a follow-up package release confirms it. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 

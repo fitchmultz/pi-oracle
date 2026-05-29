@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.4 - 2026-05-28
+
+### Changed
+- updated the local pi development baseline to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `0.77.0` and regenerated the npm lockfile
+- kept pi runtime packages as optional wildcard peers and removed the Node.js engine upper bound so future pi releases are not blocked at install time
+
+### Compatibility
+- reviewed the pi `0.77.0` changelog and package guidance; the oracle extension remains compatible with current extension lifecycle and package install/update behavior
+
 ## 0.7.3 - 2026-05-27
 
 ### Changed

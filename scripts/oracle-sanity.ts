@@ -3506,7 +3506,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
-  assert(pkg.engines?.node === ">=22.19.0 <25", "package.json should advertise the actual Node.js support floor");
+  assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor without an upper bound");
   assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
