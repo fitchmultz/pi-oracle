@@ -64,8 +64,8 @@
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.77.0",
-    "@earendil-works/pi-coding-agent": "^0.77.0",
+    "@earendil-works/pi-ai": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.78.0",
     "@types/node": "^25.9.1",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",
@@ -73,12 +73,12 @@
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.19.0 <25"
   },
   "os": [
     "darwin"
   ],
-  "packageManager": "npm@11.16.0",
+  "packageManager": "npm@11.0.0",
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
       "optional": true
