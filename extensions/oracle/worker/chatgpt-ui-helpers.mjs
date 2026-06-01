@@ -37,7 +37,7 @@ const INSTANT_CHIP_PATTERN = /^instant(?:, click to remove)?$/i;
 const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
 const PRO_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?pro(?:, click to remove)?$/i;
 const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"]);
-const COMPACT_INTELLIGENCE_CONTROL_KINDS = new Set(["button", "menuitemradio"]);
+const COMPACT_INTELLIGENCE_CONTROL_KINDS = new Set(["menuitemradio"]);
 
 /**
  * @param {string | undefined} url
@@ -201,12 +201,6 @@ function hasCompactIntelligenceMenuContext(entries) {
     || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && /\d/.test(String(entry.label || "")) && parseCompactIntelligenceSelection(entry.label));
 }
 
-function hasCompactComposerContext(entries) {
-  const hasComposer = entries.some((entry) => entry.kind === "textbox" && entry.label === "Chat with ChatGPT" && !entry.disabled);
-  const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === "Add files and more" && !entry.disabled);
-  return hasComposer || hasAddFiles;
-}
-
 function hasLegacyEffortCombobox(entries) {
   return entries.some((entry) => {
     if (entry.disabled || entry.kind !== "combobox") return false;
@@ -215,21 +209,10 @@ function hasLegacyEffortCombobox(entries) {
   });
 }
 
-function compactSelectionFromEntry(entry, entries, { allowClosedButtons = true } = {}) {
+function compactSelectionFromEntry(entry, _entries, _options = {}) {
   if (entry.disabled || !COMPACT_INTELLIGENCE_CONTROL_KINDS.has(entry.kind || "")) return undefined;
-  const normalizedLabel = normalizeChipLabel(entry.label);
-
-  if (entry.kind === "menuitemradio") {
-    if (!/\d/.test(String(entry.label || ""))) return undefined;
-    return parseCompactIntelligenceSelection(entry.label);
-  }
-
-  if (entry.kind !== "button" || !allowClosedButtons || /\bexpanded=true\b/.test(String(entry.line || ""))) return undefined;
-  if (/^(?:Medium|High)$/i.test(normalizedLabel)) return parseCompactIntelligenceSelection(entry.label);
-  if (/^(?:Instant|Pro)$/i.test(normalizedLabel) && (hasCompactIntelligenceMenuContext(entries) || hasCompactComposerContext(entries))) {
-    return parseCompactIntelligenceSelection(entry.label);
-  }
-  return undefined;
+  if (!/\d/.test(String(entry.label || ""))) return undefined;
+  return parseCompactIntelligenceSelection(entry.label);
 }
 
 function compactSelectionMatchesRequested(selection, compactSelection) {

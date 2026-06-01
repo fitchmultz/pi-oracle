@@ -4969,8 +4969,17 @@ function testChatGptUiHelpers(): void {
   );
   assert(snapshotHasModelOpener('- button "Medium" [expanded=false, ref=e106]'), "compact Medium composer pills should be recognized as model openers");
   assert(
-    snapshotStronglyMatchesRequestedModel('- button "Medium" [expanded=false, ref=e106]', { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
-    "closed compact Medium composer pills should verify standard thinking after the menu closes",
+    !snapshotStronglyMatchesRequestedModel('- button "Medium" [expanded=false, ref=e106]', { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills alone should not verify standard thinking after the menu closes",
+  );
+  const closedMediumComposerSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e105]',
+    '- textbox "Chat with ChatGPT" [ref=e102]',
+    '- button "Medium" [expanded=false, ref=e106]',
+  ].join("\n");
+  assert(
+    !snapshotCanSafelySkipModelConfiguration(closedMediumComposerSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills should reopen configuration instead of blindly skipping when the compact menu is absent",
   );
   assert(
     !snapshotCanSafelySkipModelConfiguration('- button "Pro" [expanded=false, ref=e106]', { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
