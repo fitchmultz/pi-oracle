@@ -310,7 +310,7 @@ function readLastUsedProfileName(userDataDir) {
   const localStatePath = join(userDataDir, "Local State");
   if (!existsSync(localStatePath)) return undefined;
   try {
-    const localState = JSON.parse(String(readFileSync(localStatePath)));
+    const localState = JSON.parse(readFileSync(localStatePath, "utf8"));
     const lastUsed = localState?.profile?.last_used;
     if (typeof lastUsed !== "string") return undefined;
     const trimmed = lastUsed.trim();

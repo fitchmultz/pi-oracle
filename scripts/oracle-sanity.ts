@@ -3706,6 +3706,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
   const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
+  const browserProfileHelpersSource = await readFile(new URL("../extensions/oracle/shared/browser-profile-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
@@ -3765,6 +3766,9 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
   assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
   assert(!authBootstrapSource.includes("scrubSweetCookieSafeStoragePasswordEnv"), "auth bootstrap should avoid mutating process.env while handling Sweet Cookie safe-storage overrides");
+  assert(workerSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "worker helper subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
+  assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "auth bootstrap subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
+  assert(browserProfileHelpersSource.includes('readFileSync(localStatePath, "utf8")'), "browser profile helpers should read Chromium Local State as utf8 text directly");
   assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv"), "auth bootstrap should still scrub Sweet Cookie safe-storage passwords from helper subprocess environments");
   assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
   assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");

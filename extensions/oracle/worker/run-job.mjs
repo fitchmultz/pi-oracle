@@ -220,7 +220,7 @@ function spawnCommand(command, args, options = {}) {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
-      env: sweetCookieSafeStoragePasswordScrubbedEnv(),
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
     });
     let stdout = "";
     let stderr = "";
