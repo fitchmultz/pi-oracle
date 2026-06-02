@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Validated on macOS and Linux with Chromium-family browsers and the current pi package baseline. Pi-bundled runtime packages are optional wildcard peers so npm peer ranges do not block users from trying newer pi releases, though runtime behavior is only verified against the tested baseline until a follow-up package release confirms it. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Validated on macOS, Linux, and Windows native with Chromium-family browsers and the current pi package baseline. Pi-bundled runtime packages are optional wildcard peers so npm peer ranges do not block users from trying newer pi releases, though runtime behavior is only verified against the tested baseline until a follow-up package release confirms it. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -75,12 +75,13 @@ pi install https://github.com/fitchmultz/pi-oracle
 
 You need:
 
-- macOS or Linux
+- macOS, Linux, or Windows native
 - Node.js 22 or newer
 - `pi` 0.65.0 or newer
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
-- `agent-browser`, `cp`, `tar`, and `zstd` available on the machine
+- `agent-browser`, `tar`, and `zstd` available on the machine
+- on macOS APFS clone mode, `cp` available on PATH or via `PI_ORACLE_CP_PATH`; Linux/Windows runtime profile copies use Node's recursive copy
 - a normal persisted `pi` session, not `pi --no-session`
 - on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
 
@@ -294,7 +295,7 @@ Review the code and design docs before using it with private or regulated materi
 
 ## Current limits
 
-- Experimental public beta, validated on macOS and Linux with Chromium-family browsers.
+- Experimental public beta, validated on macOS, Linux, and Windows native with Chromium-family browsers.
 - Provider UI, auth, model controls, and artifact download behavior can drift.
 - Archive uploads are capped at 250 MiB for ChatGPT and 200 MiB for Grok after default exclusions and automatic whole-repo pruning.
 - A real ChatGPT or Grok web session is required for the provider you use.
@@ -345,9 +346,9 @@ This usually means the cookie import worked but the source cookies are not the a
 - The command returns a `Retry after ...` timestamp when that guard is active.
 - Wait until that time, then rerun `/oracle-clean <job-id|all>`.
 
-### A local dependency like `agent-browser`, `cp`, `tar`, or `zstd` is missing
+### A local dependency like `agent-browser`, `tar`, or `zstd` is missing
 
-Install the missing local dependency and rerun the command.
+Install the missing local dependency and rerun the command. On macOS APFS clone mode, `cp` must also be available on PATH or configured with `PI_ORACLE_CP_PATH`; Linux and Windows profile copies use Node's recursive copy.
 
 ### Auto-detection picked the wrong browser profile
 
@@ -365,6 +366,7 @@ Useful local checks:
 
 ```bash
 npm run check:oracle-extension
+npm run check:platform-smoke
 npm run typecheck
 npm run typecheck:worker-helpers
 npm run sanity:oracle
@@ -373,9 +375,25 @@ npm test
 npm run verify:oracle
 ```
 
-`npm publish` is guarded by `prepublishOnly`, which runs `npm run verify:oracle`.
+`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
 
-For end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). That workflow launches isolated `pi` sessions against this checkout and uses `instant` or `thinking_light`, as required by the project validation policy.
+Use the narrowest validation workflow that proves the change:
+
+| Situation | Command(s) |
+| --- | --- |
+| Everyday local iteration | `npm run verify:oracle` |
+| Platform-sensitive changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
+| Publish/release proof | `npm run smoke:platform:all` |
+
+For macOS, Ubuntu, and Windows native package/build plus packed runtime validation, use [`docs/platform-smoke.md`](docs/platform-smoke.md). The full release proof is:
+
+```bash
+npm run smoke:platform:all
+```
+
+The real runtime suite defaults to deterministic installed-tool execution so platform proof stays bounded. Provider/model defaults remain `zai/glm-5.1` for doctor/config and for optional model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL` when needed. For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path. The optional second real-agent negative symlink check is opt-in via `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1`; `npm run sanity:oracle` covers archive/symlink rejection by default without adding another model-agent turn to the platform release gate.
+
+For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). That workflow launches isolated `pi` coding-agent sessions against this checkout and uses `instant` or `thinking_light`, as required by the project validation policy.
 
 ## Project map
 
@@ -388,6 +406,7 @@ For end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALI
 | [`prompts/oracle.md`](prompts/oracle.md) | `/oracle` prompt-template workflow |
 | [`prompts/oracle-followup.md`](prompts/oracle-followup.md) | `/oracle-followup` prompt-template workflow |
 | `scripts/oracle-sanity-*` | Local sanity and archive-safety checks |
+| `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
 | [`docs/ORACLE_DESIGN.md`](docs/ORACLE_DESIGN.md) | Architecture, lifecycle, queueing, persistence, recovery behavior |
 | [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md) | Repeatable isolated `pi` validation workflow |
 | [`docs/ORACLE_RECOVERY_DRILL.md`](docs/ORACLE_RECOVERY_DRILL.md) | Safe expired-auth recovery drill |

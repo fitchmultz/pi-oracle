@@ -32,7 +32,11 @@
     "docs",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "platform-smoke.config.mjs",
+    "scripts/platform-smoke.mjs",
+    "scripts/platform-smoke",
+    "scripts/oracle-real-smoke.mjs"
   ],
   "pi": {
     "extensions": [
@@ -48,9 +52,24 @@
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
     "pack:check": "npm pack --dry-run",
-    "verify:oracle": "npm run check:oracle-extension && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
+    "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
     "test": "npm run verify:oracle",
-    "prepublishOnly": "npm run verify:oracle"
+    "prepublishOnly": "npm run release:check",
+    "check:platform-smoke": "node --check scripts/platform-smoke.mjs && node --check scripts/platform-smoke/assertions.mjs && node --check scripts/platform-smoke/artifacts.mjs && node --check scripts/platform-smoke/crabbox-runner.mjs && node --check scripts/platform-smoke/doctor.mjs && node --check scripts/platform-smoke/targets.mjs && node scripts/platform-smoke/invariants.mjs",
+    "smoke:platform": "node scripts/platform-smoke.mjs",
+    "smoke:platform:doctor": "node scripts/platform-smoke.mjs doctor",
+    "smoke:platform:ubuntu": "node scripts/platform-smoke.mjs run --target ubuntu",
+    "smoke:platform:all": "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native",
+    "smoke:platform:macos": "node scripts/platform-smoke.mjs run --target macos",
+    "smoke:platform:windows-native": "node scripts/platform-smoke.mjs run --target windows-native",
+    "smoke:real": "npm run smoke:real:packed",
+    "smoke:real:doctor": "node scripts/oracle-real-smoke.mjs doctor",
+    "release:check": "npm run verify:oracle && npm run smoke:platform:all",
+    "check:oracle-real-smoke": "node --check scripts/oracle-real-smoke.mjs",
+    "smoke:real:packed": "node scripts/oracle-real-smoke.mjs run --mode packed",
+    "smoke:real:source": "node scripts/oracle-real-smoke.mjs run --mode source",
+    "sanity:oracle:platform": "node scripts/oracle-sanity-runner.mjs --mode platform",
+    "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run sanity:oracle:platform && npm run pack:check"
   },
   "dependencies": {
     "@steipete/sweet-cookie": "^0.3.0"
@@ -77,7 +96,8 @@
   },
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "packageManager": "npm@11.16.0",
   "peerDependenciesMeta": {

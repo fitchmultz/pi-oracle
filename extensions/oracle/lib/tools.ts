@@ -4,9 +4,12 @@
 // Usage: Imported by the oracle extension entrypoint and sanity tests to register tools against the pi API.
 // Invariants/Assumptions: The pi runtime validates TypeBox schemas before execute, while execute owns semantic normalization.
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createReadStream } from "node:fs";
+import { lstat, mkdtemp, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, posix } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -126,6 +129,8 @@ const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".pi",
   ".oracle-context",
   ".cursor",
+  ".artifacts",
+  ".crabbox",
   "node_modules",
   "target",
   ".venv",
@@ -387,6 +392,99 @@ function formatArchiveOversizeError(args: {
     .join("\n");
 }
 
+function writeOctal(value: number, width: number): Buffer {
+  const text = Math.max(0, Math.floor(value)).toString(8).slice(-(width - 1)).padStart(width - 1, "0") + "\0";
+  return Buffer.from(text, "ascii");
+}
+
+function writeTarName(header: Buffer, name: string): void {
+  const normalized = name.replaceAll("\\", "/");
+  const nameBytes = Buffer.byteLength(normalized);
+  if (nameBytes <= 100) {
+    header.write(normalized, 0, 100, "utf8");
+    return;
+  }
+  const parts = normalized.split("/");
+  const fileName = parts.pop() || "";
+  const prefix = parts.join("/");
+  if (Buffer.byteLength(fileName) > 100 || Buffer.byteLength(prefix) > 155) {
+    throw new Error(`archive path is too long for portable tar header: ${normalized}`);
+  }
+  header.write(fileName, 0, 100, "utf8");
+  header.write(prefix, 345, 155, "utf8");
+}
+
+function buildTarHeader(name: string, options: { mode: number; size: number; mtimeMs: number; type: "file" | "directory" | "symlink"; linkName?: string }): Buffer {
+  const header = Buffer.alloc(512);
+  writeTarName(header, options.type === "directory" && !name.endsWith("/") ? `${name}/` : name);
+  writeOctal(options.mode & 0o7777, 8).copy(header, 100);
+  writeOctal(0, 8).copy(header, 108);
+  writeOctal(0, 8).copy(header, 116);
+  writeOctal(options.size, 12).copy(header, 124);
+  writeOctal(Math.floor(options.mtimeMs / 1000), 12).copy(header, 136);
+  Buffer.from("        ", "ascii").copy(header, 148);
+  header[156] = options.type === "directory" ? 53 : options.type === "symlink" ? 50 : 48;
+  if (options.linkName) header.write(options.linkName.replaceAll("\\", "/"), 157, 100, "utf8");
+  header.write("ustar", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  let checksum = 0;
+  for (const byte of header) checksum += byte;
+  const checksumText = checksum.toString(8).padStart(6, "0");
+  header.write(`${checksumText}\0 `, 148, 8, "ascii");
+  return header;
+}
+
+async function writeChunk(stream: NodeJS.WritableStream, chunk: Buffer): Promise<void> {
+  if (!stream.write(chunk)) await once(stream, "drain");
+}
+
+async function writeWindowsTarArchiveToZstd(cwd: string, entries: string[], archivePath: string, timeout: AbortSignal): Promise<void> {
+  const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv(process.env);
+  const zstd = spawn("zstd", ["-19", "-T0", "-f", "-o", archivePath], {
+    cwd,
+    env: scrubbedEnv,
+    stdio: ["pipe", "ignore", "pipe"],
+    signal: timeout,
+  });
+  let stderr = "";
+  zstd.stderr?.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  try {
+    for (const entry of entries) {
+      const normalizedEntry = entry.replaceAll("\\", "/");
+      const absolutePath = join(cwd, normalizedEntry);
+      const info = await lstat(absolutePath);
+      if (info.isSymbolicLink()) {
+        await writeChunk(zstd.stdin, buildTarHeader(normalizedEntry, { mode: info.mode, size: 0, mtimeMs: info.mtimeMs, type: "symlink", linkName: await readlink(absolutePath) }));
+        continue;
+      }
+      if (info.isDirectory()) {
+        await writeChunk(zstd.stdin, buildTarHeader(normalizedEntry, { mode: info.mode, size: 0, mtimeMs: info.mtimeMs, type: "directory" }));
+        continue;
+      }
+      if (!info.isFile()) continue;
+      await writeChunk(zstd.stdin, buildTarHeader(normalizedEntry, { mode: info.mode, size: info.size, mtimeMs: info.mtimeMs, type: "file" }));
+      for await (const chunk of createReadStream(absolutePath)) {
+        await writeChunk(zstd.stdin, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const padding = info.size % 512 === 0 ? 0 : 512 - (info.size % 512);
+      if (padding > 0) await writeChunk(zstd.stdin, Buffer.alloc(padding));
+    }
+    await writeChunk(zstd.stdin, Buffer.alloc(1024));
+    zstd.stdin.end();
+  } catch (error) {
+    zstd.stdin.destroy();
+    zstd.kill();
+    throw error;
+  }
+  const code = await new Promise<number | null>((resolve, reject) => {
+    zstd.once("error", reject);
+    zstd.once("close", resolve);
+  });
+  if (code !== 0) throw new Error(`zstd archive compression failed with status ${code}: ${stderr.trim()}`);
+}
+
 async function writeArchiveFile(
   cwd: string,
   entries: string[],
@@ -397,15 +495,31 @@ async function writeArchiveFile(
   await writeFile(listPath, Buffer.from(`${entries.join("\0")}\0`), { mode: 0o600 });
   await rm(archivePath, { force: true }).catch(() => undefined);
 
-  const { spawn } = await import("node:child_process");
+  if (process.platform === "win32") {
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS);
+    try {
+      await writeWindowsTarArchiveToZstd(cwd, entries, archivePath, timeoutController.signal);
+      return (await stat(archivePath)).size;
+    } catch (error) {
+      if (timeoutController.signal.aborted) {
+        throw new Error(`Oracle archive subprocess timed out after ${options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv();
-    const tar = spawn("tar", ["--null", "-cf", "-", "-T", listPath], {
-      cwd,
+    const tarArgs = ["--null", "-cf", "-", "-C", cwd, "-T", basename(listPath)];
+    const tar = spawn(process.env.PI_ORACLE_TEST_TAR_BIN ?? "tar", tarArgs, {
+      cwd: dirname(listPath),
       env: scrubbedEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const zstd = spawn("zstd", ["-19", "-T0", "-f", "-o", archivePath], {
+    const zstd = spawn(process.env.PI_ORACLE_TEST_ZSTD_BIN ?? "zstd", ["-19", "-T0", "-f", "-o", archivePath], {
       env: scrubbedEnv,
       stdio: ["pipe", "ignore", "pipe"],
     });
@@ -976,10 +1090,10 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
 function buildOracleToolErrorResult(
   toolName: OracleToolName,
   error: unknown,
-  params: Record<string, unknown>,
+  params: unknown,
   options?: { job?: NonNullable<ReturnType<typeof readJob>>; jobDetails?: OracleToolJobDetailsOptions },
 ) {
-  const errorDetails = buildOracleToolErrorDetails(toolName, error, params);
+  const errorDetails = buildOracleToolErrorDetails(toolName, error, asRecord(params) ?? {});
   return {
     content: [{
       type: "text" as const,
@@ -1442,7 +1556,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);
           }
           if (ctx.hasUI) refreshOracleStatus(ctx);
-          return buildOracleToolErrorResult("oracle_submit", error, params as unknown as Record<string, unknown>, {
+          return buildOracleToolErrorResult("oracle_submit", error, params, {
             job: latest ?? job,
             jobDetails: {
               queue: latest ? buildOracleQueueSnapshot(latest, latest.status === "queued" ? getQueuePosition(latest.id) : undefined) : undefined,
@@ -1455,7 +1569,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           await rm(tempArchivePath, { force: true }).catch(() => undefined);
         }
       } catch (error) {
-        return buildOracleToolErrorResult("oracle_submit", error, params as unknown as Record<string, unknown>);
+        return buildOracleToolErrorResult("oracle_submit", error, params);
       }
     },
   });
@@ -1515,7 +1629,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           },
         };
       } catch (error) {
-        return buildOracleToolErrorResult("oracle_read", error, params as unknown as Record<string, unknown>);
+        return buildOracleToolErrorResult("oracle_read", error, params);
       }
     },
   });
@@ -1550,7 +1664,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           details: { job: redactJobDetails(cancelled, { queue: buildOracleQueueSnapshot(cancelled, cancelled.status === "queued" ? getQueuePosition(cancelled.id) : undefined) }) },
         };
       } catch (error) {
-        return buildOracleToolErrorResult("oracle_cancel", error, params as unknown as Record<string, unknown>);
+        return buildOracleToolErrorResult("oracle_cancel", error, params);
       }
     },
   });

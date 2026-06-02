@@ -17,7 +17,7 @@ const MACOS_CHROMIUM_KEY_ITERATIONS = 1003;
 
 function spawnCapture(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
     let stdout = "";
     let stderr = "";
     const timeoutMs = options.timeoutMs ?? 5_000;

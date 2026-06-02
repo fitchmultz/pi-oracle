@@ -1,6 +1,10 @@
 node_modules/
 .DS_Store
 *.tgz
+.artifacts/
+.crabbox/
+.debug/
+.platform-smoke-runs/
 .pi/
 .oracle-context/
 .scratchpad.md

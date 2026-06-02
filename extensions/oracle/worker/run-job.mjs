@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Job state is persisted under worker-held locks, browser/session artifacts live under the configured oracle directories, and cleanup preserves durable recovery semantics.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, cp as copyDirectory, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -214,6 +214,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function killProcessTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+function killProcess(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGKILL");
+}
+
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeoutMs, ...spawnOptions } = options;
@@ -221,6 +237,7 @@ function spawnCommand(command, args, options = {}) {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
       env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
+      shell: spawnOptions.shell ?? process.platform === "win32",
     });
     let stdout = "";
     let stderr = "";
@@ -229,8 +246,8 @@ function spawnCommand(command, args, options = {}) {
     if (typeof timeoutMs === "number" && timeoutMs > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 2_000).unref?.();
+        killProcessTree(child);
+        setTimeout(() => killProcess(child), 2_000).unref?.();
       }, timeoutMs);
       killTimer.unref?.();
     }
@@ -314,7 +331,7 @@ async function cloneSeedProfileToRuntime(job) {
         await spawnCommand(CP_BIN, ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       }
     } else {
-      await spawnCommand(CP_BIN, ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+      await copyDirectory(seedDir, job.runtimeProfileDir, { recursive: true, force: true, verbatimSymlinks: true });
     }
     await removeChromiumProcessSingletonArtifacts(job.runtimeProfileDir);
   }, 10 * 60 * 1000);

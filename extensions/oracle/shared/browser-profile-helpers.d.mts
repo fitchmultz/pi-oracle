@@ -7,6 +7,7 @@ export interface BrowserPathOptions {
 
 export interface ExecutableSearchOptions {
   pathValue?: string;
+  pathDelimiter?: string;
 }
 
 export const SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAMES: readonly [

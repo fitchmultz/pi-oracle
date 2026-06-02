@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import {
   assertNotKnownBrowserUserDataPath,
@@ -143,6 +143,22 @@ async function log(message) {
   await chmod(LOG_PATH, 0o600).catch(() => undefined);
 }
 
+function killProcessTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+function killProcess(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGKILL");
+}
+
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
@@ -150,6 +166,7 @@ function spawnCommand(command, args, options = {}) {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
       env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
+      shell: spawnOptions.shell ?? process.platform === "win32",
     });
     let stdout = "";
     let stderr = "";
@@ -159,8 +176,8 @@ function spawnCommand(command, args, options = {}) {
     if (typeof timeoutMs === "number" && timeoutMs > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        killGraceTimer = setTimeout(() => child.kill("SIGKILL"), AGENT_BROWSER_KILL_GRACE_MS);
+        killProcessTree(child);
+        killGraceTimer = setTimeout(() => killProcess(child), AGENT_BROWSER_KILL_GRACE_MS);
         killGraceTimer.unref?.();
       }, timeoutMs);
       killTimer.unref?.();
@@ -267,7 +284,7 @@ async function sweepStaleStagingProfiles(targetDir) {
 
 async function createProfilePlan(profileDir) {
   const targetDir = resolve(profileDir);
-  if (!targetDir.startsWith("/")) {
+  if (!isAbsolute(targetDir)) {
     throw new Error(`Oracle profileDir must be an absolute path: ${profileDir}`);
   }
   if (targetDir === "/" || targetDir === homedir()) {

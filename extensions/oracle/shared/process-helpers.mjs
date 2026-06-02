@@ -21,6 +21,15 @@ function sleep(ms) {
 export function readProcessStartedAt(pid) {
   if (!pid || pid <= 0) return undefined;
   try {
+    if (process.platform === "win32") {
+      const startedAt = execFileSync("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
+      ], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
+      return startedAt || undefined;
+    }
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
     return startedAt || undefined;
   } catch {

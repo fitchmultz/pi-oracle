@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
-import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, cp as copyDirectory, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
@@ -22,6 +22,24 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
 ) || "agent-browser";
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
 const ORACLE_SUBPROCESS_KILL_GRACE_MS = 2_000;
+
+function killProcessTree(child: ReturnType<typeof spawn>): void {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true })
+      .on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+function killProcess(child: ReturnType<typeof spawn>): void {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true })
+      .on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGKILL");
+}
 const WORKSPACE_ROOT_MARKERS = [
   ".pi/extensions/oracle.json",
   ".pi",
@@ -31,13 +49,16 @@ function cpCommand(): string {
   return process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 }
 
-function requiredOracleDependencies(): Array<{ name: string; command: string }> {
-  return [
+function requiredOracleDependencies(config: OracleConfig): Array<{ name: string; command: string }> {
+  const dependencies = [
     { name: "agent-browser", command: AGENT_BROWSER_BIN },
-    { name: "cp", command: cpCommand() },
     { name: "tar", command: "tar" },
     { name: "zstd", command: "zstd" },
   ];
+  if (config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
+    dependencies.push({ name: "cp", command: cpCommand() });
+  }
+  return dependencies;
 }
 
 export interface OracleRuntimeLeaseMetadata {
@@ -183,30 +204,38 @@ function unwritableOracleDirectoryMessage(label: "runtime profiles" | "jobs", pa
   return `Oracle ${label} directory is not writable: ${path}. Fix its permissions or configure a writable path, then retry.`;
 }
 
+async function isExecutableFile(path: string): Promise<boolean> {
+  try {
+    const stats = await stat(path);
+    if (!stats.isFile()) return false;
+    await access(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function executableNameCandidates(command: string): string[] {
+  if (process.platform !== "win32" || /\.[^\\/]+$/.test(command)) return [command];
+  const extensions = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD;.PS1").split(";").filter(Boolean);
+  return [command, ...extensions.map((extension) => `${command}${extension.toLowerCase()}`), ...extensions.map((extension) => `${command}${extension.toUpperCase()}`)];
+}
+
 async function resolveExecutableOnPath(command: string): Promise<string | undefined> {
   if (!command) return undefined;
-  if (command.includes("/")) {
-    try {
-      const commandStats = await stat(command);
-      if (!commandStats.isFile()) return undefined;
-      await access(command, fsConstants.X_OK);
-      return command;
-    } catch {
-      return undefined;
+  if (command.includes("/") || command.includes("\\")) {
+    for (const candidate of executableNameCandidates(command)) {
+      if (await isExecutableFile(candidate)) return candidate;
     }
+    return undefined;
   }
 
   const pathValue = process.env.PATH ?? "";
   for (const segment of pathValue.split(delimiter)) {
     if (!segment) continue;
-    const candidate = join(segment, command);
-    try {
-      const candidateStats = await stat(candidate);
-      if (!candidateStats.isFile()) continue;
-      await access(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      continue;
+    for (const name of executableNameCandidates(command)) {
+      const candidate = join(segment, name);
+      if (await isExecutableFile(candidate)) return candidate;
     }
   }
   return undefined;
@@ -292,7 +321,7 @@ export async function assertOracleSubmitPrerequisites(config: OracleConfig): Pro
   assertSafeOracleProfilePath(config.browser.runtimeProfilesDir, "runtime profiles", config);
   await assertOracleAuthSeedProfileReady(config);
   await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
-  for (const dependency of requiredOracleDependencies()) {
+  for (const dependency of requiredOracleDependencies(config)) {
     await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
   }
   await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");
@@ -420,7 +449,7 @@ function profileCloneArgs(config: OracleConfig, sourceDir: string, destinationDi
 
 async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(cpCommand(), args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cpCommand(), args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
     let stderr = "";
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
@@ -434,9 +463,9 @@ async function spawnCp(args: string[], options?: { timeoutMs?: number }): Promis
     if ((options?.timeoutMs ?? 0) > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        killProcessTree(child);
         killGraceTimer = setTimeout(() => {
-          child.kill("SIGKILL");
+          killProcess(child);
         }, ORACLE_SUBPROCESS_KILL_GRACE_MS);
         killGraceTimer.unref?.();
       }, options?.timeoutMs);
@@ -483,7 +512,11 @@ export async function cloneSeedProfileToRuntime(
   await withAuthLock({ runtimeProfileDir, seedDir }, async () => {
     await rm(runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await mkdir(dirname(runtimeProfileDir), { recursive: true, mode: 0o700 }).catch(() => undefined);
-    await spawnCp(profileCloneArgs(config, seedDir, runtimeProfileDir), { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
+    if (config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
+      await spawnCp(profileCloneArgs(config, seedDir, runtimeProfileDir), { timeoutMs: options?.cpTimeoutMs ?? PROFILE_CLONE_TIMEOUT_MS });
+    } else {
+      await copyDirectory(seedDir, runtimeProfileDir, { recursive: true, force: true, verbatimSymlinks: true });
+    }
     await removeChromiumProcessSingletonArtifacts(runtimeProfileDir);
   });
 
@@ -499,7 +532,7 @@ export interface OracleCleanupReport {
 
 async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<string | undefined> {
   return new Promise<string | undefined>((resolve) => {
-    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: "ignore" });
+    const child = spawn(AGENT_BROWSER_BIN, ["--session", runtimeSessionName, "close"], { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: "ignore", shell: process.platform === "win32" });
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     let timedOut = false;
@@ -513,15 +546,21 @@ async function closeRuntimeBrowserSession(runtimeSessionName: string): Promise<s
 
     timeout = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killProcessTree(child);
       setTimeout(() => {
-        child.kill("SIGKILL");
+        killProcess(child);
         finish(`Timed out closing agent-browser session ${runtimeSessionName} after ${AGENT_BROWSER_CLOSE_TIMEOUT_MS}ms`);
       }, 2_000).unref?.();
     }, AGENT_BROWSER_CLOSE_TIMEOUT_MS);
     timeout.unref?.();
 
-    child.on("error", (error) => finish(`Failed to close agent-browser session ${runtimeSessionName}: ${error.message}`));
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        finish();
+        return;
+      }
+      finish(`Failed to close agent-browser session ${runtimeSessionName}: ${error.message}`);
+    });
     child.on("close", (code) => {
       if (timedOut || code === 0) finish();
       else finish(`agent-browser close exited with code ${code} for session ${runtimeSessionName}`);

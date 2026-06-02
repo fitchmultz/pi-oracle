@@ -46,6 +46,15 @@ const MAC_CHROMIUM_USER_DATA_RELATIVE_DIRS = Object.freeze([
   ["Library", "Application Support", "Google", "Chrome for Testing"],
 ]);
 
+const WINDOWS_CHROMIUM_USER_DATA_RELATIVE_DIRS = Object.freeze([
+  ["AppData", "Local", "Google", "Chrome", "User Data"],
+  ["AppData", "Local", "Chromium", "User Data"],
+  ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"],
+  ["AppData", "Local", "Microsoft", "Edge", "User Data"],
+  ["AppData", "Local", "Vivaldi", "User Data"],
+  ["AppData", "Roaming", "Opera Software", "Opera Stable"],
+]);
+
 const LINUX_CHROME_EXECUTABLE_NAMES = Object.freeze(["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "brave"]);
 
 /**
@@ -109,6 +118,7 @@ export function browserUserDataDirsForPlatform(platform = process.platform, opti
   const homeDir = options.homeDir ?? homedir();
   if (platform === "darwin") return MAC_CHROMIUM_USER_DATA_RELATIVE_DIRS.map((segments) => join(homeDir, ...segments));
   if (platform === "linux") return options.includeUnsupported === false ? linuxChromiumCookieImportUserDataDirs({ ...options, homeDir }) : linuxBrowserSafetyUserDataDirs({ ...options, homeDir });
+  if (platform === "win32") return WINDOWS_CHROMIUM_USER_DATA_RELATIVE_DIRS.map((segments) => join(homeDir, ...segments));
   return [];
 }
 
@@ -146,7 +156,13 @@ export function chromeUserAgentPlatformToken(platform = process.platform) {
 export function pathInsideOrEqual(childPath, parentPath) {
   const child = normalize(childPath);
   const parent = normalize(parentPath);
-  return child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
+  if (child === parent) return true;
+  if (!parent) return false;
+  const parentWithSeparator = /[/\\]$/.test(parent) ? parent : `${parent}/`;
+  const alternateParentWithSeparator = parentWithSeparator.includes("/")
+    ? parentWithSeparator.replaceAll("/", "\\")
+    : parentWithSeparator.replaceAll("\\", "/");
+  return child.startsWith(parentWithSeparator) || child.startsWith(alternateParentWithSeparator);
 }
 
 /**
@@ -285,8 +301,9 @@ export function isExecutableFileSync(pathValue) {
  */
 export function findExecutableOnPathSync(names, options = {}) {
   const pathValue = options.pathValue ?? process.env.PATH ?? "";
+  const pathDelimiter = options.pathDelimiter ?? delimiter;
   for (const name of names) {
-    for (const dir of pathValue.split(delimiter).filter(Boolean)) {
+    for (const dir of pathValue.split(pathDelimiter).filter(Boolean)) {
       const candidate = join(dir, name);
       if (isExecutableFileSync(candidate)) return candidate;
     }

@@ -167,7 +167,7 @@ function readLockProcessPid(path) {
  * @returns {boolean}
  */
 function isStateDirExistsError(error) {
-  return Boolean(error && typeof error === "object" && "code" in error && (error.code === "EEXIST" || error.code === "ENOTEMPTY"));
+  return Boolean(error && typeof error === "object" && "code" in error && (error.code === "EEXIST" || error.code === "ENOTEMPTY" || (process.platform === "win32" && error.code === "EPERM")));
 }
 
 /**
@@ -248,7 +248,13 @@ export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs 
  */
 export async function releaseStatePath(path) {
   if (!path) return;
-  await rm(path, { recursive: true, force: true }).catch(() => undefined);
+  const deadline = Date.now() + (process.platform === "win32" ? 5_000 : 1_000);
+  while (true) {
+    await rm(path, { recursive: true, force: true }).catch(() => undefined);
+    if (!existsSync(path)) return;
+    if (Date.now() >= deadline) return;
+    await sleep(POLL_MS);
+  }
 }
 
 /**

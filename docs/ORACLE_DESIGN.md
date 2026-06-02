@@ -282,7 +282,7 @@ Browser/auth settings are global-only because they control local privileged brow
 }
 ```
 
-`browser.cloneStrategy` defaults to `apfs-clone` on macOS and `copy` on Linux. If an existing Linux config still says `apfs-clone`, the runtime profile copy path falls back to ordinary recursive `cp -R` instead of using the macOS-only clone flag. `cp` is preflighted with the other local dependencies; set `PI_ORACLE_CP_PATH` only when the default PATH lookup cannot find the intended copy executable.
+`browser.cloneStrategy` defaults to `apfs-clone` on macOS and `copy` on Linux/Windows. macOS APFS clone mode uses `cp -cR` and preflights `cp`; set `PI_ORACLE_CP_PATH` only when the default PATH lookup cannot find the intended copy executable. Linux and Windows runtime profile copies use Node's recursive copy instead of depending on POSIX `cp`.
 
 The default `/oracle-auth` cookie importer delegates to `@steipete/sweet-cookie`'s Chrome/Chromium backend. On Linux, pi-oracle auto-detects existing Google Chrome, Chromium, Chromium Browser, or Brave profile roots under `${XDG_CONFIG_HOME:-~/.config}` and passes non-Google roots as absolute profile paths so Sweet Cookie reads the intended cookie DB. pi-oracle does not currently select Sweet Cookie's Edge or Firefox backends. Encrypted Linux Chromium cookies are handled by Sweet Cookie via `secret-tool`, `kwallet-query`/`dbus-send`, `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic`, or the `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` / `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` overrides. Prefer keyring helpers over password environment variables; if a password override is used for `/oracle-auth`, pi-oracle scrubs it before launching browser/helper subprocesses after cookie import.
 
@@ -637,3 +637,6 @@ Recent proof points:
 - expired-auth drill post-repair success: `fa26a2a7-0057-4a21-b3e0-71c1d020facf`
 - successful multi-artifact completion: `b6b3599c-6b91-4315-adfa-8a83aa5eda9b`
 - repo-owned sanity harness: `npm run sanity:oracle`
+- real installed-extension smoke source of truth: `scripts/oracle-real-smoke.mjs`; required release proof runs packed-install mode (`npm run smoke:real:packed`) and executes installed-package `oracle_submit` deterministically, with optional slower model-agent debugging via `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`; source mode (`npm run smoke:real:source`) is inner-loop/debug only
+- macOS, Ubuntu, and Windows native package/build/runtime smoke source of truth: `docs/platform-smoke.md`; use `npm run verify:oracle` for everyday local iteration, `npm run smoke:platform:doctor` plus a focused target/suite run for platform-sensitive changes, and `npm run smoke:platform:all` for doctor-first packed-install Crabbox release evidence
+- release gate: `npm run release:check`, also used by `prepublishOnly`, combines static verification and all required Crabbox platform smokes
