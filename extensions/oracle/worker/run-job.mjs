@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Job state is persisted under worker-held locks, browser/session artifacts live under the configured oracle directories, and cleanup preserves durable recovery semantics.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { appendFile, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, cp as copyDirectory, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -23,7 +23,9 @@ import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABE
 import {
   buildAllowedChatGptOrigins,
   deriveAssistantCompletionSignature,
+  matchesCompactIntelligenceOpenerLabel,
   matchesModelFamilyLabel,
+  matchesRequestedModelControlLabel,
   requestedEffortLabel,
   effortSelectionVisible,
   snapshotCanSafelySkipModelConfiguration,
@@ -34,6 +36,7 @@ import {
   autoSwitchToThinkingSelectionVisible,
 } from "./chatgpt-ui-helpers.mjs";
 import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
 const jobId = process.argv[2];
@@ -80,6 +83,8 @@ const POST_SEND_SETTLE_MS = 15_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
+const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
+scrubSweetCookieSafeStoragePasswordEnv();
 
 let currentJob;
 let browserStarted = false;
@@ -209,12 +214,30 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function killProcessTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+function killProcess(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGKILL");
+}
+
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeoutMs, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
+      shell: spawnOptions.shell ?? process.platform === "win32",
     });
     let stdout = "";
     let stderr = "";
@@ -223,8 +246,8 @@ function spawnCommand(command, args, options = {}) {
     if (typeof timeoutMs === "number" && timeoutMs > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 2_000).unref?.();
+        killProcessTree(child);
+        setTimeout(() => killProcess(child), 2_000).unref?.();
       }, timeoutMs);
       killTimer.unref?.();
     }
@@ -274,8 +297,20 @@ async function removeChromiumProcessSingletonArtifacts(profileDir) {
   ]);
 }
 
+function assertSafeRuntimeProfilePath(path, label, config = undefined) {
+  try {
+    assertNotKnownBrowserUserDataPath(path, label, {
+      cookieSources: config ? { chromeProfile: config.auth.chromeProfile, chromeCookiePath: config.auth.chromeCookiePath } : undefined,
+    });
+  } catch (error) {
+    throw new Error(`Oracle ${label} path is unsafe: ${path}. ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function cloneSeedProfileToRuntime(job) {
   const seedDir = job.config.browser.authSeedProfileDir;
+  assertSafeRuntimeProfilePath(seedDir, "auth seed profile", job.config);
+  assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
   if (!existsSync(seedDir)) {
     throw new Error(`Oracle auth seed profile not found: ${seedDir}. Run /oracle-auth first.`);
   }
@@ -286,17 +321,17 @@ async function cloneSeedProfileToRuntime(job) {
   await withLock(ORACLE_STATE_DIR, "auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
-    if (job.config.browser.cloneStrategy === "apfs-clone") {
+    if (job.config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
       try {
-        await spawnCommand("/bin/cp", ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+        await spawnCommand(CP_BIN, ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await log(`APFS clone copy failed; falling back to recursive copy: ${message}`);
         await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
-        await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+        await spawnCommand(CP_BIN, ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       }
     } else {
-      await spawnCommand("/bin/cp", ["-R", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
+      await copyDirectory(seedDir, job.runtimeProfileDir, { recursive: true, force: true, verbatimSymlinks: true });
     }
     await removeChromiumProcessSingletonArtifacts(job.runtimeProfileDir);
   }, 10 * 60 * 1000);
@@ -314,27 +349,28 @@ async function cleanupRuntime(job) {
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
-    await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(async (error) => {
+    try {
+      assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
+      await rm(job.runtimeProfileDir, { recursive: true, force: true });
+    } catch (error) {
       const message = `Runtime profile cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    }
+    await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(async (error) => {
+      const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      await log(message).catch(() => undefined);
+    });
+    await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(async (error) => {
+      const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
     if (warnings.length === 0) {
-      await releaseLease(ORACLE_STATE_DIR, "conversation", job.conversationId).catch(async (error) => {
-        const message = `Conversation lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
-        warnings.push(message);
-        await log(message).catch(() => undefined);
-      });
-      await releaseLease(ORACLE_STATE_DIR, "runtime", job.runtimeId).catch(async (error) => {
-        const message = `Runtime lease cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
-        warnings.push(message);
-        await log(message).catch(() => undefined);
-      });
-    }
-    if (warnings.length === 0) {
       await log(`Cleanup summary: runtime ${job.runtimeId} released with no warnings`).catch(() => undefined);
     } else {
-      await log(`Cleanup summary: runtime ${job.runtimeId} released with ${warnings.length} warning(s)`).catch(() => undefined);
+      await log(`Cleanup summary: runtime ${job.runtimeId} released after ${warnings.length} warning(s)`).catch(() => undefined);
     }
     return warnings;
   } finally {
@@ -723,11 +759,42 @@ function matchesModelFamilyControl(candidate, family) {
   return ["button", "radio", "menuitemradio"].includes(candidate.kind || "") && typeof candidate.label === "string" && matchesModelFamilyLabel(candidate.label, family) && !candidate.disabled;
 }
 
+function normalizeSnapshotLabel(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function snapshotHasLegacyEffortCombobox(snapshot) {
+  return Boolean(findEntry(snapshot, (candidate) => {
+    if (candidate.kind !== "combobox" || candidate.disabled) return false;
+    return /^(?:Thinking effort|Pro thinking effort)$/i.test(normalizeSnapshotLabel(candidate.label));
+  }));
+}
+
+function snapshotHasCompactIntelligenceMenuControls(snapshot) {
+  return Boolean(findEntry(snapshot, (candidate) => {
+    if (candidate.disabled) return false;
+    const label = normalizeSnapshotLabel(candidate.label);
+    return (candidate.kind === "menu" && /Intelligence.*Instant.*Medium.*High.*Pro/i.test(label))
+      || (candidate.kind === "menuitemradio" && /^(?:Instant\s+5s|Medium\s+5\s*[–-]\s*30s|High\s+15\s*[–-]\s*60s|Pro\s+5\+\s*min)$/i.test(label));
+  }));
+}
+
+function matchesRequestedModelControl(candidate, selection, options = {}) {
+  if (!["button", "radio", "menuitemradio"].includes(candidate.kind || "") || typeof candidate.label !== "string" || candidate.disabled) return false;
+  if (candidate.kind === "button") {
+    if (/\bexpanded=true\b/.test(String(candidate.line || ""))) return false;
+    if (options.ignoreCompactTierButtons && /^(?:Instant|Medium|High|Pro)$/i.test(candidate.label)) return false;
+    if (options.ignoreCompactOnlyButtons && /^(?:Medium|High)$/i.test(candidate.label)) return false;
+  }
+  return matchesRequestedModelControlLabel(candidate.label, selection);
+}
+
 function matchesModelConfigurationOpener(candidate) {
   if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
   const label = String(candidate.label || "");
   return candidate.label === "Model"
     || candidate.label === "Model selector"
+    || matchesCompactIntelligenceOpenerLabel(label)
     || /^(?:Light|Standard|Extended|Heavy)(?:, click to remove)?$/i.test(label)
     || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
     || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
@@ -1196,19 +1263,33 @@ async function configureModel(job) {
   let verificationSnapshot = familySnapshot;
 
   const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
-  let familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
+  const legacyEffortComboboxVisible = snapshotHasLegacyEffortCombobox(familySnapshot);
+  const familyAlreadySelectedInUi = !alreadyConfiguredInUi && legacyEffortComboboxVisible && snapshotWeaklyMatchesRequestedModel(familySnapshot, job.selection);
+  const controlOptions = {
+    ignoreCompactTierButtons: snapshotHasCompactIntelligenceMenuControls(familySnapshot),
+    ignoreCompactOnlyButtons: legacyEffortComboboxVisible,
+  };
+  let familyEntry = alreadyConfiguredInUi || familyAlreadySelectedInUi
+    ? undefined
+    : findEntry(familySnapshot, (candidate) => matchesRequestedModelControl(candidate, job.selection, controlOptions));
   if (alreadyConfiguredInUi) {
     await log("Model configuration UI opened with requested settings already selected");
+  } else if (familyAlreadySelectedInUi) {
+    await log("Model family already appears selected; verifying effort-specific settings");
   } else if (!familyEntry) {
     throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
   }
 
-  if (!alreadyConfiguredInUi && familyEntry) {
+  if (!alreadyConfiguredInUi && !familyAlreadySelectedInUi && familyEntry) {
     await clickRef(job, familyEntry.ref);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
     verificationSnapshot = familySnapshot;
-    familyEntry = findEntry(familySnapshot, (candidate) => matchesModelFamilyControl(candidate, job.selection.modelFamily));
+    const postClickControlOptions = {
+      ignoreCompactTierButtons: snapshotHasCompactIntelligenceMenuControls(familySnapshot),
+      ignoreCompactOnlyButtons: snapshotHasLegacyEffortCombobox(familySnapshot),
+    };
+    familyEntry = findEntry(familySnapshot, (candidate) => matchesRequestedModelControl(candidate, job.selection, postClickControlOptions));
     if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
       throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
     }
@@ -1240,7 +1321,8 @@ async function configureModel(job) {
   if (job.selection.modelFamily === "instant") {
     const desiredAutoSwitchState = job.selection.autoSwitchToThinking === true;
     const currentAutoSwitchState = autoSwitchToThinkingSelectionVisible(familySnapshot);
-    if (currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
+    const compactInstantAlreadyVerified = desiredAutoSwitchState && currentAutoSwitchState === undefined && snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
+    if (!compactInstantAlreadyVerified && currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
       await clickAutoSwitchToThinkingControl(job);
       await agentBrowser(job, "wait", "400");
       verificationSnapshot = await snapshotText(job);

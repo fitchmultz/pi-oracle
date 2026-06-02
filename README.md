@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Validated primarily on macOS with Google Chrome/Chromium and the current pi package baseline. Pi-bundled runtime packages are optional wildcard peers so npm peer ranges do not block users from trying newer pi releases, though runtime behavior is only verified against the tested baseline until a follow-up package release confirms it. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Validated on macOS, Linux, and Windows native with Chromium-family browsers and the current pi package baseline. Pi-bundled runtime packages are optional wildcard peers so npm peer ranges do not block users from trying newer pi releases, though runtime behavior is only verified against the tested baseline until a follow-up package release confirms it. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -37,7 +37,7 @@ Do not use it for:
 
 - short local coding tasks that `pi` can handle directly
 - projects that must never be uploaded to ChatGPT.com, Grok, or another configured web provider
-- non-macOS environments or machines without the required local browser/tooling
+- machines outside the currently supported local browser/tooling setup
 
 ## Problem it solves
 
@@ -75,13 +75,15 @@ pi install https://github.com/fitchmultz/pi-oracle
 
 You need:
 
-- macOS
+- macOS, Linux, or Windows native
 - Node.js 22 or newer
 - `pi` 0.65.0 or newer
-- Google Chrome or another Chromium-family browser
+- Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
 - `agent-browser`, `tar`, and `zstd` available on the machine
+- on macOS APFS clone mode, `cp` available on PATH or via `PI_ORACLE_CP_PATH`; Linux/Windows runtime profile copies use Node's recursive copy
 - a normal persisted `pi` session, not `pi --no-session`
+- on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
 
 ### 3. Sync provider auth once
 
@@ -202,11 +204,23 @@ Notes:
 - When an agent is unsure which oracle preset fits, it should omit `preset` and use the configured default model instead of asking by default. If the prompt says to use Grok, it should pass `provider: "grok"` to `oracle_submit`.
 - You usually do not need browser paths unless auto-detection fails.
 
+### Linux cookie import notes
+
+`/oracle-auth` delegates the default cookie read to `@steipete/sweet-cookie`'s Linux Chrome/Chromium backend. The packaged default auto-detects existing Google Chrome, Chromium, Chromium Browser, or Brave profile roots under `${XDG_CONFIG_HOME:-~/.config}` and passes non-Google roots as absolute profile paths so the correct cookie DB is read. Set `auth.chromeProfile` to another profile name, a profile directory, or a `Cookies` DB path when needed, and leave `auth.chromiumKeychain` unset on Linux.
+
+Sweet Cookie's Linux encrypted-cookie handling is controlled outside pi-oracle:
+
+- `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic` selects GNOME/libsecret, KDE KWallet, or no keyring probing.
+- GNOME probing shells out to `secret-tool`; KDE probing shells out to `kwallet-query` and `dbus-send`.
+- `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` and `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` bypass keyring probing when you already know the browser safe-storage password.
+
+Do not put safe-storage passwords in project config or persistent shell startup files. Prefer keyring helpers when possible; if you use an environment override for one `/oracle-auth` run, pi-oracle scrubs it before launching browser/helper subprocesses after cookie import.
+
 ### Custom Chromium cookie sources
 
-Use this only for a Chromium-family browser that the default cookie importer cannot read.
+Most Chrome/Chromium-compatible browsers should work through Sweet Cookie's default Chrome backend when `auth.chromeProfile` points at the right profile or cookie DB. pi-oracle does not currently select Sweet Cookie's Edge or Firefox backends. The `auth.chromiumKeychain` alternate path is macOS-only and is intended for a Chromium-family browser that is not one of Sweet Cookie's built-in Chrome/Brave/Arc/Chromium targets or otherwise cannot import cookies without dependency patching.
 
-Before running `/oracle-auth` with this path:
+Before running `/oracle-auth` with this macOS path:
 
 1. Log into ChatGPT or Grok in the target browser profile, depending on `defaults.provider`.
 2. Fully quit the browser so its `Cookies` database is stable.
@@ -214,7 +228,7 @@ Before running `/oracle-auth` with this path:
 4. Find the browser's macOS Keychain safe-storage item account and service name.
 5. Configure all of `browser.executablePath`, `auth.chromeCookiePath`, and `auth.chromiumKeychain` in `~/.pi/agent/extensions/oracle.json`.
 
-Example Helium config:
+Example macOS Helium config:
 
 ```json
 {
@@ -233,7 +247,9 @@ Example Helium config:
 }
 ```
 
-`auth.chromeCookiePath` must be paired with `auth.chromiumKeychain`; partial config is rejected so oracle does not silently fall back to another browser source.
+`auth.chromeCookiePath` remains the cookie database path for backward compatibility. On macOS, `auth.chromiumKeychain` must be paired with `auth.chromeCookiePath`; partial config is rejected so oracle does not silently fall back to a different browser source. When both are present on macOS, `/oracle-auth` uses pi-oracle's repo-owned generic Chromium cookie reader instead of patching `@steipete/sweet-cookie` internals. On Linux, `auth.chromiumKeychain` is rejected; use Sweet Cookie's Linux keyring/password environment options instead.
+
+If macOS prompts for Keychain access during `/oracle-auth`, allow access for the configured browser safe-storage item. If auth still fails after cookies are synced, the cookie DB may be stale, from the wrong profile, or for an account that is logged out; reopen the configured browser profile, confirm ChatGPT works there, quit the browser, and rerun `/oracle-auth`. On Linux, inspect `/oracle-auth` diagnostics for Sweet Cookie warnings about `secret-tool`, `kwallet-query`, or safe-storage password overrides.
 
 ## Available providers and presets
 
@@ -279,19 +295,19 @@ Review the code and design docs before using it with private or regulated materi
 
 ## Current limits
 
-- Experimental public beta, validated primarily on macOS.
+- Experimental public beta, validated on macOS, Linux, and Windows native with Chromium-family browsers.
 - Provider UI, auth, model controls, and artifact download behavior can drift.
 - Archive uploads are capped at 250 MiB for ChatGPT and 200 MiB for Grok after default exclusions and automatic whole-repo pruning.
 - A real ChatGPT or Grok web session is required for the provider you use.
 - The README currently uses command-level proof and design docs; no public screenshot or demo GIF is checked into the repo.
-- Production hardening should keep focusing on UI drift detection, auth recovery, artifact capture, and environment diagnostics.
+- Production hardening should keep focusing on UI drift detection, auth recovery, artifact capture, platform compatibility, and environment diagnostics.
 
 ## Troubleshooting
 
 ### `/oracle-auth` fails or says login is required
 
 - Make sure the selected provider works in the same local browser profile you configured.
-- For custom Chromium cookie sources, confirm `auth.chromeCookiePath` points at that profile's `Cookies` DB and `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service.
+- For custom Chromium cookie sources, confirm `auth.chromeCookiePath` points at that profile's `Cookies` DB. On macOS, also confirm `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service. On Linux, leave `auth.chromiumKeychain` unset and use Sweet Cookie's `SWEET_COOKIE_LINUX_KEYRING`, `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, or `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` options for encrypted Chrome/Chromium/Brave cookies.
 - Re-run `/oracle-auth`.
 - Agent callers can use `oracle_auth({})` once before retrying a stale-auth oracle submission.
 - If the provider is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
@@ -304,7 +320,7 @@ This usually means the cookie import worked but the source cookies are not the a
 2. Confirm the selected provider works there without logging in again.
 3. Quit the browser fully so its `Cookies` DB is stable.
 4. Confirm `auth.chromeCookiePath` points at that exact profile's `Cookies` DB.
-5. Confirm `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service for that DB.
+5. On macOS, confirm `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service for that DB. On Linux, confirm the relevant Sweet Cookie keyring helper or Chrome/Brave safe-storage password override is available.
 6. Re-run `/oracle-auth`.
 
 ### You hit a challenge or verification page
@@ -330,14 +346,14 @@ This usually means the cookie import worked but the source cookies are not the a
 - The command returns a `Retry after ...` timestamp when that guard is active.
 - Wait until that time, then rerun `/oracle-clean <job-id|all>`.
 
-### `agent-browser`, `tar`, or `zstd` is missing
+### A local dependency like `agent-browser`, `tar`, or `zstd` is missing
 
-Install the missing local dependency and rerun the command.
+Install the missing local dependency and rerun the command. On macOS APFS clone mode, `cp` must also be available on PATH or configured with `PI_ORACLE_CP_PATH`; Linux and Windows profile copies use Node's recursive copy.
 
 ### Auto-detection picked the wrong browser profile
 
 - Set `auth.chromeProfile` in `~/.pi/agent/extensions/oracle.json`.
-- For custom Chromium cookie sources, set `auth.chromeCookiePath` to the exact profile `Cookies` DB and pair it with `auth.chromiumKeychain`.
+- For custom Chromium cookie sources, set `auth.chromeCookiePath` to the exact profile `Cookies` DB. Pair it with `auth.chromiumKeychain` only on macOS; on Linux, rely on Sweet Cookie's keyring/password environment options.
 - Re-run `/oracle-auth`.
 
 ### You want more details about a failed run
@@ -350,6 +366,7 @@ Useful local checks:
 
 ```bash
 npm run check:oracle-extension
+npm run check:platform-smoke
 npm run typecheck
 npm run typecheck:worker-helpers
 npm run sanity:oracle
@@ -358,9 +375,25 @@ npm test
 npm run verify:oracle
 ```
 
-`npm publish` is guarded by `prepublishOnly`, which runs `npm run verify:oracle`.
+`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
 
-For end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). That workflow launches isolated `pi` sessions against this checkout and uses `instant` or `thinking_light`, as required by the project validation policy.
+Use the narrowest validation workflow that proves the change:
+
+| Situation | Command(s) |
+| --- | --- |
+| Everyday local iteration | `npm run verify:oracle` |
+| Platform-sensitive changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
+| Publish/release proof | `npm run smoke:platform:all` |
+
+For macOS, Ubuntu, and Windows native package/build plus packed runtime validation, use [`docs/platform-smoke.md`](docs/platform-smoke.md). The full release proof is:
+
+```bash
+npm run smoke:platform:all
+```
+
+The real runtime suite defaults to deterministic installed-tool execution so platform proof stays bounded. Provider/model defaults remain `zai/glm-5.1` for doctor/config and for optional model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL` when needed. For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path. The optional second real-agent negative symlink check is opt-in via `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1`; `npm run sanity:oracle` covers archive/symlink rejection by default without adding another model-agent turn to the platform release gate.
+
+For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). That workflow launches isolated `pi` coding-agent sessions against this checkout and uses `instant` or `thinking_light`, as required by the project validation policy.
 
 ## Project map
 
@@ -373,6 +406,7 @@ For end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALI
 | [`prompts/oracle.md`](prompts/oracle.md) | `/oracle` prompt-template workflow |
 | [`prompts/oracle-followup.md`](prompts/oracle-followup.md) | `/oracle-followup` prompt-template workflow |
 | `scripts/oracle-sanity-*` | Local sanity and archive-safety checks |
+| `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
 | [`docs/ORACLE_DESIGN.md`](docs/ORACLE_DESIGN.md) | Architecture, lifecycle, queueing, persistence, recovery behavior |
 | [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md) | Repeatable isolated `pi` validation workflow |
 | [`docs/ORACLE_RECOVERY_DRILL.md`](docs/ORACLE_RECOVERY_DRILL.md) | Safe expired-auth recovery drill |

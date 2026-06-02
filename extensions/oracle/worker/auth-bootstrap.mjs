@@ -2,14 +2,18 @@
 // Responsibilities: Copy/import cookies, classify auth pages, drive lightweight account-selection flows, and persist diagnostics for auth failures.
 // Scope: Auth bootstrap worker only; long-running oracle job execution stays in run-job.mjs and shared lifecycle/state helpers stay elsewhere.
 // Usage: Spawned by /oracle-auth to prepare the shared auth seed profile used by future oracle jobs.
-// Invariants/Assumptions: Runs against a local macOS Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
+// Invariants/Assumptions: Runs against a local Chromium-family profile, preserves private diagnostics, and must fail clearly when auth state cannot be verified.
 import { withLock } from "./state-locks.mjs";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
+import {
+  assertNotKnownBrowserUserDataPath,
+  sweetCookieSafeStoragePasswordScrubbedEnv,
+} from "../shared/browser-profile-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
 import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
@@ -58,7 +62,6 @@ let URL_PATH = "(oracle-auth url path unavailable)";
 let SNAPSHOT_PATH = "(oracle-auth snapshot path unavailable)";
 let BODY_PATH = "(oracle-auth body path unavailable)";
 let SCREENSHOT_PATH = "(oracle-auth screenshot path unavailable)";
-const REAL_CHROME_USER_DATA_DIR = resolve(homedir(), "Library", "Application Support", "Google", "Chrome");
 const DEFAULT_ORACLE_STATE_DIR = "/tmp/pi-oracle-state";
 const ORACLE_STATE_DIR = process.env.PI_ORACLE_STATE_DIR?.trim() || DEFAULT_ORACLE_STATE_DIR;
 const STALE_STAGING_PROFILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -140,12 +143,30 @@ async function log(message) {
   await chmod(LOG_PATH, 0o600).catch(() => undefined);
 }
 
+function killProcessTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGTERM");
+}
+
+function killProcess(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/pid", String(child.pid), "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => undefined);
+    return;
+  }
+  child.kill("SIGKILL");
+}
+
 function spawnCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const { timeoutMs = AGENT_BROWSER_COMMAND_TIMEOUT_MS, ...spawnOptions } = options;
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       ...spawnOptions,
+      env: sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env),
+      shell: spawnOptions.shell ?? process.platform === "win32",
     });
     let stdout = "";
     let stderr = "";
@@ -155,8 +176,8 @@ function spawnCommand(command, args, options = {}) {
     if (typeof timeoutMs === "number" && timeoutMs > 0) {
       killTimer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
-        killGraceTimer = setTimeout(() => child.kill("SIGKILL"), AGENT_BROWSER_KILL_GRACE_MS);
+        killProcessTree(child);
+        killGraceTimer = setTimeout(() => killProcess(child), AGENT_BROWSER_KILL_GRACE_MS);
         killGraceTimer.unref?.();
       }, timeoutMs);
       killTimer.unref?.();
@@ -263,16 +284,15 @@ async function sweepStaleStagingProfiles(targetDir) {
 
 async function createProfilePlan(profileDir) {
   const targetDir = resolve(profileDir);
-  if (!targetDir.startsWith("/")) {
+  if (!isAbsolute(targetDir)) {
     throw new Error(`Oracle profileDir must be an absolute path: ${profileDir}`);
   }
   if (targetDir === "/" || targetDir === homedir()) {
     throw new Error(`Oracle profileDir is unsafe: ${targetDir}`);
   }
-  if (targetDir === REAL_CHROME_USER_DATA_DIR || targetDir.startsWith(`${REAL_CHROME_USER_DATA_DIR}/`)) {
-    throw new Error(`Oracle profileDir must not point into the real Chrome user-data directory: ${targetDir}`);
-  }
-
+  assertNotKnownBrowserUserDataPath(targetDir, "Oracle profileDir", {
+    cookieSources: { chromeProfile: config.auth.chromeProfile, chromeCookiePath: config.auth.chromeCookiePath },
+  });
   const stagingDir = `${targetDir}.staging-${Date.now()}`;
   const backupDir = `${targetDir}.prev`;
   await mkdir(dirname(targetDir), { recursive: true, mode: 0o700 });
@@ -552,6 +572,11 @@ function formatAuthFailureGuidance(error) {
       "3. Quit the browser fully.",
       "4. Re-run /oracle-auth.",
     );
+    if (process.platform === "linux") {
+      lines.push(
+        "5. If Chromium encrypted-cookie warnings mention the Linux keyring, install/configure secret-tool or kwallet-query, or set SWEET_COOKIE_LINUX_KEYRING / SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD / SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD for this run before rerunning.",
+      );
+    }
   }
 
   lines.push(
@@ -592,6 +617,10 @@ async function readRawSourceCookies() {
 
 async function readSourceCookies() {
   await log(`Reading ${providerName()} cookies from ${cookieSourceLabel()}`);
+  // Sweet Cookie reads Linux safe-storage overrides directly from process.env.
+  // Keep the worker's environment stable for the rest of this short-lived
+  // bootstrap process, but scrub every helper/browser subprocess via
+  // spawnCommand's sweetCookieSafeStoragePasswordScrubbedEnv().
   const { cookies, warnings } = await readRawSourceCookies();
 
   if (warnings.length) {

@@ -63,7 +63,8 @@ export async function waitForCondition<T>(
   evaluate: () => Promise<T | undefined | false> | T | undefined | false,
   options: { timeoutMs: number; intervalMs?: number; description: string },
 ): Promise<T> {
-  const deadline = Date.now() + options.timeoutMs;
+  const timeoutMs = process.platform === "win32" ? Math.max(options.timeoutMs, options.timeoutMs * 4) : options.timeoutMs;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await evaluate();
     if (result) return result;

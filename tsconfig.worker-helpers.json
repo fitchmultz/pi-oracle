@@ -13,6 +13,8 @@
     "types": ["node"]
   },
   "include": [
+    "extensions/oracle/shared/browser-profile-helpers.mjs",
+    "extensions/oracle/shared/browser-profile-helpers.d.mts",
     "extensions/oracle/shared/process-helpers.mjs",
     "extensions/oracle/shared/process-helpers.d.mts",
     "extensions/oracle/shared/state-coordination-helpers.mjs",

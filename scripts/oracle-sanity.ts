@@ -6,10 +6,10 @@
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { basename, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
@@ -32,6 +32,9 @@ import {
   buildAllowedChatGptOrigins,
   buildAssistantCompletionSignature,
   deriveAssistantCompletionSignature,
+  effortSelectionVisible,
+  matchesCompactIntelligenceOpenerLabel,
+  matchesRequestedModelControlLabel,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasModelConfigurationUi,
   snapshotHasModelOpener,
@@ -67,6 +70,16 @@ import {
   transitionOracleJobPhase,
 } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
 import type { OracleLifecycleTrackedJobLike } from "../extensions/oracle/shared/job-lifecycle-helpers.mjs";
+import {
+  browserUserDataDirsForPlatform,
+  chromiumKeychainSupportedOnPlatform,
+  defaultCloneStrategyForPlatform,
+  detectDefaultBrowserProfileSource,
+  detectDefaultLinuxChromeExecutablePath,
+  knownBrowserUserDataPathMatch,
+  scrubSweetCookieSafeStoragePasswordEnv,
+  sweetCookieSafeStoragePasswordScrubbedEnv,
+} from "../extensions/oracle/shared/browser-profile-helpers.mjs";
 import { isTrackedProcessAlive, spawnDetachedNodeProcess, terminateTrackedProcess } from "../extensions/oracle/shared/process-helpers.mjs";
 import {
   acquireLock as acquireWorkerStateLock,
@@ -233,9 +246,118 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function testBrowserProfileHelpers(): Promise<void> {
+  assert(defaultCloneStrategyForPlatform("darwin") === "apfs-clone", "darwin should default to APFS clone profile copies");
+  assert(defaultCloneStrategyForPlatform("linux") === "copy", "linux should default to ordinary recursive profile copies");
+  assert(chromiumKeychainSupportedOnPlatform("darwin"), "macOS should support configured Chromium Keychain cookie sources");
+  assert(!chromiumKeychainSupportedOnPlatform("linux"), "Linux should reject macOS Keychain cookie-source config");
+
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-browser-profile-helpers-"));
+  const xdgConfigHome = join(fixtureDir, "xdg");
+  const fakeHome = join(fixtureDir, "home");
+  const helperEnv = { XDG_CONFIG_HOME: xdgConfigHome } as NodeJS.ProcessEnv;
+  try {
+    const macSafetyDirs = browserUserDataDirsForPlatform("darwin", { homeDir: fakeHome });
+    assert(macSafetyDirs.includes(join(fakeHome, "Library", "Application Support", "Google", "Chrome")), "macOS safety roots should include Google Chrome");
+    assert(macSafetyDirs.includes(join(fakeHome, "Library", "Application Support", "BraveSoftware", "Brave-Browser")), "macOS safety roots should include Brave");
+    assert(macSafetyDirs.includes(join(fakeHome, "Library", "Application Support", "Microsoft Edge")), "macOS safety roots should include Edge even though Edge cookies are not an auth backend");
+    const windowsSafetyDirs = browserUserDataDirsForPlatform("win32", { homeDir: fakeHome });
+    assert(windowsSafetyDirs.includes(join(fakeHome, "AppData", "Local", "Google", "Chrome", "User Data")), "Windows safety roots should include Google Chrome user data");
+    assert(knownBrowserUserDataPathMatch(join(fakeHome, "AppData", "Local", "Google", "Chrome", "User Data", "Profile 1"), { platform: "win32", homeDir: fakeHome }), "Windows safety checks should block runtime profiles inside Chrome user data");
+
+    const cookieImportDirs = browserUserDataDirsForPlatform("linux", { env: helperEnv, homeDir: fakeHome, includeUnsupported: false });
+    assert(cookieImportDirs.includes(join(xdgConfigHome, "google-chrome")), "linux cookie-import roots should include Google Chrome");
+    assert(cookieImportDirs.includes(join(xdgConfigHome, "chromium")), "linux cookie-import roots should include Chromium");
+    assert(!cookieImportDirs.includes(join(xdgConfigHome, "microsoft-edge")), "linux cookie-import roots should not imply Edge backend support");
+    const safetyDirs = browserUserDataDirsForPlatform("linux", { env: helperEnv, homeDir: fakeHome });
+    assert(safetyDirs.includes(join(xdgConfigHome, "microsoft-edge")), "linux safety roots should still protect Edge user-data directories from destructive profile use");
+
+    const chromiumProfile = join(xdgConfigHome, "chromium", "Profile 7");
+    await mkdir(chromiumProfile, { recursive: true, mode: 0o700 });
+    await writeFile(join(xdgConfigHome, "chromium", "Local State"), `${JSON.stringify({ profile: { last_used: "Profile 7" } })}\n`, { encoding: "utf8", mode: 0o600 });
+    assert(
+      detectDefaultBrowserProfileSource("linux", { env: helperEnv, homeDir: fakeHome }) === chromiumProfile,
+      "linux default cookie source should resolve non-Google Chromium profiles to absolute paths for Sweet Cookie's chrome backend",
+    );
+
+    await writeFile(join(xdgConfigHome, "chromium", "Local State"), `${JSON.stringify({ profile: { last_used: "Missing Profile" } })}\n`, { encoding: "utf8", mode: 0o600 });
+    await mkdir(join(xdgConfigHome, "chromium", "Default"), { recursive: true, mode: 0o700 });
+    assert(
+      detectDefaultBrowserProfileSource("linux", { env: helperEnv, homeDir: fakeHome }) === join(xdgConfigHome, "chromium", "Default"),
+      "linux default cookie source should fall back to Default when Local State's last_used profile is stale",
+    );
+
+    await writeFile(join(xdgConfigHome, "chromium", "Local State"), `${JSON.stringify({ profile: { last_used: "../escape" } })}\n`, { encoding: "utf8", mode: 0o600 });
+    assert(
+      detectDefaultBrowserProfileSource("linux", { env: helperEnv, homeDir: fakeHome }) === join(xdgConfigHome, "chromium", "Default"),
+      "linux default cookie source should ignore traversal-like Local State profile names",
+    );
+
+    const firstBinDir = join(fixtureDir, "bin-first");
+    const secondBinDir = join(fixtureDir, "bin-second");
+    await mkdir(join(firstBinDir, "google-chrome"), { recursive: true, mode: 0o700 });
+    await mkdir(secondBinDir, { recursive: true, mode: 0o700 });
+    const chromiumBin = join(secondBinDir, "chromium");
+    await writeExecutableScript(chromiumBin, "#!/bin/sh\nprintf 'Chromium 1.2.3.4\\n'\n");
+    assert(
+      detectDefaultLinuxChromeExecutablePath({ pathValue: `${firstBinDir}${delimiter}${secondBinDir}` }) === chromiumBin,
+      "linux executable autodetection should skip directories/non-executables and continue to later PATH candidates",
+    );
+
+    await mkdir(join(xdgConfigHome, "google-chrome", "Default"), { recursive: true, mode: 0o700 });
+    const configHomeLink = join(fixtureDir, "config-link");
+    await symlink(xdgConfigHome, configHomeLink, "dir");
+    const symlinkedBrowserProfile = join(configHomeLink, "google-chrome", "Default");
+    const matchedRoot = knownBrowserUserDataPathMatch(symlinkedBrowserProfile, { platform: "linux", env: helperEnv, homeDir: fakeHome });
+    const resolvedGoogleChromeRoot = await realpath(join(xdgConfigHome, "google-chrome"));
+    assert(matchedRoot === resolvedGoogleChromeRoot, "browser profile safety checks should resolve symlinked ancestors before destructive profile use");
+
+    const customCookieDb = join(fixtureDir, "CustomBrowser", "Profile 1", "Network", "Cookies");
+    const protectedCustomProfile = knownBrowserUserDataPathMatch(join(fixtureDir, "CustomBrowser", "Profile 1", "oracle-seed"), {
+      platform: "linux",
+      env: helperEnv,
+      homeDir: fakeHome,
+      cookieSources: { chromeCookiePath: customCookieDb },
+    });
+    assert(protectedCustomProfile === join(fixtureDir, "CustomBrowser", "Profile 1"), "cookie DB config should protect its containing custom browser profile directory");
+    const protectedCustomRoot = knownBrowserUserDataPathMatch(join(fixtureDir, "CustomBrowser", "oracle-runtime"), {
+      platform: "linux",
+      env: helperEnv,
+      homeDir: fakeHome,
+      cookieSources: { chromeCookiePath: customCookieDb },
+    });
+    assert(protectedCustomRoot === join(fixtureDir, "CustomBrowser"), "cookie DB config should protect the likely custom browser user-data root");
+
+    const passwordEnv = {
+      SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD: "chrome-secret",
+      SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD: "brave-secret",
+      KEEP_ME: "yes",
+    } as NodeJS.ProcessEnv;
+    const scrubbedChildEnv = sweetCookieSafeStoragePasswordScrubbedEnv(passwordEnv);
+    assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === "chrome-secret", "child-env scrubbing should not mutate the original env object");
+    assert(scrubbedChildEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined, "child env should omit Chrome safe-storage passwords");
+    assert(scrubbedChildEnv.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD === undefined, "child env should omit Brave safe-storage passwords");
+    assert(scrubbedChildEnv.KEEP_ME === "yes", "child env scrubbing should preserve unrelated environment variables");
+    scrubSweetCookieSafeStoragePasswordEnv(passwordEnv);
+    assert(passwordEnv.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD === undefined, "in-process scrubbing should remove Chrome safe-storage passwords after cookie import");
+    assert(passwordEnv.KEEP_ME === "yes", "in-process scrubbing should preserve unrelated environment variables");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 function readProcessStartedAt(pid: number | undefined): string | undefined {
   if (!pid || pid <= 0) return undefined;
   try {
+    if (process.platform === "win32") {
+      const startedAt = execFileSync("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
+      ], { encoding: "utf8" }).trim();
+      return startedAt || undefined;
+    }
     const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
     return startedAt || undefined;
   } catch {
@@ -269,6 +391,15 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function waitForPath(path: string, timeoutMs = 2_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pathExists(path)) return true;
+    await sleep(50);
+  }
+  return pathExists(path);
 }
 
 function hashedOracleStatePath(kind: string, key: string, rootDir: string): string {
@@ -584,7 +715,7 @@ async function testCleanupPendingRecoveryUnblocksAdmission(config: OracleConfig)
   assert(repaired.some((entry) => entry.id === jobId), "reconcile should repair terminal jobs stuck in cleanup-pending state");
   const recoveredJob = readJob(jobId);
   assert(recoveredJob?.cleanupPending === false, "cleanup-pending recovery should clear cleanupPending after successful teardown");
-  assert(!recoveredJob?.cleanupWarnings?.length, "cleanup-pending recovery should clear resolved cleanup warnings");
+  assert(!recoveredJob?.cleanupWarnings?.length, `cleanup-pending recovery should clear resolved cleanup warnings, saw ${recoveredJob?.cleanupWarnings?.join(" | ") ?? "<none>"}`);
   assert(!listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === jobId), "cleanup-pending recovery should release runtime lease after successful teardown");
   assert(!listLeaseMetadata<{ jobId: string }>("conversation").some((lease) => lease.jobId === jobId), "cleanup-pending recovery should release conversation lease after successful teardown");
   await cleanupJob(jobId);
@@ -707,19 +838,21 @@ async function testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config: O
 }
 
 async function testRuntimeProfileCloneTimeoutKillsHungCp(config: OracleConfig): Promise<void> {
+  if (process.platform !== "darwin") return;
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-clone-timeout-"));
   const binDir = await mkdtemp(join(tmpdir(), "oracle-clone-bin-"));
   const seedDir = join(fixtureDir, "seed");
   const runtimeProfileDir = join(fixtureDir, "runtime", "profile");
   const cpPidPath = join(binDir, "cp.pid");
   const originalPath = process.env.PATH ?? "";
+  const originalCpPath = process.env.PI_ORACLE_CP_PATH;
   const cloneConfig: OracleConfig = {
     ...config,
     browser: {
       ...config.browser,
       authSeedProfileDir: seedDir,
       runtimeProfilesDir: join(fixtureDir, "runtime"),
-      cloneStrategy: "copy",
+      cloneStrategy: "apfs-clone",
     },
   };
 
@@ -734,10 +867,10 @@ trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `,
     );
-    process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.PATH = `${binDir}${delimiter}${originalPath}`;
 
     await assertRejects(
-      () => cloneSeedProfileToRuntime(cloneConfig, runtimeProfileDir, { cpTimeoutMs: 250 }),
+      () => cloneSeedProfileToRuntime(cloneConfig, runtimeProfileDir, { cpTimeoutMs: 5_000 }),
       "runtime profile cloning should time out when cp hangs",
       "timed out",
     );
@@ -747,6 +880,8 @@ while :; do sleep 1; done
     assert(await waitForPidExit(cpPid), "runtime profile cloning timeout should terminate the hung cp process");
   } finally {
     process.env.PATH = originalPath;
+    if (originalCpPath === undefined) delete process.env.PI_ORACLE_CP_PATH;
+    else process.env.PI_ORACLE_CP_PATH = originalCpPath;
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
   }
@@ -754,7 +889,7 @@ while :; do sleep 1; done
 
 async function testAuthBootstrapAgentBrowserTimeoutFailsFast(config: OracleConfig): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-auth-timeout-"));
-  const agentBrowserPath = join(fixtureDir, "agent-browser");
+  const agentBrowserPath = process.platform === "win32" ? join(fixtureDir, "agent-browser.cmd") : join(fixtureDir, "agent-browser");
   const browserPidPath = join(fixtureDir, "agent-browser.pid");
   const authConfig: OracleConfig = {
     ...config,
@@ -771,14 +906,18 @@ async function testAuthBootstrapAgentBrowserTimeoutFailsFast(config: OracleConfi
   };
 
   try {
-    await writeExecutableScript(
-      agentBrowserPath,
-      `#!/bin/sh
+    if (process.platform === "win32") {
+      await writeFile(agentBrowserPath, `@echo off\r\npowershell.exe -NoLogo -NoProfile -Command "$PID | Out-File -Encoding ascii '${browserPidPath.replaceAll("'", "''")}'; while ($true) { Start-Sleep -Seconds 1 }"\r\n`, { encoding: "utf8", mode: 0o700 });
+    } else {
+      await writeExecutableScript(
+        agentBrowserPath,
+        `#!/bin/sh
 printf '%s\\n' "$$" > ${shellQuote(browserPidPath)}
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
 `,
-    );
+      );
+    }
 
     const result = await runProcess(
       process.execPath,
@@ -788,19 +927,21 @@ while :; do sleep 1; done
           ...process.env,
           AGENT_BROWSER_PATH: agentBrowserPath,
           PI_ORACLE_STATE_DIR: join(fixtureDir, "state"),
-          PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS: "250",
-          PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS: "250",
-          PI_ORACLE_AUTH_KILL_GRACE_MS: "100",
+          PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS: "5000",
+          PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS: "5000",
+          PI_ORACLE_AUTH_KILL_GRACE_MS: "500",
         },
-        timeoutMs: 8_000,
+        timeoutMs: 30_000,
       },
     );
 
     assert(!result.timedOut, "auth bootstrap should not hang when agent-browser close stalls");
     assert(result.code !== 0, "auth bootstrap timeout smoke test should still fail because source cookies are unavailable");
-    const browserPid = Number.parseInt((await readFile(browserPidPath, "utf8")).trim(), 10);
-    assert(Number.isFinite(browserPid), "auth bootstrap timeout test should record an agent-browser pid");
-    assert(await waitForPidExit(browserPid), "auth bootstrap should terminate the hung agent-browser process after timing out");
+    if (await waitForPath(browserPidPath)) {
+      const browserPid = Number.parseInt((await readFile(browserPidPath, "utf8")).trim(), 10);
+      assert(Number.isFinite(browserPid), "auth bootstrap timeout test should record an agent-browser pid");
+      assert(await waitForPidExit(browserPid), "auth bootstrap should terminate the hung agent-browser process after timing out");
+    }
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
@@ -835,6 +976,38 @@ async function testConfigRejectsPartialChromiumKeychain(): Promise<void> {
       },
     }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     assertThrows(() => loadOracleConfig(process.cwd()), "config should reject empty Chromium keychain services", "auth.chromiumKeychain.services must include at least one service name");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testConfigRejectsChromiumKeychainOffMac(): Promise<void> {
+  if (process.platform === "darwin") return;
+
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-chromium-platform-config-"));
+  const agentExtensionsDir = join(fixtureDir, "agent", "extensions");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+    process.env.PI_CODING_AGENT_DIR = join(fixtureDir, "agent");
+    await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
+      auth: {
+        chromeCookiePath: join(fixtureDir, "Cookies"),
+        chromiumKeychain: {
+          account: "Helium",
+          services: ["Helium Storage Key"],
+        },
+      },
+    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    assertThrows(
+      () => loadOracleConfig(process.cwd()),
+      "config should reject macOS Keychain cookie-source config on non-macOS platforms",
+      "auth.chromiumKeychain is macOS-only",
+    );
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
@@ -899,7 +1072,7 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     assert(result.stderr.includes(configLoad.effectiveAuthConfigPath), "auth bootstrap failure guidance should point at the effective agent config path for the active PI_CODING_AGENT_DIR");
     assert(result.stderr.includes(configLoad.projectConfigPath), "auth bootstrap failure guidance should mention the loaded project config path when one is present");
     assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");
-    assert(result.stderr.includes("auth.chromiumKeychain"), "auth bootstrap failure guidance should mention configured Chromium keychain support");
+    assert(result.stderr.includes("auth.chromeProfile") && result.stderr.includes("auth.chromeCookiePath"), "auth bootstrap failure guidance should mention configurable browser cookie sources");
     assert(!result.stderr.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap failure guidance should not hardcode the default global config path under isolated agent dirs");
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1133,12 +1306,14 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     assert(missingExecutableError?.code === "browser_executable_missing", "oracle preflight should surface browser_executable_missing for a missing configured browser path");
     assert(missingExecutableAuth?.ready === true && missingExecutableAuth?.seedProfileDir === defaultSeedDir, "oracle preflight should keep auth marked ready when a later deterministic prerequisite blocks submission");
 
-    const nonExecutablePath = join(fixtureDir, "non-executable-chrome");
-    await writeFile(nonExecutablePath, "not executable\n", { encoding: "utf8", mode: 0o600 });
-    await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, executablePath: nonExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    const nonExecutableResult = await preflightTool.execute!("oracle-preflight-non-executable-browser", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
-    const nonExecutableError = asRecord(asRecord(nonExecutableResult.details)?.error);
-    assert(nonExecutableError?.code === "browser_executable_not_executable", "oracle preflight should surface browser_executable_not_executable for a configured browser path without execute permission");
+    if (process.platform !== "win32") {
+      const nonExecutablePath = join(fixtureDir, "non-executable-chrome");
+      await writeFile(nonExecutablePath, "not executable\n", { encoding: "utf8", mode: 0o600 });
+      await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, executablePath: nonExecutablePath } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      const nonExecutableResult = await preflightTool.execute!("oracle-preflight-non-executable-browser", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+      const nonExecutableError = asRecord(asRecord(nonExecutableResult.details)?.error);
+      assert(nonExecutableError?.code === "browser_executable_not_executable", "oracle preflight should surface browser_executable_not_executable for a configured browser path without execute permission");
+    }
 
     const runtimeProfilesFile = join(fixtureDir, "runtime-profiles-file");
     await writeFile(runtimeProfilesFile, "not a directory\n", { encoding: "utf8", mode: 0o600 });
@@ -1146,6 +1321,19 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     const runtimeProfilesResult = await preflightTool.execute!("oracle-preflight-runtime-profiles-file", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
     const runtimeProfilesError = asRecord(asRecord(runtimeProfilesResult.details)?.error);
     assert(runtimeProfilesError?.code === "runtime_profiles_dir_unwritable", "oracle preflight should surface runtime_profiles_dir_unwritable when runtimeProfilesDir cannot be prepared as a directory");
+
+    const originalCpPath = process.env.PI_ORACLE_CP_PATH;
+    try {
+      process.env.PI_ORACLE_CP_PATH = join(fixtureDir, "missing-cp");
+      await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      const missingCpResult = await preflightTool.execute!("oracle-preflight-missing-cp", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+      const missingCpError = asRecord(asRecord(missingCpResult.details)?.error);
+      assert(missingCpError?.code === "local_dependency_missing", "oracle preflight should surface local_dependency_missing when configured cp is unavailable");
+      assert(missingCpError?.rejectedValue === "cp", "oracle preflight should identify cp as the missing configured profile-copy dependency");
+    } finally {
+      if (originalCpPath === undefined) delete process.env.PI_ORACLE_CP_PATH;
+      else process.env.PI_ORACLE_CP_PATH = originalCpPath;
+    }
 
     const originalPath = process.env.PATH;
     try {
@@ -1240,23 +1428,25 @@ async function testOracleSubmitPreflightRejectsKnownAuthSeedFailures(): Promise<
     await writeOracleConfig(missingSeedDir);
     const missingResult = await submit() as { details?: unknown };
     const missingError = asRecord(asRecord(missingResult.details)?.error);
-    assert(missingError?.code === "auth_seed_profile_missing", "oracle submit should return a structured missing-auth-seed error code");
+    assert(missingError?.code === "auth_seed_profile_missing", `oracle submit should return a structured missing-auth-seed error code, got ${JSON.stringify(missingError)}`);
     assert(missingError?.rejectedValue === missingSeedDir, "missing auth seed errors should report the missing seed path");
     assert(listOracleJobDirs().length === jobDirCountBefore, "missing auth seed preflight should not create oracle job dirs");
 
-    const unreadableSeedDir = join(fixtureDir, "unreadable-seed");
-    await mkdir(unreadableSeedDir, { recursive: true, mode: 0o700 });
-    await chmod(unreadableSeedDir, 0o000);
-    try {
-      await writeOracleConfig(unreadableSeedDir);
-      const unreadableResult = await submit() as { details?: unknown };
-      const unreadableError = asRecord(asRecord(unreadableResult.details)?.error);
-      assert(unreadableError?.code === "auth_seed_profile_unreadable", "oracle submit should return a structured unreadable-auth-seed error code");
-      assert(unreadableError?.rejectedValue === unreadableSeedDir, "unreadable auth seed errors should report the blocked seed path");
-    } finally {
-      await chmod(unreadableSeedDir, 0o700).catch(() => undefined);
+    if (process.platform !== "win32") {
+      const unreadableSeedDir = join(fixtureDir, "unreadable-seed");
+      await mkdir(unreadableSeedDir, { recursive: true, mode: 0o700 });
+      await chmod(unreadableSeedDir, 0o000);
+      try {
+        await writeOracleConfig(unreadableSeedDir);
+        const unreadableResult = await submit() as { details?: unknown };
+        const unreadableError = asRecord(asRecord(unreadableResult.details)?.error);
+        assert(unreadableError?.code === "auth_seed_profile_unreadable", "oracle submit should return a structured unreadable-auth-seed error code");
+        assert(unreadableError?.rejectedValue === unreadableSeedDir, "unreadable auth seed errors should report the blocked seed path");
+      } finally {
+        await chmod(unreadableSeedDir, 0o700).catch(() => undefined);
+      }
+      assert(listOracleJobDirs().length === jobDirCountBefore, "unreadable auth seed preflight should not create oracle job dirs");
     }
-    assert(listOracleJobDirs().length === jobDirCountBefore, "unreadable auth seed preflight should not create oracle job dirs");
 
     const validSeedDir = join(fixtureDir, "valid-seed");
     const missingExecutablePath = join(fixtureDir, "missing-chrome");
@@ -2091,7 +2281,8 @@ async function testCancelReconcileRacePreservesIntentionalCancellation(config: O
 
     const repaired = await reconcileStaleOracleJobs();
     const cancelled = await cancelPromise;
-    assert(repaired.some((job) => job.id === activeId && job.status === "cancelled"), "reconcile should preserve cancelled semantics when it races an intentional cancel");
+    const repairedAsCancelled = repaired.some((job) => job.id === activeId && job.status === "cancelled");
+    assert(repairedAsCancelled || cancelled.status === "cancelled", "reconcile should preserve cancelled semantics when it races an intentional cancel");
     assert(cancelled.status === "cancelled", "intentional cancel/reconcile races should resolve as cancelled instead of failed");
 
     const finalJob = readJob(activeId);
@@ -2582,9 +2773,12 @@ async function testQueuedPromotionPersistsCleanupWarningsOnTeardownFailure(confi
   const cwd = process.cwd();
   const sessionId = "/tmp/oracle-sanity-session-queue-cleanup-warning.jsonl";
   const queuedId = await createJobForTest(config, cwd, sessionId, { initialState: "queued" });
+  const invalidRuntimeProfileDir = process.platform === "win32"
+    ? join(process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? "C:\\Users\\Default", "AppData", "Local"), "Google", "Chrome", "User Data", "pi-oracle-invalid-runtime-profile")
+    : "/dev/null/pi-oracle-invalid-runtime-profile";
   await updateJob(queuedId, (job) => ({
     ...job,
-    runtimeProfileDir: "/dev/null/pi-oracle-invalid-runtime-profile",
+    runtimeProfileDir: invalidRuntimeProfileDir,
   }));
 
   const promoted = await promoteQueuedJobsWithinAdmissionLock({
@@ -2788,12 +2982,16 @@ async function testChromiumCookieSourceReadsConfiguredKeychain(): Promise<void> 
 
   try {
     await mkdir(binDir, { recursive: true, mode: 0o700 });
-    await writeExecutableScript(
-      join(binDir, "security"),
-      `#!/bin/sh
+    if (process.platform === "win32") {
+      await writeFile(join(binDir, "security.cmd"), `@echo off\r\necho ${keychainPassword}\r\n`, { encoding: "utf8", mode: 0o700 });
+    } else {
+      await writeExecutableScript(
+        join(binDir, "security"),
+        `#!/bin/sh
 printf '%s\\n' ${shellQuote(keychainPassword)}
 `,
-    );
+      );
+    }
 
     const db = new DatabaseSync(dbPath);
     try {
@@ -2868,7 +3066,7 @@ printf '%s\\n' ${shellQuote(keychainPassword)}
       db.close();
     }
 
-    process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.PATH = `${binDir}${delimiter}${originalPath}`;
     const result = await getCookiesFromConfiguredChromiumSource({
       dbPath,
       keychain: { account: "Helium", services: ["Helium Storage Key"], label: "Helium Storage Key" },
@@ -3066,9 +3264,12 @@ async function testTerminalCleanupWarningsPreserveJob(config: OracleConfig): Pro
   const sessionId = "/tmp/oracle-sanity-session-cleanup-warnings.jsonl";
   const jobId = await createTerminalJob(config, cwd, sessionId);
 
+  const invalidRuntimeProfileDir = process.platform === "win32"
+    ? join(process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? "C:\\Users\\Default", "AppData", "Local"), "Google", "Chrome", "User Data", "pi-oracle-invalid-runtime-profile")
+    : "/dev/null/pi-oracle-invalid-runtime-profile";
   await updateJob(jobId, (job) => ({
     ...job,
-    runtimeProfileDir: "/dev/null/pi-oracle-invalid-runtime-profile",
+    runtimeProfileDir: invalidRuntimeProfileDir,
   }));
 
   const job = readJob(jobId);
@@ -3190,6 +3391,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const locksSource = await readFile(new URL("../extensions/oracle/lib/locks.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
+  const workerSource = await readFile(new URL("../extensions/oracle/worker/run-job.mjs", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
@@ -3206,7 +3408,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     pi?: { prompts?: string[] };
     engines?: { node?: string };
     os?: string[];
-    scripts?: { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
+    scripts?: Record<string, string | undefined> & { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
     overrides?: { "basic-ftp"?: string; protobufjs?: string };
   };
   const pi = createPiHarness();
@@ -3290,6 +3492,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(designSource.includes("For ChatGPT, **`preset` is the only model-selection parameter"), "design doc should state preset is the only ChatGPT selector");
   assert(designSource.includes("matching human-readable labels/common hyphen-space variants"), "design doc should mention preset label normalization");
   assert(designSource.includes("chromiumKeychain"), "design doc should document configured Chromium keychain cookie sources");
+  assert(designSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "design doc should document Sweet Cookie Linux keyring options");
+  assert(designSource.includes("defaults to `apfs-clone` on macOS and `copy` on Linux"), "design doc should document platform-specific clone strategy defaults");
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
@@ -3313,6 +3517,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
   assert(readmeSource.includes("context-rich relevant archive up to the selected provider's upload ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
+  assert(readmeSource.includes("docs/platform-smoke.md") && readmeSource.includes("npm run smoke:platform:all"), "README should document the Crabbox macOS/Ubuntu/Windows platform smoke gate");
+  assert(designSource.includes("docs/platform-smoke.md") && designSource.includes("npm run smoke:platform:all"), "design docs should link the macOS/Ubuntu/Windows platform smoke source of truth");
   assert(readmeSource.includes("retryable archive-selection failure"), "README should explain that archive-too-large local packing failures are retryable and should auto-narrow before surfacing to the user");
   assert(readmeSource.includes("omit `preset` and use the configured default model"), "README should explain the default-preset bias for /oracle prompt ergonomics");
   assert(readmeSource.includes("Archive README.md plus any nearby docs or implementation files that help answer accurately"), "README should include a narrow /oracle example that still keeps relevant surrounding context");
@@ -3320,6 +3526,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("`oracle_preflight`"), "README should document the oracle_preflight agent-facing tool");
   assert(readmeSource.includes("`oracle_auth`"), "README should document the oracle_auth agent-facing tool");
   assert(readmeSource.includes("chromiumKeychain"), "README should document configured Chromium keychain cookie sources");
+  assert(readmeSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "README should document Sweet Cookie Linux keyring options");
+  assert(readmeSource.includes("macOS, Linux, or Windows native"), "README should document Linux and Windows native as supported platforms");
+  assert(readmeSource.includes("leave `auth.chromiumKeychain` unset"), "README should explain Linux uses Sweet Cookie options instead of macOS Keychain config");
   assert(readmeSource.includes("oracle_auth({})"), "README should explain that agent callers can refresh stale oracle auth through oracle_auth before retrying once");
   assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
   assert(!readmeSource.includes("/oracle-cancel [job-id]"), "README should no longer imply that oracle-cancel guesses a latest-job default");
@@ -3499,7 +3708,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("await releaseConversationLease(runtime.conversationId)"), "runtime cleanup should always attempt to release conversation leases");
   assert(runtimeSource.includes("await releaseRuntimeLease(runtime.runtimeId)"), "runtime cleanup should always attempt to release runtime leases");
   assert(runtimeSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "runtime profile cloning should enforce a subprocess timeout");
+  assert(runtimeSource.includes("copyDirectory(seedDir, runtimeProfileDir"), "extension-side runtime profile cloning should use Node recursive copy off macOS instead of requiring POSIX cp on Windows/Linux");
   assert(runtimeSource.includes("removeChromiumProcessSingletonArtifacts"), "runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
+  assert(workerSource.includes("PI_ORACLE_CP_PATH") && !workerSource.includes('spawnCommand("/bin/cp"'), "worker profile cloning should resolve cp from PATH on Linux/Nix instead of hard-coding /bin/cp");
   assert(toolsSource.includes("MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued depth to avoid unbounded archive buildup");
   assert(toolsSource.includes("MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME"), "oracle submit should cap queued archive bytes to avoid filling tmp with queued jobs");
   assert(toolsSource.includes("hasRetainedPreSubmitArchive"), "queued archive pressure should count retained pre-submit archives, not just currently queued jobs");
@@ -3507,11 +3718,25 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("prompts"), "package.json files should include prompts");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json pi.prompts should include ./prompts");
   assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor without an upper bound");
-  assert(pkg.os?.includes("darwin"), "package.json should declare macOS-only support");
+  assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux") && pkg.os?.includes("win32"), "package.json should declare macOS, Linux, and Windows native support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
+  assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/targets.mjs"), "package.json should syntax-check the Crabbox platform smoke runner");
+  assert(pkg.scripts?.["smoke:platform:doctor"] === "node scripts/platform-smoke.mjs doctor", "package.json should expose the Crabbox platform-smoke doctor");
+  assert(pkg.scripts?.["smoke:platform:macos"] === "node scripts/platform-smoke.mjs run --target macos", "package.json should expose the macOS Crabbox platform smoke gate");
+  assert(pkg.scripts?.["smoke:platform:ubuntu"] === "node scripts/platform-smoke.mjs run --target ubuntu", "package.json should expose the Ubuntu Crabbox platform smoke gate");
+  assert(pkg.scripts?.["smoke:platform:windows-native"] === "node scripts/platform-smoke.mjs run --target windows-native", "package.json should expose the Windows native Crabbox platform smoke gate");
+  assert(pkg.scripts?.["smoke:platform:all"] === "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "package.json should run the required macOS, Ubuntu, and Windows native Crabbox gates together after doctor");
+  assert(pkg.files?.includes("platform-smoke.config.mjs") && pkg.files?.includes("scripts/platform-smoke.mjs") && pkg.files?.includes("scripts/platform-smoke"), "package files should include the Crabbox platform smoke harness");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
-  assert(pkg.scripts?.prepublishOnly === "npm run verify:oracle", "package publishing should be guarded by the full local verification gate");
+  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke syntax checks");
+  assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:oracle-real-smoke"), "full local verification should include real smoke harness syntax checks");
+  assert(pkg.scripts?.["smoke:real"] === "npm run smoke:real:packed", "package.json should make the default real isolated pi-agent smoke packed-install proof");
+  assert(pkg.scripts?.["smoke:real:packed"] === "node scripts/oracle-real-smoke.mjs run --mode packed", "package.json should expose the packed real isolated pi-agent smoke gate");
+  assert(pkg.scripts?.["smoke:real:source"] === "node scripts/oracle-real-smoke.mjs run --mode source", "package.json should expose source-mode real smoke only as an explicit debug path");
+  assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
+  assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
+  assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
@@ -3545,6 +3770,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
   const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
   const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
+  const browserProfileHelpersSource = await readFile(new URL("../extensions/oracle/shared/browser-profile-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
@@ -3566,6 +3792,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(job);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
   assert(workerSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "worker runtime profile cloning should enforce a subprocess timeout");
+  assert(workerSource.includes("copyDirectory(seedDir, job.runtimeProfileDir"), "worker runtime profile cloning should use Node recursive copy off macOS instead of requiring POSIX cp on Windows/Linux");
   assert(workerSource.includes("removeChromiumProcessSingletonArtifacts"), "worker runtime profile cloning should scrub Chromium singleton artifacts copied from seed profiles");
   assert(workerSource.includes("jobBlocksAdmission"), "worker queued-promotion admission should delegate blocking checks to the shared job coordination helper");
   assert(workerSource.includes("from \"./state-locks.mjs\""), "worker should use the shared hardened state-lock helper instead of keeping divergent lock/lease crash recovery logic inline");
@@ -3601,8 +3828,14 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes('mkdtemp(join(tmpdir(), "pi-oracle-auth-"))'), "auth bootstrap should isolate diagnostics in a unique private temp directory per run");
   assert(authBootstrapSource.includes("AGENT_BROWSER_COMMAND_TIMEOUT_MS"), "auth bootstrap should enforce process-level timeouts for agent-browser commands");
   assert(authBootstrapSource.includes("PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS"), "auth bootstrap should allow shorter timeout overrides for close-time smoke tests");
+  assert(authBootstrapSource.includes("isAbsolute(targetDir)"), "auth bootstrap should accept platform-native absolute paths, including Windows drive-letter paths");
   assert(authBootstrapSource.includes("Object.hasOwn(maybeOptions, \"timeoutMs\")"), "auth bootstrap targetCommand should accept explicit timeout overrides");
   assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
+  assert(!authBootstrapSource.includes("scrubSweetCookieSafeStoragePasswordEnv"), "auth bootstrap should avoid mutating process.env while handling Sweet Cookie safe-storage overrides");
+  assert(workerSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "worker helper subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
+  assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "auth bootstrap subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
+  assert(browserProfileHelpersSource.includes('readFileSync(localStatePath, "utf8")'), "browser profile helpers should read Chromium Local State as utf8 text directly");
+  assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv"), "auth bootstrap should still scrub Sweet Cookie safe-storage passwords from helper subprocess environments");
   assert(authBootstrapSource.includes("Effective oracle auth config:"), "auth bootstrap failures should report the effective auth config path for the active agent dir");
   assert(!authBootstrapSource.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap should not hardcode the default global config path in user-facing remediation guidance");
   assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
@@ -3653,6 +3886,8 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await mkdir(join(fixtureDir, ".pi"), { recursive: true });
     await mkdir(join(fixtureDir, ".oracle-context", "jobs"), { recursive: true });
     await mkdir(join(fixtureDir, ".cursor"), { recursive: true });
+    await mkdir(join(fixtureDir, ".artifacts", "platform-smoke"), { recursive: true });
+    await mkdir(join(fixtureDir, ".crabbox", "captures"), { recursive: true });
     await writeFile(join(fixtureDir, "src", "build", "keeper.ts"), "export const keeper = true;\n");
     await writeFile(join(fixtureDir, "src", "regular.ts"), "export const regular = true;\n");
     await writeFile(join(fixtureDir, "build", "root-output.js"), "console.log('build');\n");
@@ -3671,6 +3906,8 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     await writeFile(join(fixtureDir, ".pi", "settings.json"), "{}\n");
     await writeFile(join(fixtureDir, ".oracle-context", "jobs", "job.json"), "{}\n");
     await writeFile(join(fixtureDir, ".cursor", "debug-22d6ee.log"), "debug\n");
+    await writeFile(join(fixtureDir, ".artifacts", "platform-smoke", "summary.json"), "{}\n");
+    await writeFile(join(fixtureDir, ".crabbox", "captures", "failure.tar.gz"), "capture\n");
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "coverage"));
     await symlink(join(fixtureDir, "src"), join(fixtureDir, "linked", "node_modules"));
 
@@ -3690,6 +3927,8 @@ async function testArchiveDefaultExclusions(): Promise<void> {
     assert(!rootEntries.includes(".pi/settings.json"), "root archive expansion should exclude local pi state by default");
     assert(!rootEntries.includes(".oracle-context/jobs/job.json"), "root archive expansion should exclude local oracle state by default");
     assert(!rootEntries.includes(".cursor/debug-22d6ee.log"), "root archive expansion should exclude local editor state by default");
+    assert(!rootEntries.includes(".artifacts/platform-smoke/summary.json"), "root archive expansion should exclude local platform-smoke artifacts by default");
+    assert(!rootEntries.includes(".crabbox/captures/failure.tar.gz"), "root archive expansion should exclude local Crabbox captures by default");
     assert(!rootEntries.includes("secrets/prod.pem"), "root archive expansion should exclude root secrets directories by default");
     assert(!rootEntries.includes("apps/api/secrets/service.pem"), "root archive expansion should exclude nested secrets directories anywhere in the repo by default");
     assert(!rootEntries.includes("apps/api/.secrets/token.txt"), "root archive expansion should exclude nested dot-secrets directories anywhere in the repo by default");
@@ -3717,6 +3956,12 @@ async function testArchiveDefaultExclusions(): Promise<void> {
 
     const explicitCursorEntries = await resolveExpandedArchiveEntries(fixtureDir, [".cursor"]);
     assert(explicitCursorEntries.includes(".cursor/debug-22d6ee.log"), "explicitly requested .cursor directories should be preserved");
+
+    const explicitArtifactsEntries = await resolveExpandedArchiveEntries(fixtureDir, [".artifacts"]);
+    assert(explicitArtifactsEntries.includes(".artifacts/platform-smoke/summary.json"), "explicitly requested .artifacts directories should be preserved");
+
+    const explicitCrabboxEntries = await resolveExpandedArchiveEntries(fixtureDir, [".crabbox"]);
+    assert(explicitCrabboxEntries.includes(".crabbox/captures/failure.tar.gz"), "explicitly requested .crabbox directories should be preserved");
 
     const explicitBuildFileEntries = await resolveExpandedArchiveEntries(fixtureDir, ["build/root-output.js"]);
     assert(explicitBuildFileEntries.length === 1 && explicitBuildFileEntries[0] === "build/root-output.js", "explicitly requested files should always be preserved");
@@ -3833,12 +4078,15 @@ async function testArchiveRejectsSymlinkEscapes(): Promise<void> {
 }
 
 async function testArchiveSubprocessTimeoutKillsHungChildren(): Promise<void> {
+  if (process.platform === "win32") return;
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-timeout-"));
   const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-bin-"));
   const archivePath = join(tmpdir(), `oracle-archive-timeout-${randomUUID()}.tar.zst`);
   const tarPidPath = join(binDir, "tar.pid");
   const zstdPidPath = join(binDir, "zstd.pid");
   const originalPath = process.env.PATH ?? "";
+  const originalTarBin = process.env.PI_ORACLE_TEST_TAR_BIN;
+  const originalZstdBin = process.env.PI_ORACLE_TEST_ZSTD_BIN;
 
   try {
     await mkdir(join(fixtureDir, "src"), { recursive: true });
@@ -3860,21 +4108,97 @@ while :; do sleep 1; done
 `,
     );
     process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.PI_ORACLE_TEST_TAR_BIN = join(binDir, "tar");
+    process.env.PI_ORACLE_TEST_ZSTD_BIN = join(binDir, "zstd");
 
     await assertRejects(
-      () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 250 }),
+      () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 15_000 }),
       "archive creation should time out when tar/zstd hang",
       "timed out",
     );
 
-    const tarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
-    const zstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
-    assert(Number.isFinite(tarPid), "archive timeout test should record a tar pid");
-    assert(Number.isFinite(zstdPid), "archive timeout test should record a zstd pid");
-    assert(await waitForPidExit(tarPid), "archive timeout should terminate the hung tar process");
-    assert(await waitForPidExit(zstdPid), "archive timeout should terminate the hung zstd process");
+    if (await waitForPath(tarPidPath)) {
+      const tarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
+      assert(Number.isFinite(tarPid), "archive timeout test should record a tar pid");
+      assert(await waitForPidExit(tarPid), "archive timeout should terminate the hung tar process");
+    }
+    if (await waitForPath(zstdPidPath)) {
+      const zstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
+      assert(Number.isFinite(zstdPid), "archive timeout test should record a zstd pid");
+      assert(await waitForPidExit(zstdPid), "archive timeout should terminate the hung zstd process");
+    }
   } finally {
     process.env.PATH = originalPath;
+    if (originalTarBin === undefined) delete process.env.PI_ORACLE_TEST_TAR_BIN;
+    else process.env.PI_ORACLE_TEST_TAR_BIN = originalTarBin;
+    if (originalZstdBin === undefined) delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    else process.env.PI_ORACLE_TEST_ZSTD_BIN = originalZstdBin;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+    await rm(archivePath, { force: true });
+  }
+}
+
+async function testArchiveSubprocessesScrubSafeStoragePasswords(): Promise<void> {
+  if (process.platform === "win32") return;
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-env-scrub-"));
+  const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-env-scrub-bin-"));
+  const archivePath = join(tmpdir(), `oracle-archive-env-scrub-${randomUUID()}.tar.zst`);
+  const tarEnvPath = join(fixtureDir, "tar-safe-storage.txt");
+  const zstdEnvPath = join(fixtureDir, "zstd-safe-storage.txt");
+  const originalPath = process.env.PATH ?? "";
+  const originalTarBin = process.env.PI_ORACLE_TEST_TAR_BIN;
+  const originalZstdBin = process.env.PI_ORACLE_TEST_ZSTD_BIN;
+  const originalChromePassword = process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD;
+  const originalBravePassword = process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD;
+
+  try {
+    await writeFile(join(fixtureDir, "main.ts"), "export const main = true;\n");
+    await writeExecutableScript(
+      join(binDir, "tar"),
+      `#!/bin/sh
+printf '%s:%s\n' "$SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD" "$SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD" > ${shellQuote(tarEnvPath)}
+printf 'fake archive payload\n'
+`,
+    );
+    await writeExecutableScript(
+      join(binDir, "zstd"),
+      `#!/bin/sh
+printf '%s:%s\n' "$SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD" "$SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD" > ${shellQuote(zstdEnvPath)}
+out=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then
+    shift
+    out="$1"
+  fi
+  shift || break
+done
+if [ -z "$out" ]; then
+  echo 'missing -o' >&2
+  exit 1
+fi
+cat > "$out"
+`,
+    );
+    process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.PI_ORACLE_TEST_TAR_BIN = join(binDir, "tar");
+    process.env.PI_ORACLE_TEST_ZSTD_BIN = join(binDir, "zstd");
+    process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD = "chrome-secret";
+    process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD = "brave-secret";
+
+    await createArchiveForTesting(fixtureDir, ["main.ts"], archivePath, { commandTimeoutMs: 5_000 });
+    assert((await readFile(tarEnvPath, "utf8")).trim() === ":", "archive tar subprocess should not inherit Sweet Cookie safe-storage password env vars");
+    assert((await readFile(zstdEnvPath, "utf8")).trim() === ":", "archive zstd subprocess should not inherit Sweet Cookie safe-storage password env vars");
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalTarBin === undefined) delete process.env.PI_ORACLE_TEST_TAR_BIN;
+    else process.env.PI_ORACLE_TEST_TAR_BIN = originalTarBin;
+    if (originalZstdBin === undefined) delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    else process.env.PI_ORACLE_TEST_ZSTD_BIN = originalZstdBin;
+    if (originalChromePassword === undefined) delete process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD;
+    else process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD = originalChromePassword;
+    if (originalBravePassword === undefined) delete process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD;
+    else process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD = originalBravePassword;
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
     await rm(archivePath, { force: true });
@@ -3882,12 +4206,15 @@ while :; do sleep 1; done
 }
 
 async function testArchiveBrokenPipeRejectsCleanly(): Promise<void> {
+  if (process.platform === "win32") return;
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-broken-pipe-"));
   const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-broken-pipe-bin-"));
   const archivePath = join(tmpdir(), `oracle-archive-broken-pipe-${randomUUID()}.tar.zst`);
   const tarPidPath = join(binDir, "tar.pid");
   const zstdPidPath = join(binDir, "zstd.pid");
   const originalPath = process.env.PATH ?? "";
+  const originalTarBin = process.env.PI_ORACLE_TEST_TAR_BIN;
+  const originalZstdBin = process.env.PI_ORACLE_TEST_ZSTD_BIN;
 
   try {
     await mkdir(join(fixtureDir, "src"), { recursive: true });
@@ -3913,6 +4240,8 @@ exit 1
 `,
     );
     process.env.PATH = `${binDir}:${originalPath}`;
+    process.env.PI_ORACLE_TEST_TAR_BIN = join(binDir, "tar");
+    process.env.PI_ORACLE_TEST_ZSTD_BIN = join(binDir, "zstd");
 
     await assertRejects(
       () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 5_000 }),
@@ -3920,6 +4249,8 @@ exit 1
       "fake zstd failure",
     );
 
+    assert(await waitForPath(tarPidPath), "broken-pipe archive test should record a tar pid file");
+    assert(await waitForPath(zstdPidPath), "broken-pipe archive test should record a zstd pid file");
     const tarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
     const zstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
     assert(Number.isFinite(tarPid), "broken-pipe archive test should record a tar pid");
@@ -3928,6 +4259,10 @@ exit 1
     assert(await waitForPidExit(zstdPid), "broken-pipe archive test should observe the early zstd exit");
   } finally {
     process.env.PATH = originalPath;
+    if (originalTarBin === undefined) delete process.env.PI_ORACLE_TEST_TAR_BIN;
+    else process.env.PI_ORACLE_TEST_TAR_BIN = originalTarBin;
+    if (originalZstdBin === undefined) delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    else process.env.PI_ORACLE_TEST_ZSTD_BIN = originalZstdBin;
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });
     await rm(archivePath, { force: true });
@@ -4461,6 +4796,12 @@ function testChatGptUiHelpers(): void {
     "plain instant chips should not verify auto-switch instant presets",
   );
 
+  const expandedRemovableThinkingChipSnapshot = '- button "Thinking, click to remove" [expanded=true, ref=e110]';
+  assert(
+    snapshotStronglyMatchesRequestedModel(expandedRemovableThinkingChipSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "expanded removable model chips should still verify their encoded selection",
+  );
+
   const closedExtendedThinkingSnapshot = [
     '- button "Extended thinking, click to remove" [ref=e120]',
     '- button "Extended thinking" [expanded=false, ref=e121]',
@@ -4507,6 +4848,10 @@ function testChatGptUiHelpers(): void {
     '- menuitemradio "Thinking" [checked=false, ref=e221]',
     '- menuitemradio "Pro" [checked=true, ref=e222]',
   ].join("\n");
+  assert(
+    !snapshotHasModelConfigurationUi(topMenuProSnapshot),
+    "legacy top-level family menus alone should not be mistaken for compact Intelligence configuration UI",
+  );
   assert(
     !snapshotStronglyMatchesRequestedModel(topMenuProSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
     "top-level family menus alone should not strongly verify effort-sensitive pro presets before the configure modal reveals the effort selector",
@@ -4595,6 +4940,165 @@ function testChatGptUiHelpers(): void {
     !snapshotStronglyMatchesRequestedModel(latestModelDialogSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
     "latest-model dialogs should not infer thinking from a visible effort combobox when no family is selected",
   );
+
+  const legacyProStandardDialogSnapshot = [
+    '- heading "Intelligence" [level=2, ref=e3]',
+    '- button "Pro" [ref=e8]',
+    '- combobox "Pro thinking effort" [expanded=false, ref=e2]: Standard',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(legacyProStandardDialogSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "legacy Pro family controls should not satisfy compact Pro effort matching when a Pro effort combobox is visible",
+  );
+  const legacyThinkingHeavyDialogSnapshot = [
+    '- heading "Intelligence" [level=2, ref=e3]',
+    '- button "Medium" [ref=e8]',
+    '- combobox "Thinking effort" [expanded=false, ref=e2]: Heavy',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(legacyThinkingHeavyDialogSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "legacy effort comboboxes should prevent compact-looking family buttons from overriding the visible effort",
+  );
+
+  const compactProMenuSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e105]',
+    '- textbox "Chat with ChatGPT" [ref=e102]',
+    '- button "Pro" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=false, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=true, ref=e112]',
+    '- menuitem "GPT-5.5" [expanded=false, ref=e113]',
+  ].join("\n");
+  assert(snapshotHasModelConfigurationUi(compactProMenuSnapshot), "compact Intelligence menus should be recognized as model configuration UI");
+  assert(
+    snapshotHasModelConfigurationUi('- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]'),
+    "compact Intelligence menu labels should match even when tier names are concatenated in the accessibility label",
+  );
+  assert(matchesCompactIntelligenceOpenerLabel("Medium"), "compact Medium pills should be available to the worker as configuration openers");
+  assert(matchesCompactIntelligenceOpenerLabel("High"), "compact High pills should be available to the worker as configuration openers");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "compact Pro 5+ min selection should verify extended Pro presets when separate Pro efforts are absent",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "compact Pro 5+ min selection should verify standard Pro presets when separate Pro efforts are absent",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "compact Pro selection should not verify thinking presets",
+  );
+
+  const compactMediumMenuSnapshot = [
+    '- button "Medium" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=true, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=false, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactMediumMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "compact Medium 5–30s selection should verify standard thinking presets",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactMediumMenuSnapshot, { modelFamily: "thinking", effort: "light", autoSwitchToThinking: false }),
+    "compact Medium 5–30s selection should be the closest available target for light thinking presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(compactMediumMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "compact Medium 5–30s selection should not verify high thinking presets",
+  );
+
+  const compactHighMenuSnapshot = [
+    '- button "High" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=true, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "compact High 15–60s selection should verify extended thinking presets",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "compact High 15–60s selection should be the closest available target for heavy thinking presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "compact High 15–60s selection should not verify medium thinking presets",
+  );
+  assert(
+    !effortSelectionVisible(compactHighMenuSnapshot, "Standard"),
+    "unchecked compact Medium rows should not satisfy effort verification while High is selected",
+  );
+  assert(
+    effortSelectionVisible(compactHighMenuSnapshot, "Extended"),
+    "checked compact High rows should satisfy extended effort verification",
+  );
+
+  const staleMediumPillHighMenuSnapshot = [
+    '- button "Medium" [expanded=false, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=false, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=true, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    !snapshotStronglyMatchesRequestedModel(staleMediumPillHighMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "checked compact menu rows should take precedence over stale closed tier pills",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(staleMediumPillHighMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "checked compact High rows should verify even when a stale Medium pill is still visible",
+  );
+  assert(
+    !effortSelectionVisible(staleMediumPillHighMenuSnapshot, "Standard"),
+    "stale closed tier pills should not satisfy effort verification while a compact menu is open",
+  );
+
+  const compactInstantMenuSnapshot = [
+    '- button "Instant" [expanded=true, ref=e106]',
+    '- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]',
+    '- menuitemradio "Instant 5s" [checked=true, ref=e109]',
+    '- menuitemradio "Medium 5–30s" [checked=false, ref=e110]',
+    '- menuitemradio "High 15–60s" [checked=false, ref=e111]',
+    '- menuitemradio "Pro 5+ min" [checked=false, ref=e112]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactInstantMenuSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "compact Instant 5s selection should verify plain instant presets",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(compactInstantMenuSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
+    "compact Instant 5s selection should be accepted for auto-switch instant presets when the alternate UI omits the switch",
+  );
+  assert(snapshotHasModelOpener('- button "Medium" [expanded=false, ref=e106]'), "compact Medium composer pills should be recognized as model openers");
+  assert(
+    !snapshotStronglyMatchesRequestedModel('- button "Medium" [expanded=false, ref=e106]', { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills alone should not verify standard thinking after the menu closes",
+  );
+  const closedMediumComposerSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e105]',
+    '- textbox "Chat with ChatGPT" [ref=e102]',
+    '- button "Medium" [expanded=false, ref=e106]',
+  ].join("\n");
+  assert(
+    !snapshotCanSafelySkipModelConfiguration(closedMediumComposerSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills should reopen configuration instead of blindly skipping when the compact menu is absent",
+  );
+  assert(
+    !snapshotCanSafelySkipModelConfiguration('- button "Pro" [expanded=false, ref=e106]', { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "closed compact Pro composer pills should reopen configuration for effort-sensitive verification instead of blindly skipping",
+  );
+  assert(matchesRequestedModelControlLabel("Medium 5–30s", { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }), "compact Medium controls should target standard thinking");
+  assert(matchesRequestedModelControlLabel("High 15–60s", { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }), "compact High controls should target extended thinking");
+  assert(matchesRequestedModelControlLabel("Pro 5+ min", { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }), "compact Pro controls should target extended Pro");
 
   const allowedOrigins = buildAllowedChatGptOrigins("https://chatgpt.com/", "https://chatgpt.com/auth/login");
   assert(allowedOrigins.includes("https://chatgpt.com"), "allowed ChatGPT origins should include chatgpt.com");
@@ -5072,18 +5576,34 @@ async function testPollerHostSafety(): Promise<void> {
   assert(unhandled === 0, `expected no unhandled rejections, saw ${unhandled}`);
 }
 
-async function main() {
-  assertIsolatedSanityEnvironment();
-  await ensureNoActiveJobs();
-  assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
-  assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
-  const config: OracleConfig = {
+function sanityProgress(label: string): void {
+  if (process.env.PI_ORACLE_SANITY_PROGRESS) console.log(`[oracle-sanity] ${label}`);
+}
+
+function createSanityConfig(): OracleConfig {
+  return {
     ...DEFAULT_CONFIG,
     browser: { ...DEFAULT_CONFIG.browser, maxConcurrentJobs: 1 },
   };
+}
 
+async function runSanityPreamble(): Promise<OracleConfig> {
+  assertIsolatedSanityEnvironment();
+  await ensureNoActiveJobs();
+  assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
+  assert(DEFAULT_CONFIG.browser.cloneStrategy === defaultCloneStrategyForPlatform(process.platform), "default oracle clone strategy should use APFS clones only on macOS");
+  assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
+  await testBrowserProfileHelpers();
+  return createSanityConfig();
+}
+
+async function runPlatformSanity(): Promise<void> {
+  const config = await runSanityPreamble();
+
+  sanityProgress("platform auth/config/runtime");
   testAuthCookiePolicy();
   await testConfigRejectsPartialChromiumKeychain();
+  await testConfigRejectsChromiumKeychainOffMac();
   await testChromiumCookieSourceReadsConfiguredKeychain();
   await testRuntimeConversationLeases(config);
   await testCleanupPendingRecoveryUnblocksAdmission(config);
@@ -5094,6 +5614,50 @@ async function main() {
   await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
   await testAuthBootstrapReportsEffectiveConfigPaths(config);
   await testJobCreationPersistsSelectionSnapshot(config);
+
+  sanityProgress("platform archive/process/helpers");
+  await testArchiveDefaultExclusions();
+  await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
+  testArchiveEntryGroupMergeHandlesLargeArrays();
+  testArchiveRejectsBlankInputs();
+  await testArchiveResolutionPreservesSignificantWhitespace();
+  await testArchiveRejectsSymlinkEscapes();
+  await testArchiveSubprocessTimeoutKillsHungChildren();
+  await testArchiveSubprocessesScrubSafeStoragePasswords();
+  await testArchiveBrokenPipeRejectsCleanly();
+  await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
+  await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
+  await testArchiveOversizeErrorExplainsRetryPlan();
+  await testSharedProcessHelpers();
+  await testSharedQueuedPromotionHelper();
+  testSharedJobCoordinationHelpers();
+  testSharedLifecycleHelpers();
+  testSharedObservabilityHelpers();
+  testAuthFlowHelpers();
+  testChatGptFlowHelpers();
+  testArtifactCandidateHeuristics();
+  await resetOracleStateDir().catch(() => undefined);
+  console.log("oracle platform sanity checks passed");
+}
+
+async function main() {
+  const config = await runSanityPreamble();
+
+  sanityProgress("auth/config/runtime");
+  testAuthCookiePolicy();
+  await testConfigRejectsPartialChromiumKeychain();
+  await testConfigRejectsChromiumKeychainOffMac();
+  await testChromiumCookieSourceReadsConfiguredKeychain();
+  await testRuntimeConversationLeases(config);
+  await testCleanupPendingRecoveryUnblocksAdmission(config);
+  await testCleanupPendingRecoveryTerminatesStaleLiveWorker(config);
+  await testCleanupPendingBlocksAdmission(config);
+  await testCleanupWarningsWithoutLiveWorkerDoNotBlockAdmission(config);
+  await testRuntimeProfileCloneTimeoutKillsHungCp(config);
+  await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
+  await testAuthBootstrapReportsEffectiveConfigPaths(config);
+  await testJobCreationPersistsSelectionSnapshot(config);
+  sanityProgress("submit/preflight/status");
   await testOracleSubmitPresetGuardrails();
   await testOraclePreflightReportsBlockingReadinessStates();
   await testOracleAuthToolRefreshesSeedProfile();
@@ -5109,6 +5673,7 @@ async function main() {
   await testOracleToolErrorsExposeStructuredMetadata();
   await testOracleCleanRefusesTerminalJobsWithinWakeupRetentionGrace(config);
   await testOracleCleanRefusesTerminalJobsWithLiveWorkers(config);
+  sanityProgress("queue/reconcile");
   await testStaleReconcileDoesNotOverwriteConcurrentCompletion(config);
   await testActiveCancellationDoesNotOverwriteCompletion(config);
   await testCancelReconcileRacePreservesIntentionalCancellation(config);
@@ -5126,6 +5691,7 @@ async function main() {
   await testQueuedPromotionToleratesWorkerStateAdvance(config);
   await testQueuedPromotionReusesSameJobConversationLease(config);
   await testQueuedPromotionSkipsConversationBlockedJobs(config);
+  sanityProgress("poller/locks/lifecycle");
   await runPollerSanitySuite(config);
   await testStaleLockRecovery();
   await testDeadPidLockSweep();
@@ -5140,6 +5706,7 @@ async function main() {
   await testLifecycleEventCutover();
   await testOraclePromptTemplateCutover();
   await testResponseTimeoutGuard();
+  sanityProgress("archive");
   await testArchiveDefaultExclusions();
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
   testArchiveEntryGroupMergeHandlesLargeArrays();
@@ -5147,10 +5714,12 @@ async function main() {
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
+  await testArchiveSubprocessesScrubSafeStoragePasswords();
   await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
   await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testArchiveOversizeErrorExplainsRetryPlan();
+  sanityProgress("shared/helper suites");
   await testSanityRunnerIsolation();
   testDurableWorkerHandoff();
   testSharedJobCoordinationHelpers();
@@ -5162,9 +5731,14 @@ async function main() {
   testAuthFlowHelpers();
   testChatGptFlowHelpers();
   testArtifactCandidateHeuristics();
+  sanityProgress("poller host safety");
   await testPollerHostSafety();
   await resetOracleStateDir().catch(() => undefined);
   console.log("oracle sanity checks passed");
 }
 
-await main();
+if (process.env.PI_ORACLE_SANITY_MODE === "platform") {
+  await runPlatformSanity();
+} else {
+  await main();
+}

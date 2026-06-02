@@ -197,9 +197,12 @@ export interface OracleRuntimeAllocation {
   seedGeneration?: string;
 }
 
+function hasSessionFileAccessor(value: unknown): value is { getSessionFile: () => string | undefined } {
+  return typeof value === "object" && value !== null && "getSessionFile" in value && typeof value.getSessionFile === "function";
+}
+
 export function getSessionFile(ctx: ExtensionContext): string | undefined {
-  const manager = ctx.sessionManager as unknown as { getSessionFile?: () => string | undefined };
-  return manager.getSessionFile?.();
+  return hasSessionFileAccessor(ctx.sessionManager) ? ctx.sessionManager.getSessionFile() : undefined;
 }
 
 export function getOracleJobsDir(): string {
@@ -989,13 +992,14 @@ export function resolveArchiveInputs(cwd: string, files: string[]): { absolute: 
       throw new Error("Archive input must use '.' exactly for a whole-repo archive");
     }
     const absolute = resolve(cwd, file);
-    if (absolute === cwd && file !== ".") {
+    const relativeFromCwd = relativePath(cwd, absolute);
+    if (relativeFromCwd === "" && file !== ".") {
       throw new Error("Archive input must use '.' exactly for a whole-repo archive");
     }
-    const relative = absolute.startsWith(`${cwd}/`) ? absolute.slice(cwd.length + 1) : absolute === cwd ? "." : "";
-    if (!relative) {
+    if (relativeFromCwd && (relativeFromCwd === ".." || relativeFromCwd.startsWith(`..${sep}`) || isAbsolute(relativeFromCwd))) {
       throw new Error(`Archive input must be inside the project cwd: ${file}`);
     }
+    const relative = relativeFromCwd === "" ? "." : relativeFromCwd.split(sep).join("/");
     if (!existsSync(absolute)) {
       throw new Error(`Archive input does not exist: ${file}`);
     }

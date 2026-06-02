@@ -8,6 +8,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
+import {
+  assertNotKnownBrowserUserDataPath,
+  chromeUserAgentPlatformToken,
+  chromiumKeychainSupportedOnPlatform,
+  defaultCloneStrategyForPlatform,
+  detectDefaultBrowserProfileSource,
+  detectDefaultLinuxChromeExecutablePath,
+  sweetCookieSafeStoragePasswordScrubbedEnv,
+} from "../shared/browser-profile-helpers.mjs";
 import { getProjectId } from "./runtime.js";
 
 export const ORACLE_PROVIDERS = ["chatgpt", "grok"] as const;
@@ -225,7 +234,6 @@ export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const DEFAULT_MAC_CHROME_USER_DATA_DIR = join(homedir(), "Library", "Application Support", "Google", "Chrome");
 
 export interface OracleConfig {
   defaults: {
@@ -274,37 +282,36 @@ export interface OracleConfig {
 }
 
 function detectDefaultChromeExecutablePath(): string | undefined {
-  return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  if (process.platform === "darwin") {
+    return existsSync(DEFAULT_MAC_CHROME_EXECUTABLE) ? DEFAULT_MAC_CHROME_EXECUTABLE : undefined;
+  }
+  if (process.platform === "linux") {
+    return detectDefaultLinuxChromeExecutablePath();
+  }
+  return undefined;
 }
 
 function detectDefaultChromeUserAgent(executablePath: string | undefined): string | undefined {
   if (!executablePath) return undefined;
+  // Linux executable discovery is PATH-based, so avoid executing that discovered
+  // binary during config module initialization just to derive a user agent.
+  if (process.platform === "linux") return undefined;
+  const platformToken = chromeUserAgentPlatformToken(process.platform);
+  if (!platformToken) return undefined;
   try {
-    const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8" }).trim();
+    const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
     const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+\.\d+)/);
     if (!versionMatch) return undefined;
-    return `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
+    return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
   } catch {
     return undefined;
-  }
-}
-
-function detectDefaultChromeProfileName(): string {
-  const localStatePath = join(DEFAULT_MAC_CHROME_USER_DATA_DIR, "Local State");
-  if (!existsSync(localStatePath)) return "Default";
-  try {
-    const localState = JSON.parse(readFileSync(localStatePath, "utf8")) as { profile?: { last_used?: string } };
-    const lastUsed = localState?.profile?.last_used;
-    return typeof lastUsed === "string" && lastUsed.trim() ? lastUsed.trim() : "Default";
-  } catch {
-    return "Default";
   }
 }
 
 const detectedChromeExecutablePath = detectDefaultChromeExecutablePath();
 const detectedChromeUserAgent = detectDefaultChromeUserAgent(detectedChromeExecutablePath);
 const agentExtensionsDir = join(getAgentDir(), "extensions");
-const detectedChromeProfileName = detectDefaultChromeProfileName();
+const detectedChromeProfileName = detectDefaultBrowserProfileSource(process.platform);
 
 export interface OracleConfigLoadDetails {
   agentDir: string;
@@ -367,7 +374,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     authSeedProfileDir: join(agentExtensionsDir, "oracle-auth-seed-profile"),
     runtimeProfilesDir: join(agentExtensionsDir, "oracle-runtime-profiles"),
     maxConcurrentJobs: 2,
-    cloneStrategy: "apfs-clone",
+    cloneStrategy: defaultCloneStrategyForPlatform(process.platform),
     chatUrl: "https://chatgpt.com/",
     authUrl: "https://chatgpt.com/auth/login",
     runMode: "headless",
@@ -452,18 +459,28 @@ function expectAbsoluteNormalizedPath(value: unknown, path: string): string {
   return normalize(expanded);
 }
 
-function expectSafeProfilePath(pathValue: string, path: string): string {
+function expectSafeProfilePath(
+  pathValue: string,
+  path: string,
+  cookieSources?: { chromeProfile?: string; chromeCookiePath?: string },
+): string {
   if (pathValue === "/" || pathValue === homedir()) {
     throw new Error(`Invalid oracle config: ${path} points to an unsafe directory`);
   }
-  if (pathValue === DEFAULT_MAC_CHROME_USER_DATA_DIR || pathValue.startsWith(`${DEFAULT_MAC_CHROME_USER_DATA_DIR}/`)) {
-    throw new Error(`Invalid oracle config: ${path} must not point into the real Chrome user-data directory`);
+  try {
+    assertNotKnownBrowserUserDataPath(pathValue, `Invalid oracle config: ${path}`, { cookieSources });
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
   }
   return pathValue;
 }
 
-function expectSafeProfileDir(value: unknown, path: string): string {
-  return expectSafeProfilePath(expectAbsoluteNormalizedPath(value, path), path);
+function expectSafeProfileDir(
+  value: unknown,
+  path: string,
+  cookieSources?: { chromeProfile?: string; chromeCookiePath?: string },
+): string {
+  return expectSafeProfilePath(expectAbsoluteNormalizedPath(value, path), path, cookieSources);
 }
 
 function expectBoolean(value: unknown, path: string): boolean {
@@ -584,16 +601,25 @@ function validateOracleConfig(value: unknown): OracleConfig {
   const artifacts = expectObject(root.artifacts, "artifacts");
   const cleanup = expectObject(root.cleanup, "cleanup");
 
-  const authSeedProfileDir = expectSafeProfileDir(browser.authSeedProfileDir, "browser.authSeedProfileDir");
-  const runtimeProfilesDir = expectSafeProfileDir(browser.runtimeProfilesDir, "browser.runtimeProfilesDir");
+  const chromeProfile = expectString(auth.chromeProfile, "auth.chromeProfile");
+  const chromeCookiePath = expectOptionalAbsoluteNormalizedPath(auth.chromeCookiePath, "auth.chromeCookiePath");
+  const cookieSources = { chromeProfile, chromeCookiePath };
+  const authSeedProfileDir = expectSafeProfileDir(browser.authSeedProfileDir, "browser.authSeedProfileDir", cookieSources);
+  const runtimeProfilesDir = expectSafeProfileDir(browser.runtimeProfilesDir, "browser.runtimeProfilesDir", cookieSources);
   if (runtimeProfilesDir === authSeedProfileDir || runtimeProfilesDir.startsWith(`${authSeedProfileDir}/`)) {
     throw new Error("Invalid oracle config: browser.runtimeProfilesDir must be separate from browser.authSeedProfileDir");
   }
 
-  const chromeCookiePath = expectOptionalAbsoluteNormalizedPath(auth.chromeCookiePath, "auth.chromeCookiePath");
   const chromiumKeychain = expectOptionalChromiumKeychain(auth.chromiumKeychain, "auth.chromiumKeychain");
   if (chromiumKeychain !== undefined && chromeCookiePath === undefined) {
     throw new Error("Invalid oracle config: auth.chromiumKeychain requires auth.chromeCookiePath");
+  }
+  if (chromiumKeychain !== undefined && !chromiumKeychainSupportedOnPlatform(process.platform)) {
+    throw new Error(
+      "Invalid oracle config: auth.chromiumKeychain is macOS-only. " +
+        "On Linux, set auth.chromeCookiePath/auth.chromeProfile without auth.chromiumKeychain and use @steipete/sweet-cookie's " +
+        "SWEET_COOKIE_LINUX_KEYRING, SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD, or SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD options for encrypted Chromium cookies.",
+    );
   }
 
   return {
@@ -618,7 +644,7 @@ function validateOracleConfig(value: unknown): OracleConfig {
     auth: {
       pollMs: expectInteger(auth.pollMs, "auth.pollMs", 100),
       bootstrapTimeoutMs: expectInteger(auth.bootstrapTimeoutMs, "auth.bootstrapTimeoutMs", 1000),
-      chromeProfile: expectString(auth.chromeProfile, "auth.chromeProfile"),
+      chromeProfile,
       chromeCookiePath,
       chromiumKeychain,
     },

@@ -5,6 +5,7 @@
 // Invariants/Assumptions: Process identity is validated with `ps -o lstart=` to defend against PID reuse on macOS.
 
 import { spawn, execFileSync } from "node:child_process";
+import { sweetCookieSafeStoragePasswordScrubbedEnv } from "./browser-profile-helpers.mjs";
 
 /** @typedef {import("./process-helpers.d.mts").OracleTrackedProcessOptions} OracleTrackedProcessOptions */
 /** @typedef {import("./process-helpers.d.mts").OracleDetachedProcessHandle} OracleDetachedProcessHandle */
@@ -20,7 +21,16 @@ function sleep(ms) {
 export function readProcessStartedAt(pid) {
   if (!pid || pid <= 0) return undefined;
   try {
-    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    if (process.platform === "win32") {
+      const startedAt = execFileSync("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToUniversalTime().ToString('o') }`,
+      ], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
+      return startedAt || undefined;
+    }
+    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
     return startedAt || undefined;
   } catch {
     return undefined;
@@ -118,6 +128,7 @@ export async function terminateTrackedProcess(pid, startedAt, options = {}) {
 export async function spawnDetachedNodeProcess(scriptPath, args = []) {
   const child = spawn(process.execPath, [scriptPath, ...args], {
     detached: true,
+    env: sweetCookieSafeStoragePasswordScrubbedEnv(),
     stdio: "ignore",
   });
   child.unref();

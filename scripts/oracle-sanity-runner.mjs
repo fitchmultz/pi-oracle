@@ -33,10 +33,14 @@ async function removeDirRobust(path, options = {}) {
   }
 }
 
+const modeArgIndex = process.argv.indexOf("--mode");
+const sanityMode = modeArgIndex >= 0 ? process.argv[modeArgIndex + 1] : undefined;
+
 const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {
   stdio: "inherit",
   env: {
     ...process.env,
+    ...(sanityMode ? { PI_ORACLE_SANITY_MODE: sanityMode } : {}),
     PI_ORACLE_STATE_DIR: stateDir,
     PI_ORACLE_JOBS_DIR: jobsDir,
   },
