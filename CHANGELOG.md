@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.7.5 - 2026-06-02
+
+### Added
+- added a Crabbox platform release smoke gate for macOS, Ubuntu, and Windows native with doctor-first validation, packed-install real-extension proof, stop evidence, and platform artifacts
+- added canonical workflow docs and scripts for everyday local validation, focused platform-sensitive runs, and full release/publish smoke coverage
+
+### Changed
+- made the default packed real smoke deterministic by installing the packed package into a clean pi project and invoking the installed `oracle_submit` tool path without waiting on a model-agent turn
+- made Windows native a supported package OS and moved reusable Windows smoke dependencies into the Parallels template/snapshot workflow
+
+### Fixed
+- hardened Windows archive/process/profile handling, including taskkill cleanup, executable resolution, tar/zstd archive behavior, path safety, and auth-bootstrap absolute-path checks
+- removed production `as unknown as` casts and switched Linux/Windows runtime profile copies to Node recursive copy instead of relying on POSIX `cp`
+
+### Validation
+- verified `npm run verify:oracle`, `git diff --check`, and `npm run smoke:platform:all` across macOS, Ubuntu, and Windows native before release
+
 ## 0.7.4 - 2026-05-28
 
 ### Changed
