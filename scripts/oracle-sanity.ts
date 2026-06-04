@@ -619,6 +619,7 @@ function appendAssistantMessage(
 function createPollerCtx(sessionManager: SessionManager) {
   return {
     cwd: process.cwd(),
+    mode: "tui" as const,
     sessionManager,
     hasUI: true,
     ui: createUiStub(),
@@ -3378,9 +3379,10 @@ async function testLifecycleEventCutover(): Promise<void> {
   assert(extensionSource.includes('pi.on("session_start"'), "oracle extension should bind session_start");
   assert(!extensionSource.includes('pi.on("session_switch"'), "oracle extension must not bind removed session_switch event");
   assert(!extensionSource.includes('pi.on("session_fork"'), "oracle extension must not bind removed session_fork event");
+  assert(extensionSource.includes('ctx.mode === "print" || ctx.mode === "json"'), "oracle extension should use Pi 0.78 mode metadata to skip background polling in one-shot modes");
   assert(extensionSource.includes("hasPersistedSessionFile(sessionFile)"), "oracle extension should refuse to start poller routing when the current session has no persisted identity");
   assert(extensionSource.includes("oracle: unavailable"), "oracle extension should mark oracle unavailable when no persisted session identity exists");
-  assert(extensionSource.includes('ctx.ui.notify(message, "warning")'), "oracle extension should surface startup-maintenance failures through the session UI as well as stderr");
+  assert(extensionSource.includes("if (ctx.hasUI) ctx.ui.notify"), "oracle extension should surface startup-maintenance failures through available session UI as well as stderr");
 }
 
 async function testOraclePromptTemplateCutover(): Promise<void> {
@@ -3410,6 +3412,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     os?: string[];
     scripts?: Record<string, string | undefined> & { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
     overrides?: { "basic-ftp"?: string; protobufjs?: string };
+    devDependencies?: Record<string, string | undefined>;
+    peerDependencies?: Record<string, string | undefined>;
   };
   const pi = createPiHarness();
   registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
@@ -3737,7 +3741,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version");
+  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.78.1", "package.json should use the current Pi 0.78.1 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.78.1", "package.json should use the current pi-ai 0.78.1 local development baseline");
+  assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
+  assert(readmeSource.includes("Pi `0.78.1+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.78.1 floor without making it a hard peer requirement");
+  assert(designSource.includes("pi` 0.78.1+") || designSource.includes("`pi` 0.78.1+"), "design doc should name the current suggested Pi 0.78.1 compatibility floor");
+  assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");

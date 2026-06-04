@@ -39,9 +39,13 @@ export default function oracleExtension(pi: ExtensionAPI) {
   function startPollerForContext(ctx: ExtensionContext) {
     try {
       const sessionFile = getSessionFile(ctx);
+      if (ctx.mode === "print" || ctx.mode === "json") {
+        stopPoller(ctx);
+        return;
+      }
       if (!hasPersistedSessionFile(sessionFile)) {
         stopPoller(ctx);
-        ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", "oracle: unavailable"));
+        if (ctx.hasUI) ctx.ui.setStatus("oracle", ctx.ui.theme.fg("accent", "oracle: unavailable"));
         return;
       }
 
@@ -49,15 +53,17 @@ export default function oracleExtension(pi: ExtensionAPI) {
       void runStartupMaintenance(ctx).catch((error) => {
         const message = `Oracle startup maintenance failed: ${error instanceof Error ? error.message : String(error)}`;
         console.error(message);
-        ctx.ui.notify(message, "warning");
+        if (ctx.hasUI) ctx.ui.notify(message, "warning");
       });
       startPoller(pi, ctx, config.poller.intervalMs, workerPath);
       refreshOracleStatus(ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       stopPoller(ctx);
-      ctx.ui.setStatus("oracle", ctx.ui.theme.fg("error", "oracle: config error"));
-      ctx.ui.notify(message, "warning");
+      if (ctx.hasUI) {
+        ctx.ui.setStatus("oracle", ctx.ui.theme.fg("error", "oracle: config error"));
+        ctx.ui.notify(message, "warning");
+      }
     }
   }
 

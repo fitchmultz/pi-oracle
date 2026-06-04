@@ -388,6 +388,35 @@ async function testOracleExtensionSkipsNoSessionWakeupRouting(config: OracleConf
   await cleanupJob(jobId);
 }
 
+async function testOracleExtensionSkipsPollerInOneShotModes(config: OracleConfig): Promise<void> {
+  for (const mode of ["print", "json"] as const) {
+    await resetOracleStateDir();
+    const sessionManager = createPersistedSessionManager(`poller-${mode}-mode`);
+    const sessionFile = sessionManager.getSessionFile();
+    assert(sessionFile, `${mode} startup test should persist a session file`);
+    const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
+
+    const sent: SentMessageLike[] = [];
+    const pi = createPiHarness();
+    pi.sendMessage = (message) => {
+      sent.push(message);
+    };
+    oracleExtension(pi);
+    const sessionStart = pi.handlers.get("session_start");
+    assert(sessionStart, "oracle extension should register a session_start handler");
+
+    const ui = createUiStub();
+    await sessionStart!({}, createExtensionCtx(sessionManager, ui, process.cwd(), mode));
+    await sleep(250);
+    stopPollerForSession(sessionFile, process.cwd());
+
+    assert(sent.length === 0, `oracle extension should not start wake-up routing in ${mode} mode, saw ${sent.length}`);
+    assert(ui.statuses.length === 0, `oracle extension should not publish oracle UI status in ${mode} mode, saw ${ui.statuses.length}`);
+    assert(!readJob(jobId)?.notifiedAt, `oracle extension should not mark jobs notified from ${mode} mode startup`);
+    await cleanupJob(jobId);
+  }
+}
+
 async function testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const submitterSessionManager = createPersistedSessionManager("legacy-project-scoped-submit");
@@ -704,6 +733,10 @@ async function testStoppingPollerCancelsInFlightStaleContextAccess(config: Oracl
     get cwd() {
       throwIfStale();
       return process.cwd();
+    },
+    get mode() {
+      throwIfStale();
+      return "tui" as const;
     },
     get sessionManager() {
       throwIfStale();
@@ -1373,6 +1406,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testPollerNotification(config);
   await testPollerSkipsContendedAdmissionPromotion(config);
   await testOracleExtensionSkipsNoSessionWakeupRouting(config);
+  await testOracleExtensionSkipsPollerInOneShotModes(config);
   await testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config);
   await testPollerNotificationSkipsContestedSameSessionWriters(config);
   await testBranchedSameSessionSkipsDurableNotification(config);

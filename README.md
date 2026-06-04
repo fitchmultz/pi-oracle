@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Validated on macOS, Linux, and Windows native with Chromium-family browsers and the current pi package baseline. Pi-bundled runtime packages are optional wildcard peers so npm peer ranges do not block users from trying newer pi releases, though runtime behavior is only verified against the tested baseline until a follow-up package release confirms it. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Validated on macOS, Linux, and Windows native with Chromium-family browsers and pi `0.78.1`. Pi `0.78.1+` is the suggested tested floor for mode-aware background polling, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -77,7 +77,7 @@ You need:
 
 - macOS, Linux, or Windows native
 - Node.js 22 or newer
-- `pi` 0.65.0 or newer
+- Suggested tested floor: `pi` 0.78.1 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
 - `agent-browser`, `tar`, and `zstd` available on the machine

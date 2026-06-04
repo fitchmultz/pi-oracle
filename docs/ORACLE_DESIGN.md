@@ -1,13 +1,14 @@
 # pi-oracle design
 
-Status: isolated-profile concurrency architecture implemented in code; major live validation now passes, but a few non-blocking hardening items remain.
-Date: 2026-04-03
+Status: isolated-profile concurrency architecture implemented in code and validated against the current pi baseline.
+Date: 2026-06-04
 
 Companion doc:
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
 
 Compatibility target:
-- `pi` 0.65.0+
+- `pi` 0.78.1+ is the suggested tested floor for current mode-aware poller behavior
+- package metadata keeps pi runtime packages as optional wildcard peers, so this suggested floor is not enforced as a hard npm install requirement
 - current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 
 ## Goal

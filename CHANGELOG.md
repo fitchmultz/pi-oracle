@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.7.6 - 2026-06-04
+
+### Changed
+- updated the local pi development baseline to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `0.78.1` and regenerated the npm lockfile
+- documented `pi` `0.78.1+` as the suggested tested floor while keeping pi runtime packages as optional wildcard peers so newer pi releases are not blocked by npm peer ranges
+- added Ant Ling, NVIDIA NIM, and MiniMax China provider env mappings to the oracle real-smoke/platform-smoke provider metadata
+
+### Fixed
+- made startup poller and wake-up routing mode-aware with Pi 0.78.1 `ctx.mode`, so print and JSON one-shot runs do not start background pollers or publish oracle UI status
+- guarded oracle startup status and warning notifications with `ctx.hasUI` for non-UI modes
+
+### Compatibility
+- reviewed the pi `0.78.1` changelog, extension docs, package docs, prompt-template docs, and matching examples; the oracle extension remains compatible with current extension lifecycle and package install/update behavior
+
 ## 0.7.5 - 2026-06-02
 
 ### Added

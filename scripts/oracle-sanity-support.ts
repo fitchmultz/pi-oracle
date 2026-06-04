@@ -300,11 +300,12 @@ export type PollerTestContext = ExtensionContext & {
   hasPendingMessages: () => boolean;
 };
 
-export function createPollerCtx(sessionManager: SessionManager, cwd = process.cwd()): PollerTestContext {
+export function createPollerCtx(sessionManager: SessionManager, cwd = process.cwd(), mode: ExtensionContext["mode"] = "tui"): PollerTestContext {
   return {
     cwd,
+    mode,
     sessionManager,
-    hasUI: true,
+    hasUI: mode === "tui" || mode === "rpc",
     ui: createUiStub(),
     isIdle: () => true,
     hasPendingMessages: () => false,
@@ -378,10 +379,12 @@ export function createCommandCtx(
   sessionManager: ExtensionCommandContext["sessionManager"],
   ui = createUiStub(),
   cwd = process.cwd(),
+  mode: ExtensionCommandContext["mode"] = "tui",
 ): ExtensionCommandContext {
   return {
     cwd,
-    hasUI: true,
+    mode,
+    hasUI: mode === "tui" || mode === "rpc",
     sessionManager,
     ui,
   } as unknown as ExtensionCommandContext;
@@ -391,10 +394,12 @@ export function createExtensionCtx(
   sessionManager: ExtensionContext["sessionManager"],
   ui = createUiStub(),
   cwd = process.cwd(),
+  mode: ExtensionContext["mode"] = "tui",
 ): ExtensionContext {
   return {
     cwd,
-    hasUI: true,
+    mode,
+    hasUI: mode === "tui" || mode === "rpc",
     sessionManager,
     ui,
   } as unknown as ExtensionContext;

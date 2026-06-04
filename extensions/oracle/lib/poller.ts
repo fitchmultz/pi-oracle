@@ -165,6 +165,7 @@ function getJobCountsForSession(sessionFile: string | undefined, cwd: string): {
 }
 
 function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): void {
+  if (!snapshot.hasUI) return;
   if (!snapshot.sessionFile) {
     snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("accent", "oracle: unavailable"));
     return;
