@@ -13,7 +13,7 @@
 
 Required targets: `macos`, `ubuntu`, `windows-native`.
 Required suites: `platform-build`, `real-extension`.
-Crabbox baseline: `0.24.0` or newer.
+Crabbox baseline: `0.26.0` or newer.
 
 ## Required local setup
 
@@ -25,7 +25,7 @@ crabbox --version
 crabbox providers
 ```
 
-`PI_ORACLE_SMOKE_CRABBOX` is optional and only needed to override the binary path.
+`PLATFORM_SMOKE_CRABBOX` is the reusable binary override. `PI_ORACLE_SMOKE_CRABBOX` is a project-specific alias and wins when both are set.
 
 Target setup:
 
@@ -48,13 +48,14 @@ Use the narrowest workflow that proves the change. Do not run the full platform 
 | --- | --- | --- |
 | Everyday local iteration | `npm run verify:oracle` | Syntax, bundle, platform-smoke invariants, type checks, oracle sanity, and package dry-run pass locally. |
 | Platform-sensitive change | `npm run smoke:platform:doctor`, then `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` | Target setup is ready and the affected platform/suite works without paying for unrelated targets. |
-| Publish/release proof | `npm run smoke:platform:all` | Doctor-first packed-install proof passes on every required target and suite. |
+| Platform matrix proof | `npm run smoke:platform:all` | Doctor-first packed-install proof passes on every required target and suite. |
+| Publish/release gate | `npm run release:check` | Local verification (`verify:oracle`) passes, then the doctor-first platform matrix passes. |
 
 Platform-sensitive changes include archive behavior, process cleanup, runtime/browser profile handling, package metadata, Crabbox harness code, or anything that may differ across macOS/Linux/Windows.
 
 ## Commands
 
-Doctor is mandatory before the full release matrix. The canonical all-target release command enforces that:
+Doctor is mandatory before the full platform matrix. The canonical all-target platform command enforces that:
 
 ```bash
 npm run smoke:platform:all
@@ -70,13 +71,13 @@ npm run smoke:platform:windows-native
 node scripts/platform-smoke.mjs run --target windows-native --suite real-extension
 ```
 
-Release check:
+Full release gate:
 
 ```bash
 npm run release:check
 ```
 
-`prepublishOnly` runs `npm run release:check`.
+`release:check` runs `verify:oracle` before `smoke:platform:all`, matching the Crabbox doctor-first release order: cheap harness checks, doctor, full matrix, then artifact review. `prepublishOnly` runs `npm run release:check`.
 
 ## What `platform-build` proves
 
@@ -142,12 +143,14 @@ Artifacts are local evidence only. Do not commit or share them without redaction
 
 ## Windows template maintenance
 
-When Windows lacks a reusable tool such as `zstd` or `agent-browser`, update `pi-extension-windows-template` rather than adding a per-run installer:
+When Windows lacks a reusable tool such as `zstd` or `agent-browser`, update the shared `pi-extension-windows-template` infrastructure rather than adding a per-run installer:
 
-1. boot `pi-extension-windows-template`;
-2. install/update the tool globally without secrets;
-3. verify from a fresh SSH session: `node --version`, `npm --version`, `git --version`, `tar --version`, `zstd --version`, `agent-browser --version`;
-4. remove downloads, caches, checkouts, `.pi`, `.artifacts`, `.debug`, and secrets;
-5. shut down cleanly;
-6. create/promote the configured power-off snapshot;
-7. clean stale clones/leases.
+1. revert/switch `pi-extension-windows-template` to the current canonical `crabbox-ready` snapshot;
+2. boot the template;
+3. install/update the reusable tool globally without secrets;
+4. verify from a fresh SSH session: `node --version`, `npm --version`, `git --version`, `tar --version`, `zstd --version`, `agent-browser --version`, and `agent-browser install`;
+5. remove downloads, caches, checkouts, `.pi`, `.artifacts`, `.debug`, browser auth/session state, and secrets;
+6. shut down cleanly;
+7. create/promote the configured power-off `crabbox-ready` snapshot;
+8. run `npm run smoke:platform:doctor` and `npm run smoke:platform:windows-native` against the promoted snapshot;
+9. clean stale clones/leases.

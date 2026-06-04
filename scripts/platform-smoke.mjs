@@ -41,21 +41,24 @@ Examples:
 Canonical workflows:
   Everyday local iteration: npm run verify:oracle
   Platform-sensitive changes: npm run smoke:platform:doctor, then focused run --target <target> --suite <suite>
-  Publish/release proof: npm run smoke:platform:all
+  Platform matrix proof: npm run smoke:platform:all
+  Full release gate: npm run release:check
 
 Environment:
-  PI_ORACLE_SMOKE_CRABBOX        Optional Crabbox binary override (defaults to PATH)
-  PI_ORACLE_SMOKE_MAC_HOST       macOS SSH host (default: localhost)
-  PI_ORACLE_SMOKE_MAC_USER       macOS SSH user (default: $USER)
-  PI_ORACLE_SMOKE_MAC_WORK_ROOT  macOS Crabbox work root
-  PI_ORACLE_SMOKE_UBUNTU_IMAGE   Optional local-container image override
-  PI_ORACLE_SMOKE_WINDOWS_VM      Parallels source VM (default from config)
-  PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT Parallels snapshot (default from config)
-  PI_ORACLE_SMOKE_WINDOWS_USER    Windows SSH user (default: $USER)
-  PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT Windows work root
+  PLATFORM_SMOKE_CRABBOX         Reusable Crabbox binary override (defaults to PATH)
+  PI_ORACLE_SMOKE_CRABBOX        Project-specific Crabbox binary override (wins over PLATFORM_SMOKE_CRABBOX)
+  PLATFORM_SMOKE_MAC_HOST        macOS SSH host (default: localhost)
+  PLATFORM_SMOKE_MAC_USER        macOS SSH user (default: $USER)
+  PLATFORM_SMOKE_MAC_WORK_ROOT   macOS Crabbox work root
+  PLATFORM_SMOKE_UBUNTU_IMAGE    Optional local-container image override
+  PLATFORM_SMOKE_WINDOWS_VM      Parallels source VM (default from config)
+  PLATFORM_SMOKE_WINDOWS_SNAPSHOT Parallels snapshot (default from config)
+  PLATFORM_SMOKE_WINDOWS_USER    Windows SSH user (default: $USER)
+  PLATFORM_SMOKE_WINDOWS_WORK_ROOT Windows work root
+  PI_ORACLE_SMOKE_*              Project-specific aliases for the PLATFORM_SMOKE_* knobs above
   PI_ORACLE_REAL_TEST_PROVIDER   Real smoke provider (default: zai)
   PI_ORACLE_REAL_TEST_MODEL      Real smoke model (default: glm-5.1)
-  ZAI_API_KEY                    Default real-smoke provider API key
+  ZAI_API_KEY                    Default real-smoke provider API key for optional model-agent debugging
 `);
 }
 

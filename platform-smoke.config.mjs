@@ -18,14 +18,18 @@ export default {
         "node scripts/platform-smoke.mjs run --target <target> --suite <suite>",
       ],
     },
-    release: {
-      description: "Doctor-first packed-install macOS/Ubuntu/Windows release proof.",
+    platformMatrix: {
+      description: "Doctor-first packed-install macOS/Ubuntu/Windows platform proof.",
       commands: ["npm run smoke:platform:all"],
+    },
+    release: {
+      description: "Full release gate: local verification plus the doctor-first platform matrix.",
+      commands: ["npm run release:check"],
     },
   },
   requiredCrabbox: {
     source: "https://github.com/openclaw/crabbox",
-    minVersion: "0.24.0",
+    minVersion: "0.26.0",
   },
   ubuntuContainerImage: "pi-oracle-platform-smoke:node24",
   ubuntuContainerBaseImage: "cimg/node:24.16",

@@ -1,6 +1,6 @@
 /**
- * Ubuntu platform-build suite for pi-oracle.
- * The suite proves the PR's package builds/tests on Linux and installs through pi's package path.
+ * Cross-platform smoke suites for pi-oracle.
+ * The suites prove the package builds, packs, installs, loads, and runs through pi's package path.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";

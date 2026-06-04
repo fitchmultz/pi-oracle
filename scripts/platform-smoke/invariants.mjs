@@ -17,6 +17,15 @@ function runNode(args) {
   return spawnSync(process.execPath, args, { cwd: repoRoot, encoding: "utf8" });
 }
 
+function testHelpTextIncludesTargetsAndExamples() {
+  const result = runNode(["scripts/platform-smoke.mjs", "--help"]);
+  assert.equal(result.status, 0, `help should exit cleanly: ${result.stderr}`);
+  assert.match(result.stdout, /Supported: macos,ubuntu,windows-native/, "help should list supported targets");
+  assert.match(result.stdout, /--suite\s+Suite name\. Supported: platform-build,real-extension/, "help should list supported suites");
+  assert.match(result.stdout, /npm run release:check/, "help should name the full release gate");
+  assert.match(result.stdout, /PLATFORM_SMOKE_CRABBOX/, "help should document reusable platform-smoke env knobs");
+}
+
 function testTargetSelection() {
   const result = runNode(["scripts/platform-smoke.mjs", "run", "--target", "not-a-target", "--suite", "platform-build"]);
   assert.notEqual(result.status, 0, "unsupported targets should fail before Crabbox runs");
@@ -79,9 +88,15 @@ function testCanonicalWorkflowConfig() {
   assert.deepEqual(config.workflows?.everyday?.commands, ["npm run verify:oracle"], "everyday workflow should use the local verification gate");
   assert(config.workflows?.platformSensitive?.commands?.includes("npm run smoke:platform:doctor"), "platform-sensitive workflow should start with doctor");
   assert(config.workflows?.platformSensitive?.commands?.some((command) => command.includes("--target <target> --suite <suite>")), "platform-sensitive workflow should document focused target/suite runs");
-  assert.deepEqual(config.workflows?.release?.commands, ["npm run smoke:platform:all"], "release workflow should use the full platform matrix");
+  assert.deepEqual(config.workflows?.platformMatrix?.commands, ["npm run smoke:platform:all"], "platform matrix workflow should use the full target matrix");
+  assert.deepEqual(config.workflows?.release?.commands, ["npm run release:check"], "release workflow should use the full local-plus-platform release gate");
+  assert.equal(config.requiredCrabbox?.minVersion, "0.26.0", "Crabbox baseline should match the documented provider contract");
   assert.equal(pkg.scripts["smoke:platform:all"], "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "full platform smoke should remain doctor-first and cover all required targets");
   assert.match(pkg.scripts["release:check"], /npm run verify:oracle && npm run smoke:platform:all/, "release check should combine local verification and full platform smoke");
+  const runnerSource = readFileSync(new URL("./crabbox-runner.mjs", import.meta.url), "utf8");
+  assert.match(runnerSource, /PLATFORM_SMOKE_CRABBOX/, "runner should honor reusable Crabbox binary override");
+  assert.match(runnerSource, /PLATFORM_SMOKE_MAC_WORK_ROOT/, "runner should honor reusable macOS work-root override");
+  assert.match(runnerSource, /PLATFORM_SMOKE_WINDOWS_WORK_ROOT/, "runner should honor reusable Windows work-root override");
 }
 
 function testRealSmokeExpensiveAgentPathsAreOptIn() {
@@ -96,6 +111,7 @@ function testRealSmokeExpensiveAgentPathsAreOptIn() {
   assert.match(source, /truthy\(env\("PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK"\)\)/, "negative symlink real-agent check should be opt-in");
 }
 
+testHelpTextIncludesTargetsAndExamples();
 testTargetSelection();
 testPackedInstallCommandRendering();
 testRealExtensionPackedInstallRendering();

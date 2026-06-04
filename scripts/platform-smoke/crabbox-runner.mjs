@@ -1,10 +1,10 @@
 /**
- * Thin Crabbox CLI wrapper for pi-oracle's Ubuntu platform smoke target.
+ * Thin Crabbox CLI wrapper for pi-oracle's local platform smoke targets.
  */
 
 import { spawn } from "node:child_process";
 
-const CRABBOX_BIN = process.env.PI_ORACLE_SMOKE_CRABBOX || "crabbox";
+const CRABBOX_BIN = process.env.PI_ORACLE_SMOKE_CRABBOX || process.env.PLATFORM_SMOKE_CRABBOX || "crabbox";
 
 function env(name) {
   return process.env[name] ?? "";
@@ -58,9 +58,9 @@ export function execCrabbox(args, opts = {}) {
 export function buildTargetBaseArgs(targetName, config = {}) {
   switch (targetName) {
     case "macos": {
-      const host = env("PI_ORACLE_SMOKE_MAC_HOST") || "localhost";
-      const user = env("PI_ORACLE_SMOKE_MAC_USER") || env("USER");
-      const workRoot = env("PI_ORACLE_SMOKE_MAC_WORK_ROOT") || `/Users/${env("USER")}/crabbox/pi-oracle`;
+      const host = env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost";
+      const user = env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER");
+      const workRoot = env("PI_ORACLE_SMOKE_MAC_WORK_ROOT") || env("PLATFORM_SMOKE_MAC_WORK_ROOT") || `/Users/${env("USER")}/crabbox/${config.packageName ?? "pi-oracle"}`;
       return [
         "--provider", "ssh",
         "--target", "macos",
@@ -81,7 +81,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
     case "windows-native": {
       const vm = env("PI_ORACLE_SMOKE_WINDOWS_VM") || env("PLATFORM_SMOKE_WINDOWS_VM") || config.windowsParallels?.sourceVm || "pi-extension-windows-template";
       const snapshot = env("PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT") || env("PLATFORM_SMOKE_WINDOWS_SNAPSHOT") || config.windowsParallels?.snapshot || "crabbox-ready";
-      const user = env("PI_ORACLE_SMOKE_WINDOWS_USER") || env("USER");
+      const user = env("PI_ORACLE_SMOKE_WINDOWS_USER") || env("PLATFORM_SMOKE_WINDOWS_USER") || env("USER");
       const workRoot = env("PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT") || env("PLATFORM_SMOKE_WINDOWS_WORK_ROOT") || `C:\\crabbox\\${config.packageName ?? "pi-oracle"}`;
       return [
         "--provider", "parallels",
