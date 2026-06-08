@@ -174,7 +174,7 @@ function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): voi
   const counts = getJobCountsForSession(snapshot.sessionFile, snapshot.cwd);
   const readiness = readinessBySession.get(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd)) ?? "loaded";
   const statusText = buildOracleStatusText(counts, readiness);
-  const tone = counts.active > 0 || readiness === "ready" ? "success" : readiness === "config_error" ? "error" : "accent";
+  const tone = readiness === "config_error" ? "error" : "accent";
   snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg(tone, statusText));
 }
 

@@ -3794,6 +3794,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("recordNotificationTarget(jobId, notificationClaimant"), "poller should persist the intended wake-up target before sending a best-effort completion reminder");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent"), "poller wake-up turns should format content through the shared observability helper");
   assert(pollerSource.includes("buildOracleStatusText"), "poller status updates should format session status through the shared observability helper");
+  assert(!pollerSource.includes('readiness === "ready" ? "success"'), "poller should not color the idle ready footer as a success state");
+  assert(pollerSource.includes('readiness === "config_error" ? "error" : "accent"'), "poller should reserve error coloring for config errors and keep normal oracle footer states neutral/accented");
   assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
   assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
   assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
