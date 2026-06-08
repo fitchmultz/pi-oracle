@@ -60,14 +60,15 @@ The extension now follows the current `pi` session lifecycle model:
 - previous runtimes are expected to clean up in `session_shutdown`
 - no new logic depends on removed post-transition events
 
-### Prompt template
+### Oracle dispatch commands
 
 - `/oracle <request>`
-  - implemented as a prompt template, not an extension command
+  - in TUI mode, intercepted by the extension before prompt-template expansion so verbose internal workflow rules stay hidden from the visible transcript
+  - injects the detailed dispatch instructions as a hidden custom message
+  - in print/json/rpc modes, the extension contributes the prompt templates so non-interactive prompt expansion still works
   - asks the agent to gather context and dispatch an oracle job
-  - intentionally uses native pi prompt/template queueing so submissions survive streaming and compaction
 - `/oracle-followup <job-id> <request>`
-  - implemented as a prompt template, not an extension command
+  - follows the same hidden-instructions TUI path and print/json prompt-template fallback
   - asks the agent to continue an earlier oracle job in the same provider thread via `followUpJobId`
   - keeps same-thread continuation available to normal users without requiring raw tool-call syntax
 
@@ -106,14 +107,14 @@ The extension now follows the current `pi` session lifecycle model:
 ### `/oracle ...`
 
 `/oracle <request>` should not directly drive ChatGPT or Grok.
-It expands through the prompt-template path so pi can apply its native queueing semantics before the agent starts work.
+In TUI mode, the extension intercepts it before prompt-template expansion, injects hidden dispatch instructions, and shows only compact user-facing status before the agent starts work. In print/json/rpc modes, the extension exposes the prompt template so one-shot `/oracle` still expands and runs normally.
 
-Instead it instructs the agent to:
+It instructs the agent to:
 
 1. call `oracle_preflight` immediately, passing `provider: "grok"` when the user explicitly asks for Grok
 2. stop right away if preflight reports the session or local oracle setup is not ready
 3. understand whether the request is explicitly narrow or genuinely broad
-4. if the immediately preceding oracle run failed because ChatGPT or Grok login is required or the worker explicitly said to rerun `/oracle-auth`, call `oracle_auth` once before retrying
+4. if auth is missing, stale, or the worker explicitly said to rerun `/oracle-auth`, stop and tell the user to run `/oracle-auth` rather than launching auth automatically
 5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the provider ceiling: 250 MB for ChatGPT and 200 MiB for Grok
 6. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
 7. if the request is broad/repo-wide, gather broader context and usually archive `.`

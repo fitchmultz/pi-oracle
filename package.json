@@ -41,9 +41,6 @@
   "pi": {
     "extensions": [
       "./extensions/oracle/index.ts"
-    ],
-    "prompts": [
-      "./prompts"
     ]
   },
   "scripts": {

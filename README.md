@@ -149,7 +149,7 @@ flowchart LR
 
 Key design choices:
 
-- **Prompt templates own context gathering.** `/oracle` and `/oracle-followup` tell the agent how to preflight, gather context, choose archive inputs, and then stop after dispatch.
+- **Extension-managed dispatch owns context gathering.** In the TUI, `/oracle` and `/oracle-followup` are intercepted before prompt-template expansion and inject detailed dispatch instructions as hidden context, so the visible transcript stays compact while the agent still preflights, gathers context, chooses archive inputs, and stops after dispatch.
 - **Tools own execution.** `oracle_submit` builds the archive, admits or queues the job, starts the worker, and returns immediately.
 - **Auth uses a seed profile.** `/oracle-auth` imports cookies into an isolated seed profile; each job clones that seed into its own temporary runtime profile.
 - **Follow-ups preserve provider thread state.** `/oracle-followup <job-id> ...` resolves the prior job's saved provider URL and submits the next prompt with `followUpJobId`.
@@ -406,8 +406,8 @@ For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_
 | `extensions/oracle/lib/` | Commands, tools, config, jobs, queueing, runtime, poller |
 | `extensions/oracle/worker/` | Detached provider web worker and UI/auth helpers |
 | `extensions/oracle/shared/` | Shared process, state, job, and observability helpers |
-| [`prompts/oracle.md`](prompts/oracle.md) | `/oracle` prompt-template workflow |
-| [`prompts/oracle-followup.md`](prompts/oracle-followup.md) | `/oracle-followup` prompt-template workflow |
+| [`prompts/oracle.md`](prompts/oracle.md) | Hidden `/oracle` command-dispatch workflow |
+| [`prompts/oracle-followup.md`](prompts/oracle-followup.md) | Hidden `/oracle-followup` command-dispatch workflow |
 | `scripts/oracle-sanity-*` | Local sanity and archive-safety checks |
 | `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
 | [`docs/ORACLE_DESIGN.md`](docs/ORACLE_DESIGN.md) | Architecture, lifecycle, queueing, persistence, recovery behavior |

@@ -224,23 +224,40 @@ function protectedPathsForCookieDb(cookiePath) {
  * @returns {string[]}
  */
 export function protectedCookieSourcePaths(cookieSources) {
+  return protectedCookieSourcePathEntries(cookieSources).map((entry) => entry.path);
+}
+
+function protectedCookieSourcePathEntries(cookieSources) {
   if (!cookieSources) return [];
   const roots = [];
   const cookiePath = typeof cookieSources.chromeCookiePath === "string" && cookieSources.chromeCookiePath.trim()
     ? cookieSources.chromeCookiePath.trim()
     : undefined;
-  if (cookiePath) roots.push(...protectedPathsForCookieDb(cookiePath));
+  if (cookiePath) {
+    roots.push(...protectedPathsForCookieDb(cookiePath).map((path) => ({ path, source: "auth.chromeCookiePath", configuredPath: cookiePath })));
+  }
 
   const profile = typeof cookieSources.chromeProfile === "string" && cookieSources.chromeProfile.trim()
     ? cookieSources.chromeProfile.trim()
     : undefined;
   if (profile && looksLikeFilesystemPath(profile)) {
     const normalizedProfile = normalizedAbsolutePath(profile);
-    if (isCookiesDbPath(normalizedProfile)) roots.push(...protectedPathsForCookieDb(normalizedProfile));
-    else roots.push(normalizedProfile, dirname(normalizedProfile));
+    if (isCookiesDbPath(normalizedProfile)) {
+      roots.push(...protectedPathsForCookieDb(normalizedProfile).map((path) => ({ path, source: "auth.chromeProfile", configuredPath: profile })));
+    } else {
+      roots.push({ path: normalizedProfile, source: "auth.chromeProfile", configuredPath: profile }, { path: dirname(normalizedProfile), source: "auth.chromeProfile", configuredPath: profile });
+    }
   }
 
-  return [...new Set(roots.map((root) => normalize(root)))];
+  const seen = new Set();
+  return roots
+    .map((root) => ({ ...root, path: normalize(root.path) }))
+    .filter((root) => {
+      const key = `${root.path}\0${root.source}\0${root.configuredPath}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 /**
@@ -249,19 +266,24 @@ export function protectedCookieSourcePaths(cookieSources) {
  * @returns {string | undefined}
  */
 export function knownBrowserUserDataPathMatch(pathValue, options = {}) {
+  return knownBrowserUserDataPathMatchDetails(pathValue, options)?.root;
+}
+
+export function knownBrowserUserDataPathMatchDetails(pathValue, options = {}) {
   const platform = options.platform ?? process.platform;
   const normalizedPath = normalizedAbsolutePath(pathValue, options);
   const resolvedPath = resolvePathThroughExistingAncestorsSync(normalizedPath);
   const roots = [
-    ...browserUserDataDirsForPlatform(platform, { ...options, includeUnsupported: options.includeUnsupported ?? true }),
-    ...protectedCookieSourcePaths(options.cookieSources),
-    ...((options.extraProtectedPaths ?? [])),
+    ...browserUserDataDirsForPlatform(platform, { ...options, includeUnsupported: options.includeUnsupported ?? true })
+      .map((path) => ({ path, source: "knownBrowserUserDataDir" })),
+    ...protectedCookieSourcePathEntries(options.cookieSources),
+    ...((options.extraProtectedPaths ?? [])).map((path) => ({ path, source: "extraProtectedPath" })),
   ];
   for (const root of roots) {
-    const normalizedRoot = normalizedAbsolutePath(root, options);
-    if (pathInsideOrEqual(normalizedPath, normalizedRoot)) return normalizedRoot;
+    const normalizedRoot = normalizedAbsolutePath(root.path, options);
+    if (pathInsideOrEqual(normalizedPath, normalizedRoot)) return { root: normalizedRoot, source: root.source, configuredPath: root.configuredPath };
     const resolvedRoot = resolvePathThroughExistingAncestorsSync(normalizedRoot) ?? normalizedRoot;
-    if (resolvedPath && pathInsideOrEqual(resolvedPath, resolvedRoot)) return resolvedRoot;
+    if (resolvedPath && pathInsideOrEqual(resolvedPath, resolvedRoot)) return { root: resolvedRoot, source: root.source, configuredPath: root.configuredPath };
   }
   return undefined;
 }
@@ -273,10 +295,12 @@ export function knownBrowserUserDataPathMatch(pathValue, options = {}) {
  * @returns {void}
  */
 export function assertNotKnownBrowserUserDataPath(pathValue, label, options = {}) {
-  const match = knownBrowserUserDataPathMatch(pathValue, options);
-  if (match) {
-    throw new Error(`${label} must not point into a real browser user-data directory (${match}): ${pathValue}`);
+  const match = knownBrowserUserDataPathMatchDetails(pathValue, options);
+  if (!match) return;
+  if (match.source === "auth.chromeCookiePath" || match.source === "auth.chromeProfile") {
+    throw new Error(`${label} is inside the browser profile root inferred from ${match.source} (${match.configuredPath} -> ${match.root}): ${pathValue}`);
   }
+  throw new Error(`${label} must not point into a real browser user-data directory (${match.root}): ${pathValue}`);
 }
 
 /**

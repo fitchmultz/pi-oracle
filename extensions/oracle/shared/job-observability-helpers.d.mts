@@ -62,6 +62,8 @@ export interface OracleStatusCounts {
   queued: number;
 }
 
+export type OracleReadinessStatus = "unavailable" | "loaded" | "auth_needed" | "config_error" | "ready";
+
 export declare function formatBytes(bytes: number): string;
 export declare function formatOracleLifecycleEvent(event: OracleJobLifecycleEvent | undefined): string | undefined;
 export declare function formatOracleCancelOutcome(job: { id: string; status: string }): string;
@@ -71,4 +73,4 @@ export declare function buildOracleWakeupNotificationContent(
   options?: { responsePath?: string; responseAvailable?: boolean; artifactsPath?: string },
 ): string;
 export declare function formatOracleSubmitResponse(job: OracleJobSummaryLike & { promptPath: string; archivePath: string }, options: OracleSubmitResponseOptions): string;
-export declare function buildOracleStatusText(counts: OracleStatusCounts): string;
+export declare function buildOracleStatusText(counts: OracleStatusCounts, readiness?: OracleReadinessStatus): string;

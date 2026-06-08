@@ -34,6 +34,7 @@ import {
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
   autoSwitchToThinkingSelectionVisible,
+  stripChatGptResponseChrome,
 } from "./chatgpt-ui-helpers.mjs";
 import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
@@ -86,6 +87,7 @@ const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/ag
 const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 scrubSweetCookieSafeStoragePasswordEnv();
 
+let cpSupportsApfsCloneFlag;
 let currentJob;
 let browserStarted = false;
 let cleaningUpBrowser = false;
@@ -277,6 +279,14 @@ function spawnCommand(command, args, options = {}) {
   });
 }
 
+async function cpSupportsApfsClone() {
+  if (process.platform !== "darwin") return false;
+  if (cpSupportsApfsCloneFlag !== undefined) return cpSupportsApfsCloneFlag;
+  const probe = await spawnCommand(CP_BIN, ["-c"], { allowFailure: true, timeoutMs: 5_000 });
+  cpSupportsApfsCloneFlag = !/invalid option\s+--\s+['"]?c/i.test(`${probe.stderr}\n${probe.stdout}`);
+  return cpSupportsApfsCloneFlag;
+}
+
 function parseConversationId(chatUrl) {
   if (!chatUrl) return undefined;
   try {
@@ -321,7 +331,7 @@ async function cloneSeedProfileToRuntime(job) {
   await withLock(ORACLE_STATE_DIR, "auth", "global", { jobId: job.id, processPid: process.pid, action: "cloneSeedProfile" }, async () => {
     await rm(job.runtimeProfileDir, { recursive: true, force: true }).catch(() => undefined);
     await ensurePrivateDir(dirname(job.runtimeProfileDir));
-    if (job.config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
+    if (job.config.browser.cloneStrategy === "apfs-clone" && await cpSupportsApfsClone()) {
       try {
         await spawnCommand(CP_BIN, ["-cR", seedDir, job.runtimeProfileDir], { timeoutMs: PROFILE_CLONE_TIMEOUT_MS });
       } catch (error) {
@@ -2000,15 +2010,8 @@ async function downloadArtifacts(job, responseIndex, responseText = "") {
     }
   }
 
-  const capturedArtifactLabels = new Set(artifacts.map((artifact) => artifact.displayName).filter(Boolean));
-  const capturedArtifactKeys = new Set([...capturedArtifactLabels].map((label) => String(label).replace(/\s+/g, "")));
-  const missedArtifactLabels = suspiciousLabels.filter((label) => !capturedArtifactLabels.has(label) && !capturedArtifactKeys.has(String(label).replace(/\s+/g, "")));
-  if (missedArtifactLabels.length > 0) {
-    await log(`Marking missed artifact signals as unconfirmed: ${missedArtifactLabels.join(", ")}`);
-    for (const label of missedArtifactLabels) {
-      artifacts.push({ displayName: label, unconfirmed: true, error: "Response-local artifact signal was present, but no downloadable artifact was captured." });
-    }
-    await flushArtifactsState(artifacts);
+  if (suspiciousLabels.length > 0) {
+    await log(`Ignoring plain-text artifact-like labels without downloadable controls: ${suspiciousLabels.join(", ")}`);
   }
 
   return artifacts;
@@ -2118,14 +2121,15 @@ async function run() {
       message: "Extracting the completed response body.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
-    await secureWriteText(currentJob.responsePath, `${completion.responseText.trim()}\n`);
+    const responseText = isGrokJob(currentJob) ? completion.responseText.trim() : stripChatGptResponseChrome(completion.responseText);
+    await secureWriteText(currentJob.responsePath, `${responseText}\n`);
     currentJob = await mutateJob((job) => transitionOracleJobPhase(job, "downloading_artifacts", {
       at: new Date().toISOString(),
       source: "oracle:worker",
       message: "Downloading any response artifacts.",
       patch: { heartbeatAt: new Date().toISOString() },
     }));
-    const artifacts = await downloadArtifacts(currentJob, completion.responseIndex, completion.responseText);
+    const artifacts = await downloadArtifacts(currentJob, completion.responseIndex, responseText);
     const artifactFailureCount = artifacts.filter((artifact) => artifact.unconfirmed || artifact.error).length;
     const finalPhase = artifactFailureCount > 0 ? "complete_with_artifact_errors" : "complete";
 

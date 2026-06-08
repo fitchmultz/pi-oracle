@@ -169,6 +169,10 @@ function unreadableAuthSeedProfileMessage(seedDir: string): string {
   return `Oracle auth seed profile is not readable: ${seedDir}. Fix its permissions or rerun /oracle-auth.`;
 }
 
+function unauthenticatedAuthSeedProfileMessage(seedDir: string): string {
+  return `Oracle auth seed profile exists but is not authenticated: ${seedDir}. Run /oracle-auth to create a verified auth seed before submitting oracle jobs.`;
+}
+
 function missingBrowserExecutableMessage(executablePath: string): string {
   return `Configured oracle browser executable does not exist: ${executablePath}. Fix browser.executablePath or install Chrome there.`;
 }
@@ -314,6 +318,10 @@ export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Pr
     await access(seedDir, fsConstants.R_OK | fsConstants.X_OK);
   } catch {
     throw new Error(unreadableAuthSeedProfileMessage(seedDir));
+  }
+
+  if (!getSeedGeneration(config)) {
+    throw new Error(unauthenticatedAuthSeedProfileMessage(seedDir));
   }
 }
 

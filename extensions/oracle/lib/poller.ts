@@ -5,7 +5,7 @@
 // Invariants/Assumptions: Poller scans are serialized per session key, wake-up delivery is best-effort, and terminal-job notifications always re-read durable job state before send.
 import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildOracleStatusText, buildOracleWakeupNotificationContent } from "../shared/job-observability-helpers.mjs";
+import { buildOracleStatusText, buildOracleWakeupNotificationContent, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
 import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
 import { isLockTimeoutError, listLeaseMetadata, releaseLease, withGlobalReconcileLock, writeLeaseMetadata } from "./locks.js";
 import {
@@ -46,6 +46,7 @@ interface OraclePollerLifecycle {
 }
 
 const activePollers = new Map<string, OracleActivePoller>();
+const readinessBySession = new Map<string, OracleReadinessStatus>();
 const scansInFlight = new Set<string>();
 const POLLER_LOCK_TIMEOUT_MS = 50;
 const WAKEUP_TARGET_LEASE_KIND = "wakeup-target";
@@ -171,13 +172,20 @@ function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): voi
     return;
   }
   const counts = getJobCountsForSession(snapshot.sessionFile, snapshot.cwd);
-  const statusText = buildOracleStatusText(counts);
-  const tone = counts.active > 0 ? "success" : "accent";
+  const readiness = readinessBySession.get(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd)) ?? "loaded";
+  const statusText = buildOracleStatusText(counts, readiness);
+  const tone = counts.active > 0 || readiness === "ready" ? "success" : readiness === "config_error" ? "error" : "accent";
   snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg(tone, statusText));
 }
 
 export function refreshOracleStatus(ctx: ExtensionContext): void {
   refreshOracleStatusSnapshot(snapshotPollerContext(ctx));
+}
+
+export function setOracleReadiness(ctx: ExtensionContext, readiness: OracleReadinessStatus): void {
+  const snapshot = snapshotPollerContext(ctx);
+  if (snapshot.sessionFile) readinessBySession.set(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd), readiness);
+  refreshOracleStatusSnapshot(snapshot);
 }
 
 function requestWakeupTurn(pi: ExtensionAPI, job: OraclePollerJob): void {
@@ -412,6 +420,7 @@ export function stopPollerForSession(sessionFile: string | undefined, cwd: strin
     if (handle.timer) clearInterval(handle.timer);
     activePollers.delete(sessionKey);
   }
+  readinessBySession.delete(sessionKey);
   const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(sessionKey);
   void releaseLease(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey).catch(() => undefined);
 }
@@ -423,6 +432,7 @@ export async function stopAllPollers(): Promise<void> {
     if (handle.timer) clearInterval(handle.timer);
   }
   activePollers.clear();
+  readinessBySession.clear();
   await Promise.all(handles.map(async (handle) => {
     const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(handle.sessionKey);
     await releaseLease(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey).catch(() => undefined);

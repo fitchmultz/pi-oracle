@@ -38,6 +38,10 @@ const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(
 const PRO_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?pro(?:, click to remove)?$/i;
 const MODEL_FAMILY_CONTROL_KINDS = new Set(["button", "radio", "menuitemradio"]);
 const COMPACT_INTELLIGENCE_CONTROL_KINDS = new Set(["menuitemradio"]);
+const CHATGPT_RESPONSE_CHROME_LINE_PATTERNS = Object.freeze([
+  /^Stopped thinking$/i,
+  /^Do you like this personality\?$/i,
+]);
 
 /**
  * @param {string | undefined} url
@@ -88,6 +92,18 @@ export function buildAllowedChatGptOrigins(chatUrl, authUrl) {
     originFromUrl(authUrl),
     "https://auth.openai.com",
   ]);
+}
+
+/**
+ * @param {string | undefined} value
+ * @returns {string}
+ */
+export function stripChatGptResponseChrome(value) {
+  return String(value || "")
+    .split("\n")
+    .filter((line) => !CHATGPT_RESPONSE_CHROME_LINE_PATTERNS.some((pattern) => pattern.test(line.trim())))
+    .join("\n")
+    .trim();
 }
 
 /**

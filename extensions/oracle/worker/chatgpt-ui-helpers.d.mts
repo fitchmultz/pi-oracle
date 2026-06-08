@@ -10,6 +10,7 @@ export interface OracleUiSelection {
 export declare const CHATGPT_CANONICAL_APP_ORIGINS: readonly string[];
 
 export declare function buildAllowedChatGptOrigins(chatUrl: string, authUrl?: string): string[];
+export declare function stripChatGptResponseChrome(value: string | undefined): string;
 export declare function matchesModelFamilyLabel(label: string | undefined, family: OracleUiModelFamily): boolean;
 export declare function matchesRequestedModelControlLabel(label: string | undefined, selection: OracleUiSelection): boolean;
 export declare function matchesCompactIntelligenceOpenerLabel(label: string | undefined): boolean;

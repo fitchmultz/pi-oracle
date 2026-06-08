@@ -914,6 +914,15 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if (message.startsWith("Oracle auth seed profile exists but is not authenticated: ")) {
+    return {
+      code: "auth_seed_profile_unauthenticated",
+      message,
+      rejectedValue: message.replace(/^Oracle auth seed profile exists but is not authenticated: /, "").replace(/\. Run \/oracle-auth.*$/, ""),
+      suggestedNextStep: "Call oracle_auth or run /oracle-auth once to create a verified auth seed, then retry the oracle tool call.",
+    };
+  }
+
   if (message.startsWith("Failed to parse oracle config ") || message.startsWith("Invalid oracle config:") || message.startsWith("Invalid oracle project config:")) {
     return {
       code: "oracle_config_invalid",
@@ -1202,7 +1211,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       session: { persisted: true, sessionFile },
       config: { ready: true },
       auth: {
-        ready: !["auth_seed_profile_missing", "auth_seed_profile_unreadable", "auth_seed_profile_invalid_type"].includes(errorDetails.code),
+        ready: !["auth_seed_profile_missing", "auth_seed_profile_unreadable", "auth_seed_profile_invalid_type", "auth_seed_profile_unauthenticated"].includes(errorDetails.code),
         seedProfileDir: config.browser.authSeedProfileDir,
       },
       error: errorDetails,

@@ -10,6 +10,12 @@ export interface ExecutableSearchOptions {
   pathDelimiter?: string;
 }
 
+export interface KnownBrowserUserDataPathMatchDetails {
+  root: string;
+  source: "knownBrowserUserDataDir" | "auth.chromeCookiePath" | "auth.chromeProfile" | "extraProtectedPath";
+  configuredPath?: string;
+}
+
 export const SWEET_COOKIE_SAFE_STORAGE_PASSWORD_ENV_NAMES: readonly [
   "SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD",
   "SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD",
@@ -40,6 +46,15 @@ export function knownBrowserUserDataPathMatch(
     cookieSources?: { chromeProfile?: string; chromeCookiePath?: string };
   },
 ): string | undefined;
+export function knownBrowserUserDataPathMatchDetails(
+  pathValue: string,
+  options?: BrowserPathOptions & {
+    platform?: OraclePlatform;
+    includeUnsupported?: boolean;
+    extraProtectedPaths?: string[];
+    cookieSources?: { chromeProfile?: string; chromeCookiePath?: string };
+  },
+): KnownBrowserUserDataPathMatchDetails | undefined;
 export function assertNotKnownBrowserUserDataPath(
   pathValue: string,
   label: string,

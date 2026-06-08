@@ -29,16 +29,11 @@ pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts"
 
 That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79.0+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
 
-If you also need the in-repo `/oracle` prompt template, load it explicitly instead of installing this repository as a project-local package:
+The local extension now intercepts TUI `/oracle` and `/oracle-followup` before prompt-template expansion and reads the in-repo prompt files as hidden dispatch instructions, so do not pass `--prompt-template` for normal local-extension validation. In print/json/rpc modes, the extension contributes the prompt templates itself.
 
-```bash
-pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts" \
-  --no-prompt-templates --prompt-template "$REPO/prompts/oracle.md"
-```
+Do not add `https://github.com/fitchmultz/pi-oracle` to this repository's `.pi/settings.json` just to test local oracle changes. If you already keep `npm:pi-oracle` installed globally, mixing the global npm package with a project-local git package creates two distinct package identities and can trigger prompt/tool conflicts. Use the explicit CLI extension flag above instead.
 
-Do not add `https://github.com/fitchmultz/pi-oracle` to this repository's `.pi/settings.json` just to test local oracle changes. If you already keep `npm:pi-oracle` installed globally, mixing the global npm package with a project-local git package creates two distinct package identities and can trigger prompt/tool conflicts. Use the explicit CLI resource flags above instead.
-
-`oracle_submit` now preflights a missing or unreadable auth seed profile before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, create an empty isolated seed-profile directory under the temporary agent dir so submission can proceed far enough to write the archive while still staying isolated from your normal Chrome state.
+`oracle_submit` now preflights missing, unreadable, or unverified auth seed profiles before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, use `oracle_preflight` for the blocker path or create a test seed only in a purpose-built fixture that includes the `.oracle-seed-generation` marker.
 
 ## Preset requirement
 
@@ -81,7 +76,12 @@ mkdir -p \
   "$TEST2_AGENT" "$TEST2_SESSIONS" "$TEST2_JOBS" \
   "$FIXTURE" "$OUTSIDE"
 
-mkdir -p "$TEST1_AGENT/extensions/oracle-auth-seed-profile"
+mkdir -p \
+  "$TEST1_AGENT/extensions/oracle-auth-seed-profile" \
+  "$TEST2_AGENT/extensions/oracle-auth-seed-profile"
+touch \
+  "$TEST1_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation" \
+  "$TEST2_AGENT/extensions/oracle-auth-seed-profile/.oracle-seed-generation"
 
 echo 'secret' > "$OUTSIDE/secret.txt"
 ln -s "$OUTSIDE" "$FIXTURE/linked-outside"
@@ -162,29 +162,30 @@ Expected behavior:
 Notes:
 
 - this smoke test does not require `/oracle-auth`
-- the snippet creates an empty isolated auth seed profile for `TEST1_AGENT` because `oracle_submit` now rejects a missing seed profile before archiving
-- with that empty seed profile, the worker still fails later due to missing real auth, which is useful because the archive remains on disk for inspection
+- the snippet creates an isolated test auth seed profile plus `.oracle-seed-generation` marker for `TEST1_AGENT` because `oracle_submit` now rejects missing or unverified seed profiles before archiving
+- with that marker-only seed profile, the worker still fails later due to missing real auth, which is useful because the archive remains on disk for inspection
 
 ### Test 2: symlink escape rejection
 
 Expected behavior:
 
 - `oracle_submit` rejects `linked-outside/secret.txt`
+- the snippet creates the same marker-only isolated auth seed profile for `TEST2_AGENT` so the test reaches archive input validation
 - the error should say the archive input must resolve inside the project cwd without symlink escapes
 - no oracle job directory should be created for the rejected submit
 
-## Testing local `/oracle` prompt changes too
+## Testing local `/oracle` command-prompt changes too
 
-The main smoke test above calls `oracle_submit` directly, so it only needs the local extension entrypoint. If you also changed `prompts/oracle.md`, start the isolated session with the local prompt template explicitly loaded:
+The main smoke test above calls `oracle_submit` directly, so it only needs the local extension entrypoint. If you also changed `prompts/oracle.md`, start the isolated session with the same local extension entrypoint; the extension reads the in-repo prompt file as hidden command-dispatch instructions:
 
 ```bash
-LOCAL_ORACLE_PI_CMD="pi --approve --session-dir '$TEST1_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts' --no-prompt-templates --prompt-template '$REPO/prompts/oracle.md'"
+LOCAL_ORACLE_PI_CMD="pi --approve --session-dir '$TEST1_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
 TMUX_CMD1="cd '$REPO' && env PI_CODING_AGENT_DIR='$TEST1_AGENT' PI_ORACLE_JOBS_DIR='$TEST1_JOBS' PATH='$PATH' $LOCAL_ORACLE_PI_CMD"
 ```
 
-Use the same pattern for additional sessions, swapping the session/job directories as needed. This keeps the test on the in-repo extension and in-repo prompt template without depending on `.pi/settings.json` package entries.
+Use the same pattern for additional sessions, swapping the session/job directories as needed. This keeps the test on the in-repo extension and hidden in-repo command prompt without depending on `.pi/settings.json` package entries.
 
-`/oracle` now starts by calling `oracle_preflight`. If you want the prompt flow to proceed past that early guard in an isolated test without using your normal auth state, create an empty isolated auth seed profile first (for example `mkdir -p "$TEST1_AGENT/extensions/oracle-auth-seed-profile"`) or run `/oracle-auth` in the isolated agent dir.
+`/oracle` now starts by calling `oracle_preflight`. If you want the command flow to proceed past that early guard in an isolated test without using your normal auth state, run `/oracle-auth` in the isolated agent dir or create a purpose-built verified seed fixture with `.oracle-seed-generation`.
 
 ## Additional failure-mode smoke tests
 

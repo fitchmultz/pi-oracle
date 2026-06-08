@@ -27,6 +27,11 @@ import { refreshOracleStatus } from "./poller.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
 
+export interface OracleCommandPromptTemplates {
+  oracle?: string;
+  oracleFollowup?: string;
+}
+
 async function summarizeJob(jobId: string, options?: { responsePreview?: boolean }): Promise<string> {
   const job = readJob(jobId);
   if (!job) return `Oracle job ${jobId} not found.`;
@@ -74,18 +79,26 @@ function parseOracleAuthProvider(args: string): OracleProvider | undefined {
   throw new Error("Usage: /oracle-auth [chatgpt|grok]");
 }
 
-export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
+function emitCommandOutput(ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
+  if (ctx.mode === "print") {
+    process.stdout.write(`${message}\n`);
+    return;
+  }
+  ctx.ui.notify(message, level);
+}
+
+export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string, _promptTemplates: OracleCommandPromptTemplates = {}): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT or Grok cookies from the configured local browser profile into the provider auth seed profile",
     handler: async (args, ctx) => {
       try {
         const provider = parseOracleAuthProvider(args);
         const providerLabel = provider === "grok" ? "Grok" : provider === "chatgpt" ? "ChatGPT" : "configured provider";
-        ctx.ui.notify(`Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
+        emitCommandOutput(ctx, `Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
         const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider);
-        ctx.ui.notify(result, "info");
+        emitCommandOutput(ctx, result, "info");
       } catch (error) {
-        ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+        emitCommandOutput(ctx, error instanceof Error ? error.message : String(error), "warning");
       }
     },
   });
@@ -96,12 +109,12 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
       if (!jobId) {
-        ctx.ui.notify("No oracle jobs found for this project", "info");
+        emitCommandOutput(ctx, "No oracle jobs found for this project", "info");
         return;
       }
       const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
-        ctx.ui.notify(`Oracle job ${jobId} was not found in this project`, "warning");
+        emitCommandOutput(ctx, `Oracle job ${jobId} was not found in this project`, "warning");
         return;
       }
       if (isTerminalOracleJob(job)) {
@@ -113,7 +126,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       }
       const summary = await summarizeJob(job.id);
       const recentJobs = !explicitJobId ? listRecentJobIds(ctx.cwd) : undefined;
-      ctx.ui.notify([summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
+      emitCommandOutput(ctx, [summary, recentJobs ? `Recent jobs: ${recentJobs}` : undefined].filter(Boolean).join("\n"), "info");
     },
   });
 
@@ -123,12 +136,12 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
       const explicitJobId = args.trim();
       const jobId = explicitJobId || getLatestJobId(ctx.cwd);
       if (!jobId) {
-        ctx.ui.notify("No oracle jobs found for this project", "info");
+        emitCommandOutput(ctx, "No oracle jobs found for this project", "info");
         return;
       }
       const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
-        ctx.ui.notify(`Oracle job ${jobId} was not found in this project`, "warning");
+        emitCommandOutput(ctx, `Oracle job ${jobId} was not found in this project`, "warning");
         return;
       }
       if (isTerminalOracleJob(job)) {
@@ -138,7 +151,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
           cwd: ctx.cwd,
         });
       }
-      ctx.ui.notify(await summarizeJob(job.id, { responsePreview: true }), "info");
+      emitCommandOutput(ctx, await summarizeJob(job.id, { responsePreview: true }), "info");
     },
   });
 
@@ -147,17 +160,21 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
     handler: async (args, ctx) => {
       const jobId = args.trim();
       if (!jobId) {
-        ctx.ui.notify("Usage: /oracle-cancel <job-id>\nUse /oracle-status to find the job id you want to cancel.", "warning");
+        emitCommandOutput(ctx, "Usage: /oracle-cancel <job-id>\nUse /oracle-status to find the job id you want to cancel.", "warning");
         return;
       }
 
       const job = readScopedJob(jobId, ctx.cwd);
       if (!job) {
-        ctx.ui.notify(`Oracle job ${jobId} not found in this project`, "warning");
+        emitCommandOutput(ctx, `Oracle job ${jobId} not found in this project`, "warning");
         return;
       }
       if (!isOpenOracleJob(job)) {
-        ctx.ui.notify(`Oracle job ${jobId} is not cancellable (${job.status})`, "info");
+        if (isTerminalOracleJob(job)) {
+          emitCommandOutput(ctx, `Job is already terminal: ${job.status}. Use /oracle-read ${job.id} for details or /oracle-clean ${job.id} to remove it.`, "info");
+        } else {
+          emitCommandOutput(ctx, `Oracle job ${jobId} is not cancellable (${job.status})`, "info");
+        }
         return;
       }
 
@@ -166,7 +183,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         await promoteQueuedJobs({ workerPath, source: "oracle_cancel_command" });
       }
       refreshOracleStatus(ctx);
-      ctx.ui.notify(formatOracleCancelOutcome(cancelled), "info");
+      emitCommandOutput(ctx, formatOracleCancelOutcome(cancelled), "info");
     },
   });
 
@@ -175,19 +192,20 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
     handler: async (args, ctx: ExtensionCommandContext) => {
       const target = args.trim();
       if (!target) {
-        ctx.ui.notify("Usage: /oracle-clean <job-id|all>", "warning");
+        emitCommandOutput(ctx, "Usage: /oracle-clean <job-id|all>", "warning");
         return;
       }
 
       const jobs = target === "all" ? listJobsForCwd(ctx.cwd) : [readScopedJob(target, ctx.cwd)].filter(Boolean);
       if (jobs.length === 0) {
-        ctx.ui.notify("No matching oracle jobs found", "warning");
+        emitCommandOutput(ctx, "No matching oracle jobs found", "warning");
         return;
       }
 
       const nonTerminalJobs = jobs.filter((job): job is NonNullable<typeof job> => Boolean(job && !isTerminalOracleJob(job)));
       if (nonTerminalJobs.length > 0) {
-        ctx.ui.notify(
+        emitCommandOutput(
+          ctx,
           `Refusing to remove non-terminal oracle job${nonTerminalJobs.length === 1 ? "" : "s"}: ${nonTerminalJobs.map((job) => job.id).join(", ")}`,
           "warning",
         );
@@ -217,10 +235,14 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
 
       refreshOracleStatus(ctx);
       const warningSuffix = cleanupWarnings.length > 0 ? ` Cleanup blockers/warnings:\n${cleanupWarnings.join("\n")}` : "";
-      const removalSummary = removedCount === jobs.length
-        ? `Removed ${removedCount} oracle job director${removedCount === 1 ? "y" : "ies"}.`
-        : `Removed ${removedCount} of ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}; retained ${jobs.length - removedCount} due to cleanup blockers or warnings.`;
-      ctx.ui.notify(`${removalSummary}${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
+      const retentionWarning = cleanupWarnings.find((warning) => warning.includes("post-send retention grace window") && warning.includes("Retry after "));
+      const retryAfter = retentionWarning?.match(/Retry after ([^ ]+)/)?.[1];
+      const removalSummary = retryAfter && removedCount < jobs.length
+        ? `Job retained for wake-up safety. Retry cleanup after ${retryAfter}.`
+        : removedCount === jobs.length
+          ? `Removed ${removedCount} oracle job director${removedCount === 1 ? "y" : "ies"}.`
+          : `Removed ${removedCount} of ${jobs.length} oracle job director${jobs.length === 1 ? "y" : "ies"}; retained ${jobs.length - removedCount} due to cleanup blockers or warnings.`;
+      emitCommandOutput(ctx, `${removalSummary}${warningSuffix}`, cleanupWarnings.length > 0 ? "warning" : "info");
     },
   });
 }
