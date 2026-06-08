@@ -1264,7 +1264,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const baseConfig = loadOracleConfig(projectCwd);
+        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd });
         const provider = normalizeOracleProvider(params.provider, baseConfig.defaults.provider, "oracle_auth");
         const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd, provider);
         return {
@@ -1311,7 +1311,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const baseConfig = loadOracleConfig(projectCwd);
+        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd });
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
         const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);

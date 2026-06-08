@@ -24,15 +24,15 @@ That keeps the validation run from reusing your normal `pi` agent state.
 The extension is loaded from the local checkout with:
 
 ```bash
-pi --no-extensions -e "$REPO/extensions/oracle/index.ts"
+pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts"
 ```
 
-That ensures the session is exercising the in-repo code, not a globally installed package.
+That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79.0+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
 
 If you also need the in-repo `/oracle` prompt template, load it explicitly instead of installing this repository as a project-local package:
 
 ```bash
-pi --no-extensions -e "$REPO/extensions/oracle/index.ts" \
+pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts" \
   --no-prompt-templates --prompt-template "$REPO/prompts/oracle.md"
 ```
 
@@ -96,7 +96,7 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
-TMUX_CMD1="cd '$REPO' && env PI_CODING_AGENT_DIR='$TEST1_AGENT' PI_ORACLE_JOBS_DIR='$TEST1_JOBS' PATH='$PATH' pi --session-dir '$TEST1_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
+TMUX_CMD1="cd '$REPO' && env PI_CODING_AGENT_DIR='$TEST1_AGENT' PI_ORACLE_JOBS_DIR='$TEST1_JOBS' PATH='$PATH' pi --approve --session-dir '$TEST1_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
 tmux new-session -d -s "$SESSION1" "$TMUX_CMD1"
 sleep 8
 tmux send-keys -t "$SESSION1":0.0 "$PROMPT1" Enter
@@ -129,7 +129,7 @@ PY
   rm -f "$LIST"
 fi
 
-TMUX_CMD2="cd '$FIXTURE' && env PI_CODING_AGENT_DIR='$TEST2_AGENT' PI_ORACLE_JOBS_DIR='$TEST2_JOBS' PATH='$PATH' pi --session-dir '$TEST2_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
+TMUX_CMD2="cd '$FIXTURE' && env PI_CODING_AGENT_DIR='$TEST2_AGENT' PI_ORACLE_JOBS_DIR='$TEST2_JOBS' PATH='$PATH' pi --approve --session-dir '$TEST2_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
 tmux new-session -d -s "$SESSION2" "$TMUX_CMD2"
 sleep 8
 tmux send-keys -t "$SESSION2":0.0 "$PROMPT2" Enter
@@ -178,7 +178,7 @@ Expected behavior:
 The main smoke test above calls `oracle_submit` directly, so it only needs the local extension entrypoint. If you also changed `prompts/oracle.md`, start the isolated session with the local prompt template explicitly loaded:
 
 ```bash
-LOCAL_ORACLE_PI_CMD="pi --session-dir '$TEST1_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts' --no-prompt-templates --prompt-template '$REPO/prompts/oracle.md'"
+LOCAL_ORACLE_PI_CMD="pi --approve --session-dir '$TEST1_SESSIONS' --no-extensions -e '$REPO/extensions/oracle/index.ts' --no-prompt-templates --prompt-template '$REPO/prompts/oracle.md'"
 TMUX_CMD1="cd '$REPO' && env PI_CODING_AGENT_DIR='$TEST1_AGENT' PI_ORACLE_JOBS_DIR='$TEST1_JOBS' PATH='$PATH' $LOCAL_ORACLE_PI_CMD"
 ```
 
@@ -226,7 +226,7 @@ cleanup() {
 trap 'cleanup; rm -rf "$TEST_ROOT"' EXIT
 cleanup
 
-TMUX_CMD="cd '$REPO' && env PI_CODING_AGENT_DIR='$AGENT_DIR' PI_ORACLE_JOBS_DIR='$JOBS_DIR' AGENT_BROWSER_PATH='$FAKE_BROWSER' PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS='250' PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS='250' PI_ORACLE_AUTH_KILL_GRACE_MS='100' PATH='$PATH' pi --session-dir '$SESSION_DIR' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
+TMUX_CMD="cd '$REPO' && env PI_CODING_AGENT_DIR='$AGENT_DIR' PI_ORACLE_JOBS_DIR='$JOBS_DIR' AGENT_BROWSER_PATH='$FAKE_BROWSER' PI_ORACLE_AUTH_AGENT_BROWSER_TIMEOUT_MS='250' PI_ORACLE_AUTH_CLOSE_TIMEOUT_MS='250' PI_ORACLE_AUTH_KILL_GRACE_MS='100' PATH='$PATH' pi --approve --session-dir '$SESSION_DIR' --no-extensions -e '$REPO/extensions/oracle/index.ts'"
 
 tmux new-session -d -s "$SESSION_NAME" "$TMUX_CMD"
 sleep 8

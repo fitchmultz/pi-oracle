@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, hasProjectTrustInputs, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import {
   assertNotKnownBrowserUserDataPath,
@@ -313,27 +313,76 @@ const detectedChromeUserAgent = detectDefaultChromeUserAgent(detectedChromeExecu
 const agentExtensionsDir = join(getAgentDir(), "extensions");
 const detectedChromeProfileName = detectDefaultBrowserProfileSource(process.platform);
 
+export interface OracleConfigLoadOptions {
+  /**
+   * Whether project-local oracle config may be loaded. Omit for the runtime
+   * policy that preserves oracle's historical project-config behavior while
+   * respecting explicit --no-approve and saved distrust decisions.
+   */
+  projectConfigTrusted?: boolean;
+  /** Session cwd used for Pi's saved project-trust decision when config lookup is anchored to a derived project root. */
+  projectConfigTrustCwd?: string;
+}
+
 export interface OracleConfigLoadDetails {
   agentDir: string;
   agentConfigPath: string;
   agentConfigExists: boolean;
   projectConfigPath: string;
   projectConfigExists: boolean;
+  projectConfigTrusted: boolean;
+  projectConfigLoaded: boolean;
+  projectConfigSkippedReason?: string;
   effectiveAuthConfigPath: string;
   effectiveAuthScope: "agent";
 }
 
-export function getOracleConfigLoadDetails(cwd: string): OracleConfigLoadDetails {
+function getProjectTrustCliOverride(argv = process.argv): boolean | undefined {
+  let trusted: boolean | undefined;
+  for (const arg of argv.slice(2)) {
+    if (arg === "--approve" || arg === "-a") trusted = true;
+    if (arg === "--no-approve" || arg === "-na") trusted = false;
+  }
+  return trusted;
+}
+
+function isProjectConfigTrusted(cwd: string, agentDir: string, projectConfigExists: boolean, options?: OracleConfigLoadOptions): boolean {
+  if (options?.projectConfigTrusted !== undefined) return options.projectConfigTrusted;
+  const trustCwd = options?.projectConfigTrustCwd ?? cwd;
+  const cliOverride = getProjectTrustCliOverride();
+  if (cliOverride !== undefined) return cliOverride;
+  if (!projectConfigExists && !hasProjectTrustInputs(trustCwd)) return true;
+  try {
+    const trustStore = new ProjectTrustStore(agentDir);
+    const trustDecision = trustStore.get(trustCwd);
+    const rootDecision = trustCwd !== cwd ? trustStore.get(cwd) : null;
+    if (trustDecision !== null) return trustDecision;
+    if (rootDecision !== null) return rootDecision;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+export function getOracleConfigLoadDetails(cwd: string, options?: OracleConfigLoadOptions): OracleConfigLoadDetails {
   const agentDir = getAgentDir();
   const projectRoot = getProjectId(cwd);
   const agentConfigPath = join(agentDir, "extensions", "oracle.json");
   const projectConfigPath = join(projectRoot, ".pi", "extensions", "oracle.json");
+  const projectConfigExists = existsSync(projectConfigPath);
+  const projectConfigTrusted = isProjectConfigTrusted(projectRoot, agentDir, projectConfigExists, options);
+  const projectConfigLoaded = projectConfigExists && projectConfigTrusted;
   return {
     agentDir,
     agentConfigPath,
     agentConfigExists: existsSync(agentConfigPath),
     projectConfigPath,
-    projectConfigExists: existsSync(projectConfigPath),
+    projectConfigExists,
+    projectConfigTrusted,
+    projectConfigLoaded,
+    projectConfigSkippedReason: projectConfigExists && !projectConfigTrusted
+      ? "Project oracle config is ignored because this run used --no-approve or the project has a saved untrusted decision."
+      : undefined,
     effectiveAuthConfigPath: agentConfigPath,
     effectiveAuthScope: "agent",
   };
@@ -341,8 +390,11 @@ export function getOracleConfigLoadDetails(cwd: string): OracleConfigLoadDetails
 
 export function formatOracleAuthConfigRemediation(details: OracleConfigLoadDetails): string {
   const authFields = "auth.chromeProfile / auth.chromeCookiePath / auth.chromiumKeychain";
-  if (!details.projectConfigExists) {
-    return `Set ${authFields} in ${details.effectiveAuthConfigPath}.`;
+  if (!details.projectConfigLoaded) {
+    const projectNote = details.projectConfigSkippedReason
+      ? ` Project config at ${details.projectConfigPath} is present but not loaded because this run explicitly does not trust project-local inputs.`
+      : "";
+    return `Set ${authFields} in ${details.effectiveAuthConfigPath}.${projectNote}`;
   }
   return (
     `Set ${authFields} in ${details.effectiveAuthConfigPath}. ` +
@@ -354,11 +406,13 @@ export function formatOracleAuthConfigSummary(details: OracleConfigLoadDetails):
   const lines = [
     `Effective oracle auth config: ${details.effectiveAuthConfigPath} (agent dir: ${details.agentDir}${details.agentConfigExists ? "" : "; create this file to override auth.*"})`,
   ];
-  if (details.projectConfigExists) {
+  if (details.projectConfigLoaded) {
     lines.push(
       `Project oracle config also loaded: ${details.projectConfigPath} ` +
         `(project scope can override ${[...PROJECT_OVERRIDE_KEYS].join("/")} only; auth.* still comes from ${details.effectiveAuthConfigPath}).`,
     );
+  } else if (details.projectConfigSkippedReason) {
+    lines.push(`Project oracle config present but not loaded: ${details.projectConfigPath}. ${details.projectConfigSkippedReason}`);
   }
   return lines.join("\n");
 }
@@ -665,9 +719,9 @@ function validateOracleConfig(value: unknown): OracleConfig {
   };
 }
 
-export function loadOracleConfig(cwd: string): OracleConfig {
-  const details = getOracleConfigLoadDetails(cwd);
+export function loadOracleConfig(cwd: string, options?: OracleConfigLoadOptions): OracleConfig {
+  const details = getOracleConfigLoadDetails(cwd, options);
   const globalConfig = readJson(details.agentConfigPath);
-  const projectConfig = filterProjectConfig(readJson(details.projectConfigPath));
+  const projectConfig = details.projectConfigLoaded ? filterProjectConfig(readJson(details.projectConfigPath)) : undefined;
   return validateOracleConfig(deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig));
 }

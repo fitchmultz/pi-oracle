@@ -90,8 +90,8 @@ On each required target, `platform-build`:
 5. runs `npm pack`;
 6. creates a fresh target-local pi project;
 7. runs `npm install --no-save <packed tarball>`;
-8. runs `pi install -l ./node_modules/pi-oracle`;
-9. runs `pi list`;
+8. runs `pi install -l ./node_modules/pi-oracle --approve` so Pi 0.79.0 project-trust gating intentionally trusts the temporary fixture;
+9. runs `pi list --approve`;
 10. asserts the installed package came from `node_modules/pi-oracle` and did not use `pi -e` / source-extension shortcuts.
 
 ## What `real-extension` proves
@@ -100,8 +100,8 @@ On each required target, `platform-build`:
 
 1. packs this checkout with `npm pack`;
 2. installs the tarball into a clean pi project;
-3. runs `pi install -l ./node_modules/pi-oracle`;
-4. asserts `pi list` shows the packed install path;
+3. runs `pi install -l ./node_modules/pi-oracle --approve`;
+4. asserts `pi list --approve` shows the packed install path;
 5. executes `oracle_submit` from the installed package path, not source `pi -e`;
 6. asserts whole-project archive creation and default exclusions.
 
@@ -113,7 +113,7 @@ For inner-loop/debug only, use:
 npm run smoke:real:source
 ```
 
-That source-mode smoke loads `extensions/oracle/index.ts` with `pi --no-extensions -e`; it is useful while developing but is not release proof.
+That source-mode smoke loads `extensions/oracle/index.ts` with `pi --approve --no-extensions -e`; it is useful while developing but is not release proof.
 
 ## Artifacts
 

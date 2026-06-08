@@ -10,7 +10,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, w
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { basename, delimiter, join } from "node:path";
-import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
 import {
@@ -1044,7 +1044,7 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     await writeFile(join(projectExtensionsDir, "oracle.json"), `${JSON.stringify({ defaults: { preset: "instant" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await writeExecutableScript(agentBrowserPath, "#!/bin/sh\nexit 0\n");
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    const configLoad = getOracleConfigLoadDetails(projectDir);
+    const configLoad = getOracleConfigLoadDetails(projectDir, { projectConfigTrusted: true });
     const authConfigGuidance = {
       ...configLoad,
       remediation: formatOracleAuthConfigRemediation(configLoad),
@@ -1075,6 +1075,39 @@ async function testAuthBootstrapReportsEffectiveConfigPaths(config: OracleConfig
     assert(result.stderr.includes("auth.* still comes from"), "auth bootstrap failure guidance should explain that auth settings still come from the agent config when a project config also exists");
     assert(result.stderr.includes("auth.chromeProfile") && result.stderr.includes("auth.chromeCookiePath"), "auth bootstrap failure guidance should mention configurable browser cookie sources");
     assert(!result.stderr.includes("~/.pi/agent/extensions/oracle.json"), "auth bootstrap failure guidance should not hardcode the default global config path under isolated agent dirs");
+  } finally {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
+async function testProjectConfigRespectsExplicitProjectDistrust(): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-project-trust-${randomUUID()}-`));
+  const projectDir = join(fixtureDir, "project");
+  const agentDir = join(fixtureDir, "agent");
+  const projectExtensionsDir = join(projectDir, ".pi", "extensions");
+  const projectSubdir = join(projectDir, "packages", "app");
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    await mkdir(projectExtensionsDir, { recursive: true, mode: 0o700 });
+    await mkdir(projectSubdir, { recursive: true, mode: 0o700 });
+    await mkdir(join(agentDir, "extensions"), { recursive: true, mode: 0o700 });
+    await writeFile(join(projectExtensionsDir, "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_light" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    const untrustedDetails = getOracleConfigLoadDetails(projectDir);
+    assert(untrustedDetails.projectConfigExists, "project trust test should create a project oracle config");
+    assert(untrustedDetails.projectConfigLoaded, "oracle should preserve historical project config loading when there is no explicit saved distrust decision");
+    assert(loadOracleConfig(projectDir).defaults.preset === "thinking_light", "project oracle config should override defaults by default for compatibility");
+    assert(getOracleConfigLoadDetails(projectSubdir).projectConfigLoaded, "project oracle config should load from subdirectories by default for compatibility");
+
+    new ProjectTrustStore(agentDir).set(projectDir, false);
+    const distrustedDetails = getOracleConfigLoadDetails(projectDir);
+    assert(!distrustedDetails.projectConfigLoaded, "saved pi project distrust should suppress project oracle config loading");
+    assert(loadOracleConfig(projectDir).defaults.preset === DEFAULT_CONFIG.defaults.preset, "explicitly distrusted project oracle config should not override defaults");
+    assert(loadOracleConfig(projectSubdir).defaults.preset === DEFAULT_CONFIG.defaults.preset, "explicitly distrusted project oracle config should not load from subdirectories");
   } finally {
     if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
@@ -1529,8 +1562,8 @@ async function testWorkspaceRootFallsBackToProjectMarkersWithoutGit(): Promise<v
 
     const workspaceRoot = getProjectId(subdirCwd);
     assert(workspaceRoot === getProjectId(projectRoot), "workspace-root detection should fall back to shared project markers when no git root exists");
-    assert(getOracleConfigLoadDetails(subdirCwd).projectConfigPath === join(workspaceRoot, ".pi", "extensions", "oracle.json"), "config loading without git should still resolve the workspace-root project config path from subdirectories");
-    assert(loadOracleConfig(subdirCwd).defaults.preset === "thinking_light", "config loading without git should still honor workspace-root project overrides from subdirectories");
+    assert(getOracleConfigLoadDetails(subdirCwd, { projectConfigTrusted: true }).projectConfigPath === join(workspaceRoot, ".pi", "extensions", "oracle.json"), "config loading without git should still resolve the workspace-root project config path from subdirectories");
+    assert(loadOracleConfig(subdirCwd, { projectConfigTrusted: true }).defaults.preset === "thinking_light", "config loading without git should still honor trusted workspace-root project overrides from subdirectories");
     assert(resolveArchiveInputs(workspaceRoot, ["README.md"])[0]?.relative === "README.md", "archive input resolution without git should still allow workspace-root files from the derived project root");
     assert(resolveArchiveInputs(workspaceRoot, ["."])[0]?.relative === ".", "archive input resolution without git should still preserve '.' as the explicit whole-workspace sentinel");
 
@@ -1540,7 +1573,7 @@ async function testWorkspaceRootFallsBackToProjectMarkersWithoutGit(): Promise<v
     await writeFile(join(innerRoot, "package.json"), '{"name":"inner-workspace"}\n', { encoding: "utf8", mode: 0o600 });
     await writeFile(join(innerRoot, ".pi", "extensions", "oracle.json"), `${JSON.stringify({ defaults: { preset: "thinking_heavy" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     assert(getProjectId(innerSubdir) === getProjectId(innerRoot), "workspace-root detection without git should prefer the nearest project markers so nested non-git projects do not widen to parent workspaces");
-    assert(loadOracleConfig(innerSubdir).defaults.preset === "thinking_heavy", "nested non-git subdirectories should load the nearest project config instead of an outer marker tree");
+    assert(loadOracleConfig(innerSubdir, { projectConfigTrusted: true }).defaults.preset === "thinking_heavy", "nested non-git subdirectories should load the nearest trusted project config instead of an outer marker tree");
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
@@ -1601,10 +1634,11 @@ async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: Oracl
     process.env.PI_CODING_AGENT_DIR = agentDir;
 
     const workspaceRoot = getProjectId(subdirCwd);
-    const configLoad = getOracleConfigLoadDetails(subdirCwd);
+    const configLoad = getOracleConfigLoadDetails(subdirCwd, { projectConfigTrusted: true });
     assert(configLoad.projectConfigPath === join(workspaceRoot, ".pi", "extensions", "oracle.json"), "config loading from a subdirectory should resolve the project config at the workspace root");
     assert(configLoad.projectConfigPath !== join(subdirCwd, ".pi", "extensions", "oracle.json"), "config loading from a subdirectory should not look for a nested per-subdirectory project config path");
-    assert(loadOracleConfig(subdirCwd).defaults.preset === "thinking_light", "oracle submit should load project config defaults from the workspace root when invoked from a subdirectory");
+    assert(loadOracleConfig(subdirCwd, { projectConfigTrusted: true }).defaults.preset === "thinking_light", "oracle submit should load trusted project config defaults from the workspace root when invoked from a subdirectory");
+    new ProjectTrustStore(agentDir).set(subdirCwd, true);
 
     const submitResult = await submitTool.execute!(
       "oracle-submit-workspace-root-test",
@@ -3388,6 +3422,7 @@ async function testLifecycleEventCutover(): Promise<void> {
 async function testOraclePromptTemplateCutover(): Promise<void> {
   const commandsSource = await readFile(new URL("../extensions/oracle/lib/commands.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
+  const configSource = await readFile(new URL("../extensions/oracle/lib/config.ts", import.meta.url), "utf8");
   const jobsSource = await readFile(new URL("../extensions/oracle/lib/jobs.ts", import.meta.url), "utf8");
   const pollerSource = await readFile(new URL("../extensions/oracle/lib/poller.ts", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
@@ -3597,7 +3632,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
   assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
   assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
-  assert(toolsSource.includes("loadOracleConfig(projectCwd)"), "oracle submit should load config from the stable workspace-root cwd");
+  assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
   assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
   assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath"), "oracle submit should build archives from the stable workspace-root cwd");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
@@ -3741,11 +3776,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.78.1", "package.json should use the current Pi 0.78.1 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.78.1", "package.json should use the current pi-ai 0.78.1 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.79.0", "package.json should use the current Pi 0.79.0 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.79.0", "package.json should use the current pi-ai 0.79.0 local development baseline");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
-  assert(readmeSource.includes("Pi `0.78.1+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.78.1 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.78.1+") || designSource.includes("`pi` 0.78.1+"), "design doc should name the current suggested Pi 0.78.1 compatibility floor");
+  assert(readmeSource.includes("Pi `0.79.0+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.79.0 floor without making it a hard peer requirement");
+  assert(designSource.includes("pi` 0.79.0+") || designSource.includes("`pi` 0.79.0+"), "design doc should name the current suggested Pi 0.79.0 compatibility floor");
+  assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
@@ -5622,6 +5658,7 @@ async function runPlatformSanity(): Promise<void> {
   await testRuntimeProfileCloneTimeoutKillsHungCp(config);
   await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
   await testAuthBootstrapReportsEffectiveConfigPaths(config);
+  await testProjectConfigRespectsExplicitProjectDistrust();
   await testJobCreationPersistsSelectionSnapshot(config);
 
   sanityProgress("platform archive/process/helpers");
@@ -5665,6 +5702,7 @@ async function main() {
   await testRuntimeProfileCloneTimeoutKillsHungCp(config);
   await testAuthBootstrapAgentBrowserTimeoutFailsFast(config);
   await testAuthBootstrapReportsEffectiveConfigPaths(config);
+  await testProjectConfigRespectsExplicitProjectDistrust();
   await testJobCreationPersistsSelectionSnapshot(config);
   sanityProgress("submit/preflight/status");
   await testOracleSubmitPresetGuardrails();

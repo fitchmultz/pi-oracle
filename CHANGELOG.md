@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.7 - 2026-06-08
+
+### Changed
+- updated the local pi development baseline to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `0.79.0` and regenerated the npm lockfile
+- documented `pi` `0.79.0+` as the suggested tested floor while keeping pi runtime packages as optional wildcard peers so npm peer ranges do not block users from trying newer pi releases
+- updated isolated local-extension and packed package validation workflows to pass explicit `--approve` when they intentionally trust their temporary project fixtures under Pi 0.79.0 project-trust rules
+
+### Fixed
+- made project-local `.pi/extensions/oracle.json` overrides honor explicit Pi project-trust opt-outs (`--no-approve` or a saved “do not trust” decision) while preserving the historical default of loading safe project overrides for existing oracle users
+
+### Compatibility
+- reviewed the pi `0.79.0` changelog, project-trust docs, extension docs, package docs, prompt-template docs, SDK/RPC exports, and matching examples; the oracle extension remains compatible with current extension lifecycle and package install/update behavior
+
 ## 0.7.6 - 2026-06-04
 
 ### Changed

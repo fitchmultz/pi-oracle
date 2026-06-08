@@ -122,7 +122,7 @@ if ($PackTarball -and $PiCli -and (Test-Path -LiteralPath $TarballPath)) {
   if ($PACKED_NODE_INSTALL_EXIT -eq 0) {
     $PreviousPiOffline = $env:PI_OFFLINE
     $env:PI_OFFLINE = "1"
-    & $PiCli install -l (Join-Path ".\node_modules" $PackageName) 1> $PiInstallOut 2> $PiInstallErr
+    & $PiCli install -l (Join-Path ".\node_modules" $PackageName) --approve 1> $PiInstallOut 2> $PiInstallErr
     $PI_INSTALL_EXIT = Exit-CodeFromLastCommand
     if ($null -eq $PreviousPiOffline) { Remove-Item Env:\PI_OFFLINE -ErrorAction SilentlyContinue } else { $env:PI_OFFLINE = $PreviousPiOffline }
   } else {
@@ -148,7 +148,7 @@ if ($PiCli) {
   Push-Location $PiProject
   $PreviousPiOffline = $env:PI_OFFLINE
   $env:PI_OFFLINE = "1"
-  & $PiCli list 1> $PiListOut 2> $PiListErr
+  & $PiCli list --approve 1> $PiListOut 2> $PiListErr
   $PI_LIST_EXIT = Exit-CodeFromLastCommand
   if ($null -eq $PreviousPiOffline) { Remove-Item Env:\PI_OFFLINE -ErrorAction SilentlyContinue } else { $env:PI_OFFLINE = $PreviousPiOffline }
   Pop-Location

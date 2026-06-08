@@ -22,7 +22,7 @@ function usage() {
   console.log(`Usage: node scripts/oracle-real-smoke.mjs <doctor|run> [--mode packed|source]
 
 Modes:
-  packed  Release proof. npm pack -> clean pi project -> npm install tarball -> pi install -l -> run through installed package. Default.
+  packed  Release proof. npm pack -> clean pi project -> npm install tarball -> pi install -l --approve -> run through installed package. Default.
   source  Inner-loop/debug only. Loads this checkout with pi --no-extensions -e extensions/oracle/index.ts.
 
 Environment:
@@ -257,12 +257,12 @@ async function preparePackedProject({ runDir, provider, model, timeoutMs }) {
 
   await mustRun(installDir, "npm-init", npm, ["init", "-y"], { cwd: piProject, env: process.env, timeoutMs: 60_000 });
   await mustRun(installDir, "packed-node-install", npm, ["install", "--no-save", tarballPath], { cwd: piProject, env: process.env, timeoutMs: 120_000 });
-  await mustRun(installDir, "pi-install", piCommand(), ["install", "-l", `./node_modules/${PACKAGE_NAME}`], {
+  await mustRun(installDir, "pi-install", piCommand(), ["install", "-l", `./node_modules/${PACKAGE_NAME}`, "--approve"], {
     cwd: piProject,
     env: { ...process.env, PI_OFFLINE: "1" },
     timeoutMs: 120_000,
   });
-  const piList = await mustRun(installDir, "pi-list", piCommand(), ["list"], {
+  const piList = await mustRun(installDir, "pi-list", piCommand(), ["list", "--approve"], {
     cwd: piProject,
     env: { ...process.env, PI_OFFLINE: "1" },
     timeoutMs: 60_000,
@@ -342,6 +342,7 @@ console.log(JSON.stringify(result, null, 2));
 async function runPiAgent({ prepared, agentDir, sessionDir, jobsDir, prompt, outDir, label, timeoutMs, stopAfterJobArchive = false }) {
   mkdirSync(outDir, { recursive: true });
   const args = [
+    "--approve",
     "--print",
     "--provider", prepared.provider,
     "--model", prepared.model,
