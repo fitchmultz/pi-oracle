@@ -168,14 +168,19 @@ function getJobCountsForSession(sessionFile: string | undefined, cwd: string): {
 function refreshOracleStatusSnapshot(snapshot: OraclePollerContextSnapshot): void {
   if (!snapshot.hasUI) return;
   if (!snapshot.sessionFile) {
-    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("accent", "oracle: unavailable"));
+    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("error", "oracle: unavailable"));
     return;
   }
   const counts = getJobCountsForSession(snapshot.sessionFile, snapshot.cwd);
   const readiness = readinessBySession.get(getPollerSessionKey(snapshot.sessionFile, snapshot.cwd)) ?? "loaded";
   const statusText = buildOracleStatusText(counts, readiness);
-  const tone = readiness === "config_error" ? "error" : "accent";
-  snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg(tone, statusText));
+  if (counts.active > 0) {
+    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("success", statusText));
+  } else if (readiness === "auth_needed" || readiness === "config_error") {
+    snapshot.ui.setStatus("oracle", snapshot.ui.theme.fg("error", statusText));
+  } else {
+    snapshot.ui.setStatus("oracle", statusText);
+  }
 }
 
 export function refreshOracleStatus(ctx: ExtensionContext): void {
