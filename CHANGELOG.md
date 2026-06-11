@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.7.9 - 2026-06-11
+
+### Fixed
+- made oracle workers launch their isolated Chrome runtime directly and attach `agent-browser` via DevTools, avoiding failures when unrelated `agent-browser` sessions or daemons are already running
+- tightened worker-owned browser cleanup so runtime profiles are deleted only after the isolated Chrome process has been closed or terminated
+- rejected `browser.args` overrides that would bypass oracle-managed Chrome profile or DevTools isolation
+
+### Validation
+- verified ChatGPT and Grok oracle smoke tests against the local source extension after the worker-owned browser launch fix
+
 ## 0.7.8 - 2026-06-11
 
 ### Changed

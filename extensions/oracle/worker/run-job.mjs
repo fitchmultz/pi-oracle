@@ -85,12 +85,15 @@ const POST_SEND_SETTLE_MS = 15_000;
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
   (candidate) => typeof candidate === "string" && candidate && existsSync(candidate),
 ) || "agent-browser";
+const CHROME_DEVTOOLS_READY_TIMEOUT_MS = 15_000;
 const CP_BIN = process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 scrubSweetCookieSafeStoragePasswordEnv();
 
 let cpSupportsApfsCloneFlag;
 let currentJob;
 let browserStarted = false;
+let browserProcess;
+let browserProcessError;
 let cleaningUpBrowser = false;
 let cleaningUpRuntime = false;
 let shuttingDown = false;
@@ -355,16 +358,24 @@ async function cleanupRuntime(job) {
   cleaningUpRuntime = true;
   const warnings = [];
   try {
+    let browserClosed = true;
     await closeBrowser(job).catch(async (error) => {
+      browserClosed = false;
       const message = `Browser close warning during cleanup: ${error instanceof Error ? error.message : String(error)}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
     });
-    try {
-      assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
-      await rm(job.runtimeProfileDir, { recursive: true, force: true });
-    } catch (error) {
-      const message = `Runtime profile cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+    if (browserClosed) {
+      try {
+        assertSafeRuntimeProfilePath(job.runtimeProfileDir, "runtime profile", job.config);
+        await rm(job.runtimeProfileDir, { recursive: true, force: true });
+      } catch (error) {
+        const message = `Runtime profile cleanup warning: ${error instanceof Error ? error.message : String(error)}`;
+        warnings.push(message);
+        await log(message).catch(() => undefined);
+      }
+    } else {
+      const message = `Runtime profile cleanup skipped because isolated browser close did not complete: ${job.runtimeProfileDir}`;
       warnings.push(message);
       await log(message).catch(() => undefined);
     }
@@ -542,6 +553,39 @@ function browserBaseArgs(job, options = {}) {
   return args;
 }
 
+function waitForChildClose(child, timeoutMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }, timeoutMs);
+    timer.unref?.();
+    child.once("close", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+async function terminateBrowserProcess() {
+  if (!browserProcess) return;
+  const child = browserProcess;
+  browserProcess = undefined;
+  browserProcessError = undefined;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  killProcessTree(child);
+  if (await waitForChildClose(child, 2_000)) return;
+  killProcess(child);
+  if (!(await waitForChildClose(child, 2_000))) {
+    throw new Error(`Timed out terminating isolated Chrome process ${child.pid ?? "(unknown pid)"}`);
+  }
+}
+
 async function closeBrowser(job) {
   if (cleaningUpBrowser) return;
   cleaningUpBrowser = true;
@@ -554,15 +598,107 @@ async function closeBrowser(job) {
       throw new Error(result.stderr || result.stdout || `agent-browser close exited with code ${result.code}`);
     }
   } finally {
+    await terminateBrowserProcess();
     browserStarted = false;
     cleaningUpBrowser = false;
   }
 }
 
+function assertSafeBrowserLaunchArg(arg) {
+  const value = String(arg).trim().toLowerCase();
+  const managedFlags = [
+    "--user-data-dir",
+    "--remote-debugging-port",
+    "--remote-debugging-pipe",
+    "--remote-debugging-address",
+    "--remote-allow-origins",
+  ];
+  const flag = managedFlags.find((candidate) => value === candidate || value.startsWith(`${candidate}=`) || value.startsWith(`${candidate} `));
+  if (flag) {
+    throw new Error(`browser.args cannot override oracle-managed Chrome launch isolation flag ${flag}`);
+  }
+}
+
+function safeBrowserLaunchArgs(job) {
+  if (!Array.isArray(job.config.browser.args)) return [];
+  for (const arg of job.config.browser.args) assertSafeBrowserLaunchArg(arg);
+  return job.config.browser.args;
+}
+
+function chromeLaunchArgs(job, url) {
+  const args = [
+    "--remote-debugging-port=0",
+    "--remote-allow-origins=*",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-component-update",
+    "--disable-default-apps",
+    "--disable-hang-monitor",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-sync",
+    "--disable-features=Translate",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
+    "--metrics-recording-only",
+    "--password-store=basic",
+    "--use-mock-keychain",
+    "--enable-unsafe-swiftshader",
+    "--window-size=1280,720",
+    `--user-data-dir=${job.runtimeProfileDir}`,
+  ];
+  if (job.config.browser.runMode !== "headed") args.push("--headless=new", "--hide-scrollbars");
+  if (job.config.browser.userAgent) args.push(`--user-agent=${job.config.browser.userAgent}`);
+  args.push(...safeBrowserLaunchArgs(job));
+  args.push(url);
+  return args;
+}
+
+async function waitForDevToolsEndpoint(job) {
+  const path = join(job.runtimeProfileDir, "DevToolsActivePort");
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < CHROME_DEVTOOLS_READY_TIMEOUT_MS) {
+    if (browserProcessError) {
+      throw new Error(`Chrome failed before DevTools became available: ${browserProcessError instanceof Error ? browserProcessError.message : String(browserProcessError)}`);
+    }
+    if (browserProcess?.exitCode !== null && browserProcess?.exitCode !== undefined) {
+      throw new Error(`Chrome exited before DevTools became available (exit code ${browserProcess.exitCode}).`);
+    }
+    if (existsSync(path)) {
+      const lines = (await readFile(path, "utf8")).trim().split(/\r?\n/);
+      const port = lines[0]?.trim();
+      const browserPath = lines[1]?.trim();
+      if (/^\d+$/.test(port)) {
+        return browserPath ? `ws://127.0.0.1:${port}${browserPath}` : `http://127.0.0.1:${port}`;
+      }
+    }
+    await sleep(100);
+  }
+  throw new Error(`Timed out waiting for Chrome DevTools endpoint at ${path}.`);
+}
+
 async function launchBrowser(job, url) {
   await closeBrowser(job);
-  const mode = job.config.browser.runMode;
-  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]);
+  const executablePath = job.config.browser.executablePath;
+  if (!executablePath) throw new Error("Oracle requires browser.executablePath when launching isolated browser runtimes without owning the global agent-browser daemon.");
+  const args = chromeLaunchArgs(job, url);
+  await log(`Launching isolated Chrome directly for agent-browser attach: ${JSON.stringify([executablePath, ...args])}`);
+  browserProcessError = undefined;
+  browserProcess = spawn(executablePath, args, {
+    env: sweetCookieSafeStoragePasswordScrubbedEnv(),
+    stdio: "ignore",
+    detached: false,
+    shell: false,
+  });
+  browserProcess.on("error", (error) => {
+    browserProcessError = error;
+    log(`Chrome process error: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
+  });
+  const endpoint = await waitForDevToolsEndpoint(job);
+  await log(`Connecting agent-browser session ${job.runtimeSessionName} to isolated Chrome DevTools endpoint`);
+  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "connect", endpoint]);
+  await spawnCommand(AGENT_BROWSER_BIN, [...browserBaseArgs(job), "open", url]);
   browserStarted = true;
 }
 

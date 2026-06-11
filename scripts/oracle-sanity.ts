@@ -3937,6 +3937,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const browserProfileHelpersSource = await readFile(new URL("../extensions/oracle/shared/browser-profile-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
+  const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
@@ -3997,6 +3998,14 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(authBootstrapSource.includes("timed out after"), "auth bootstrap subprocess wrapper should report timeout failures clearly");
   assert(!authBootstrapSource.includes("scrubSweetCookieSafeStoragePasswordEnv"), "auth bootstrap should avoid mutating process.env while handling Sweet Cookie safe-storage overrides");
   assert(workerSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "worker helper subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
+  assert(workerSource.includes("Launching isolated Chrome directly for agent-browser attach"), "worker should launch the isolated Chrome runtime itself instead of depending on global agent-browser daemon launch options");
+  assert(workerSource.includes('"connect", endpoint'), "worker should attach agent-browser to the worker-owned Chrome DevTools endpoint so non-oracle sessions can remain active");
+  assert(workerSource.includes('"open", url'), "worker should navigate the connected oracle session without relaunch-scoped agent-browser flags after attaching to worker-owned Chrome");
+  assert(workerSource.includes("await terminateBrowserProcess()"), "worker should await worker-owned Chrome teardown before profile cleanup");
+  assert(workerSource.includes("Runtime profile cleanup skipped because isolated browser close did not complete"), "worker should not delete runtime profiles while its directly spawned browser may still be alive");
+  assert(workerSource.includes("browser.args cannot override oracle-managed Chrome launch isolation flag"), "worker should reject browser args that can override profile or DevTools isolation");
+  assert(!workerSource.includes('[...browserBaseArgs(job, { withLaunchOptions: true, mode }), "open", url]'), "worker should not launch oracle browsers through agent-browser open with launch-scoped flags that conflict with unrelated sessions");
+  assert(!runtimeSource.includes("assertNoForeignAgentBrowserSessions"), "submit preflight should not reject unrelated active agent-browser sessions now that worker-owned Chrome attach avoids global daemon takeover");
   assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv(spawnOptions.env)"), "auth bootstrap subprocesses should scrub safe-storage passwords while preserving caller-provided env vars");
   assert(browserProfileHelpersSource.includes('readFileSync(localStatePath, "utf8")'), "browser profile helpers should read Chromium Local State as utf8 text directly");
   assert(authBootstrapSource.includes("sweetCookieSafeStoragePasswordScrubbedEnv"), "auth bootstrap should still scrub Sweet Cookie safe-storage passwords from helper subprocess environments");
