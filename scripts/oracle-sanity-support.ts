@@ -348,6 +348,7 @@ export interface PiHarness extends ExtensionAPI {
   commands: Map<string, CommandDefinitionLike>;
   handlers: Map<string, (event: unknown, ctx: ExtensionContext) => unknown>;
   sentMessages: SentMessageLike[];
+  sentUserMessages: Array<{ content: unknown; options?: unknown }>;
 }
 
 export function createPiHarness(): PiHarness {
@@ -355,11 +356,13 @@ export function createPiHarness(): PiHarness {
   const commands = new Map<string, CommandDefinitionLike>();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const sentMessages: SentMessageLike[] = [];
+  const sentUserMessages: Array<{ content: unknown; options?: unknown }> = [];
   return {
     tools,
     commands,
     handlers,
     sentMessages,
+    sentUserMessages,
     registerTool(definition: ToolDefinitionLike) {
       tools.set(definition.name, definition);
     },
@@ -371,6 +374,9 @@ export function createPiHarness(): PiHarness {
     },
     sendMessage(message: SentMessageLike) {
       sentMessages.push(message);
+    },
+    sendUserMessage(content: unknown, options?: unknown) {
+      sentUserMessages.push({ content, options });
     },
   } as unknown as PiHarness;
 }

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.7.8 - 2026-06-11
+
+### Changed
+- updated the local pi development baseline to `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` `0.79.1` and regenerated the npm lockfile
+- documented `pi` `0.79.1+` as the suggested tested floor while keeping pi runtime packages as optional wildcard peers so npm peer ranges do not block users from trying newer pi releases
+- updated isolated local-extension and packed package validation workflows to pass explicit `--approve` when they intentionally trust their temporary project fixtures under Pi 0.79.1 project-trust rules
+- made TUI `/oracle` and `/oracle-followup` commands reappear as compact user messages for prompt-history/up-arrow recall while keeping verbose dispatch instructions hidden
+
+### Fixed
+- made project-local `.pi/extensions/oracle.json` overrides honor Pi's effective project trust decision (`ctx.isProjectTrusted()`), including `--no-approve` and saved “do not trust” decisions while preserving the historical default of loading safe project overrides for existing oracle users
+- updated ChatGPT model-selection handling for the current compact selector labels, including `Extra High`, `Pro Standard`, and `Pro Extended`
+- hardened ChatGPT/Grok send handling so oracle workers require provider acceptance evidence before entering `awaiting_response`, preventing unsent composer drafts from masquerading as running jobs
+- dismissed ChatGPT Pro feedback dialogs during model configuration instead of mistaking their generic `Close` control for configuration UI
+
+### Compatibility
+- reviewed the pi `0.79.1` changelog, project-trust docs, extension docs, package docs, prompt-template docs, SDK/RPC exports, and matching examples; the oracle extension remains compatible with current extension lifecycle and package install/update behavior
+
 ## 0.7.7 - 2026-06-08
 
 ### Changed

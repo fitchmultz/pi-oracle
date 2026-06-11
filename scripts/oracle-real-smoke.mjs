@@ -397,7 +397,9 @@ async function run(mode = "packed") {
     const agent1 = join(runDir, "agent1");
     const sessions1 = join(runDir, "sessions1");
     const jobs1 = join(runDir, "jobs1");
-    mkdirSync(join(agent1, "extensions", "oracle-auth-seed-profile"), { recursive: true });
+    const authSeed1 = join(agent1, "extensions", "oracle-auth-seed-profile");
+    mkdirSync(authSeed1, { recursive: true });
+    writeFileSync(join(authSeed1, ".oracle-seed-generation"), "real-smoke-fake-worker\n");
     mkdirSync(sessions1, { recursive: true });
     mkdirSync(jobs1, { recursive: true });
 
@@ -444,7 +446,9 @@ async function run(mode = "packed") {
       const sessions2 = join(runDir, "sessions2");
       const jobs2 = join(runDir, "jobs2");
       const outside = join(tmpRoot, "outside");
-      mkdirSync(join(agent2, "extensions", "oracle-auth-seed-profile"), { recursive: true });
+      const authSeed2 = join(agent2, "extensions", "oracle-auth-seed-profile");
+      mkdirSync(authSeed2, { recursive: true });
+      writeFileSync(join(authSeed2, ".oracle-seed-generation"), "real-smoke-fake-worker\n");
       mkdirSync(sessions2, { recursive: true });
       mkdirSync(jobs2, { recursive: true });
       mkdirSync(outside, { recursive: true });

@@ -1160,6 +1160,10 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
   ].filter(Boolean).join("\n");
 }
 
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+  return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
+}
+
 async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: unknown; followUpJobId?: unknown } = {}): Promise<OraclePreflightDetails> {
   const sessionFile = getSessionFile(ctx);
   if (!hasPersistedSessionFile(sessionFile)) {
@@ -1183,7 +1187,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
     if (followUpJobId !== undefined && typeof followUpJobId !== "string") {
       throw new Error("oracle_preflight followUpJobId must be a string");
     }
-    const baseConfig = loadOracleConfig(ctx.cwd);
+    const baseConfig = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isProjectTrusted(ctx) });
     const followUp = resolveFollowUp(followUpJobId, ctx.cwd);
     provider = normalizeOracleProvider(params.provider, followUp.provider ?? baseConfig.defaults.provider, "oracle_preflight");
     if (followUp.provider && provider !== followUp.provider) {
@@ -1273,9 +1277,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd });
+        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) });
         const provider = normalizeOracleProvider(params.provider, baseConfig.defaults.provider, "oracle_auth");
-        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd, provider);
+        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd, provider, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) });
         return {
           content: [{ type: "text" as const, text: message }],
           details: {
@@ -1320,7 +1324,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd });
+        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) });
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
         const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);

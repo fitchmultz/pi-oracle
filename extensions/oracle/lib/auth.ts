@@ -4,14 +4,14 @@
 // Usage: Imported by oracle commands and tools whenever the shared oracle auth seed profile must be refreshed.
 // Invariants/Assumptions: Auth bootstrap runs under the global reconcile lock when available, uses the effective oracle config for the current workspace root, and returns the worker's stdout/stderr message verbatim on success or failure.
 import { spawn } from "node:child_process";
-import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig, resolveOracleConfigForProvider, type OracleProvider } from "./config.js";
+import { formatOracleAuthConfigRemediation, formatOracleAuthConfigSummary, getOracleConfigLoadDetails, loadOracleConfig, resolveOracleConfigForProvider, type OracleConfigLoadOptions, type OracleProvider } from "./config.js";
 import { pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 
-export async function runOracleAuthBootstrap(authWorkerPath: string, cwd: string, provider?: OracleProvider): Promise<string> {
-  const baseConfig = loadOracleConfig(cwd);
+export async function runOracleAuthBootstrap(authWorkerPath: string, cwd: string, provider?: OracleProvider, configOptions?: OracleConfigLoadOptions): Promise<string> {
+  const baseConfig = loadOracleConfig(cwd, configOptions);
   const config = resolveOracleConfigForProvider(baseConfig, provider ?? baseConfig.defaults.provider);
-  const configLoad = getOracleConfigLoadDetails(cwd);
+  const configLoad = getOracleConfigLoadDetails(cwd, configOptions);
   const authConfigGuidance = {
     ...configLoad,
     remediation: formatOracleAuthConfigRemediation(configLoad),

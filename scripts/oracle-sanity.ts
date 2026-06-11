@@ -44,7 +44,7 @@ import {
   stripChatGptResponseChrome,
 } from "../extensions/oracle/worker/chatgpt-ui-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "../extensions/oracle/worker/auth-flow-helpers.mjs";
-import { assistantSnapshotSlice, isConversationPathUrl, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
+import { assistantSnapshotSlice, conversationIdFromUrl, isConversationPathUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "../extensions/oracle/worker/chatgpt-flow-helpers.mjs";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -1734,15 +1734,21 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
   const tuiCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], ui, process.cwd(), "tui");
   const handled = await inputHandler({ text: "/oracle Read README.md", source: "interactive" }, tuiCtx) as { action?: string };
   assert(handled?.action === "handled", "TUI /oracle input should be handled before prompt-template expansion");
-  const message = pi.sentMessages.at(-1);
-  assert(message?.display === false, "oracle input interceptor should hide verbose dispatch instructions from the visible transcript");
-  assert(String(message?.content || "").includes("Read README.md"), "oracle input interceptor should include the user request in hidden dispatch instructions");
+  assert(pi.sentUserMessages.at(-1)?.content === "/oracle Read README.md", "oracle input interceptor should reinject the compact user command so prompt history survives session reloads");
+  const beforeAgentStart = pi.handlers.get("before_agent_start");
+  assert(beforeAgentStart, "oracle extension should inject hidden dispatch instructions before the reinjected user command reaches the model");
+  const injection = await beforeAgentStart({ prompt: "/oracle Read README.md" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
+  const message = injection?.message;
+  assert(message?.display === false, "oracle before-agent injection should hide verbose dispatch instructions from the visible transcript");
+  assert(String(message?.content || "").includes("Read README.md"), "oracle before-agent injection should include the user request in hidden dispatch instructions");
   assert(ui.notifications.at(-1)?.message === "Preparing oracle job… running preflight", "oracle input interceptor should show compact user-facing status");
 
   const followupHandled = await inputHandler({ text: "/oracle-followup job-123 continue", source: "interactive" }, tuiCtx) as { action?: string };
   assert(followupHandled?.action === "handled", "TUI /oracle-followup input should be handled before prompt-template expansion");
-  const followupMessage = pi.sentMessages.at(-1);
-  assert(followupMessage?.display === false && String(followupMessage.content || "").includes("job-123 continue"), "oracle-followup interceptor should hide verbose dispatch instructions while preserving arguments");
+  assert(pi.sentUserMessages.at(-1)?.content === "/oracle-followup job-123 continue", "oracle-followup interceptor should reinject the compact user command for prompt history");
+  const followupInjection = await beforeAgentStart({ prompt: "/oracle-followup job-123 continue" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
+  const followupMessage = followupInjection?.message;
+  assert(followupMessage?.display === false && String(followupMessage.content || "").includes("job-123 continue"), "oracle-followup before-agent injection should hide verbose dispatch instructions while preserving arguments");
 
   const usageUi = createUiStub();
   const usageCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], usageUi, process.cwd(), "tui");
@@ -3573,6 +3579,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(indexSource.includes('["print", "json", "rpc"].includes(ctx.mode)'), "oracle prompt fallback should keep print/json/rpc prompt-template expansion available");
   assert(indexSource.includes('ctx.mode !== "tui"'), "oracle prompt interceptor should leave non-TUI modes to use prompt-template expansion");
   assert(indexSource.includes('display: false'), "oracle dispatch instructions should be injected as a hidden custom message");
+  assert(indexSource.includes('pi.sendUserMessage(formatOracleUserCommand'), "oracle TUI interceptor should persist the compact slash request as a real user message for prompt-history reloads");
+  assert(indexSource.includes('pi.on("before_agent_start"'), "oracle TUI interceptor should inject hidden dispatch instructions on the reinjected user-message turn");
   assert(indexSource.includes('Preparing oracle job… running preflight'), "oracle command should show compact user-facing status before hidden dispatch");
   assert(promptSource.includes("You are preparing an /oracle job."), "/oracle internal dispatch prompt should contain the oracle dispatch instructions");
   assert(followUpPromptSource.includes("You are preparing an `/oracle-followup` job."), "/oracle-followup prompt template should contain follow-up dispatch instructions");
@@ -3737,7 +3745,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
   assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
   assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
-  assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
+  assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
   assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
   assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath"), "oracle submit should build archives from the stable workspace-root cwd");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
@@ -3887,11 +3895,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.79.0", "package.json should use the current Pi 0.79.0 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.79.0", "package.json should use the current pi-ai 0.79.0 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "0.79.1", "package.json should use the current Pi 0.79.1 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "0.79.1", "package.json should use the current pi-ai 0.79.1 local development baseline");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
-  assert(readmeSource.includes("Pi `0.79.0+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.79.0 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.79.0+") || designSource.includes("`pi` 0.79.0+"), "design doc should name the current suggested Pi 0.79.0 compatibility floor");
+  assert(readmeSource.includes("Pi `0.79.1+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.79.1 floor without making it a hard peer requirement");
+  assert(designSource.includes("pi` 0.79.1+") || designSource.includes("`pi` 0.79.1+"), "design doc should name the current suggested Pi 0.79.1 compatibility floor");
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
@@ -4021,6 +4029,10 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(sharedObservabilitySource.includes("buildOracleWakeupNotificationContent"), "shared observability helpers should centralize wake-up notification formatting");
   assert(sharedObservabilitySource.includes("Response file: unavailable yet"), "shared observability helpers should avoid implying that failed jobs already have a response file when they do not");
   assert(heuristicsSource.includes("GENERIC_ARTIFACT_LABELS"), "artifact heuristics should preserve generic attachment labels");
+  assert(workerSource.includes("activateSendButton"), "worker should activate provider send through the page DOM instead of relying only on accessibility click refs");
+  assert(workerSource.includes("waitForSendAccepted"), "worker should verify that provider send actually leaves the composer before awaiting a response");
+  assert(workerSource.includes("send-not-accepted"), "worker should capture diagnostics when provider send activation does not submit the message");
+  assert(workerSource.includes("message did not leave the composer"), "worker should fail clearly instead of waiting forever when provider send is not accepted");
   assert(workerSource.includes("document.querySelector('main') || document.body"), "artifact capture should fall back when ChatGPT accessibility snapshots no longer expose ChatGPT-said headings");
   assert(workerSource.includes("downloadArtifactViaBrowserEval"), "artifact capture should use a browser-eval fallback for ChatGPT behavior buttons that do not emit standard browser downloads");
 }
@@ -5128,6 +5140,7 @@ function testChatGptUiHelpers(): void {
     '- menuitemradio "Pro 5+ min" [checked=true, ref=e112]',
     '- menuitem "GPT-5.5" [expanded=false, ref=e113]',
   ].join("\n");
+  assert(!snapshotHasModelConfigurationUi('- heading "Pro feedback" [level=2, ref=e1]\n- button "Close" [ref=e2]'), "Pro feedback dialogs should not be mistaken for model configuration UI just because they have a Close button");
   assert(snapshotHasModelConfigurationUi(compactProMenuSnapshot), "compact Intelligence menus should be recognized as model configuration UI");
   assert(
     snapshotHasModelConfigurationUi('- menu "IntelligenceInstant5sMedium5–30sHigh15–60sPro5+ minGPT-5.5" [ref=e108]'),
@@ -5147,6 +5160,31 @@ function testChatGptUiHelpers(): void {
     !snapshotStronglyMatchesRequestedModel(compactProMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
     "compact Pro selection should not verify thinking presets",
   );
+
+  const currentProEffortMenuSnapshot = [
+    '- button "Pro Extended" [expanded=true, ref=e106]',
+    '- menu "Pro Extended" [ref=e108]',
+    '- menuitemradio "Instant" [checked=false, ref=e109]',
+    '- menuitemradio "Medium" [checked=false, ref=e110]',
+    '- menuitemradio "High" [checked=false, ref=e111]',
+    '- menuitemradio "Extra High" [checked=false, ref=e112]',
+    '- menuitemradio "Pro Extended" [checked=true, ref=e113]',
+    '- menuitem "Pro effort options" [expanded=true, ref=e114]',
+    '- menuitemradio "Pro Standard" [checked=false, ref=e115]',
+    '- menuitemradio "Pro Extended" [checked=true, ref=e116]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(currentProEffortMenuSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "current Pro Extended menu selection should verify extended Pro presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(currentProEffortMenuSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "current Pro Extended menu selection should not verify standard Pro presets while Pro Standard is unchecked",
+  );
+  assert(!effortSelectionVisible(currentProEffortMenuSnapshot, "Standard"), "current Pro Extended menu selection should not satisfy Standard effort visibility");
+  assert(effortSelectionVisible(currentProEffortMenuSnapshot, "Extended"), "current Pro Extended menu selection should satisfy Extended effort visibility");
+  assert(matchesRequestedModelControlLabel("Pro Standard", { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }), "current Pro Standard controls should target standard Pro");
+  assert(!matchesRequestedModelControlLabel("Pro Extended", { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }), "current Pro Extended controls should not target standard Pro");
 
   const compactMediumMenuSnapshot = [
     '- button "Medium" [expanded=true, ref=e106]',
@@ -5182,12 +5220,32 @@ function testChatGptUiHelpers(): void {
     "compact High 15–60s selection should verify extended thinking presets",
   );
   assert(
-    snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
-    "compact High 15–60s selection should be the closest available target for heavy thinking presets",
+    !snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "compact High selection should not verify heavy thinking now that Extra High is available",
   );
   assert(
     !snapshotStronglyMatchesRequestedModel(compactHighMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
     "compact High 15–60s selection should not verify medium thinking presets",
+  );
+
+  const currentExtraHighMenuSnapshot = [
+    '- button "Extra High" [expanded=true, ref=e106]',
+    '- menu "Extra High" [ref=e108]',
+    '- menuitemradio "Instant" [checked=false, ref=e109]',
+    '- menuitemradio "Medium" [checked=false, ref=e110]',
+    '- menuitemradio "High" [checked=false, ref=e111]',
+    '- menuitemradio "Extra High" [checked=true, ref=e112]',
+    '- menuitemradio "Pro Extended" [checked=false, ref=e113]',
+    '- menuitem "GPT-5.5" [expanded=false, ref=e114]',
+  ].join("\n");
+  assert(snapshotHasModelConfigurationUi(currentExtraHighMenuSnapshot), "current ChatGPT model menu should be recognized without old duration suffixes");
+  assert(
+    snapshotStronglyMatchesRequestedModel(currentExtraHighMenuSnapshot, { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }),
+    "current Extra High menu selection should verify heavy thinking presets",
+  );
+  assert(
+    !snapshotStronglyMatchesRequestedModel(currentExtraHighMenuSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "current Extra High menu selection should not verify extended thinking presets",
   );
   assert(
     !effortSelectionVisible(compactHighMenuSnapshot, "Standard"),
@@ -5253,9 +5311,10 @@ function testChatGptUiHelpers(): void {
     !snapshotCanSafelySkipModelConfiguration('- button "Pro" [expanded=false, ref=e106]', { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
     "closed compact Pro composer pills should reopen configuration for effort-sensitive verification instead of blindly skipping",
   );
-  assert(matchesRequestedModelControlLabel("Medium 5–30s", { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }), "compact Medium controls should target standard thinking");
-  assert(matchesRequestedModelControlLabel("High 15–60s", { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }), "compact High controls should target extended thinking");
-  assert(matchesRequestedModelControlLabel("Pro 5+ min", { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }), "compact Pro controls should target extended Pro");
+  assert(matchesRequestedModelControlLabel("Medium", { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }), "current Medium controls should target standard thinking");
+  assert(matchesRequestedModelControlLabel("High", { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }), "current High controls should target extended thinking");
+  assert(matchesRequestedModelControlLabel("Extra High", { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }), "current Extra High controls should target heavy thinking");
+  assert(matchesRequestedModelControlLabel("Pro Extended", { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }), "current Pro Extended controls should target extended Pro");
 
   const allowedOrigins = buildAllowedChatGptOrigins("https://chatgpt.com/", "https://chatgpt.com/auth/login");
   assert(allowedOrigins.includes("https://chatgpt.com"), "allowed ChatGPT origins should include chatgpt.com");
@@ -5471,7 +5530,32 @@ function testChatGptFlowHelpers(): void {
   assert(stripUrlQueryAndHash("https://chatgpt.com/c/abc?model=gpt#section") === "https://chatgpt.com/c/abc", "conversation helpers should strip query/hash components from ChatGPT URLs");
   assert(isConversationPathUrl("https://chatgpt.com/c/abc-123"), "conversation helpers should recognize ChatGPT conversation URLs");
   assert(isConversationPathUrl("https://grok.com/chat/abc-123"), "conversation helpers should recognize Grok conversation URLs");
+  assert(conversationIdFromUrl("https://grok.com/chat/grok-abc") === "grok-abc", "conversation helpers should parse provider conversation ids from /chat URLs");
   assert(!isConversationPathUrl("https://chatgpt.com/gpts"), "conversation helpers should reject non-conversation ChatGPT routes");
+  assert(
+    providerSendAccepted({ url: "https://chatgpt.com/", assistantCount: 0, stopStreaming: false }, { url: "https://chatgpt.com/c/abc", assistantCount: 0, stopStreaming: false }),
+    "provider send acceptance should accept a new conversation URL transition",
+  );
+  assert(
+    !providerSendAccepted({ url: "https://chatgpt.com/c/abc", assistantCount: 1, stopStreaming: false }, { url: "https://chatgpt.com/c/abc", assistantCount: 1, stopStreaming: false }),
+    "provider send acceptance should reject unchanged existing conversation URLs without new response evidence",
+  );
+  assert(
+    !providerSendAccepted({ url: "", urlKnown: false, assistantCount: 1, stopStreaming: false }, { url: "https://chatgpt.com/c/abc", assistantCount: 1, stopStreaming: false }),
+    "provider send acceptance should reject URL-only evidence when the pre-send URL was not known",
+  );
+  assert(
+    providerSendAccepted({ url: "https://chatgpt.com/c/abc", assistantCount: 1, stopStreaming: false }, { url: "https://chatgpt.com/c/abc", assistantCount: 1, stopStreaming: true }),
+    "provider send acceptance should accept stop-streaming transitions on existing conversations",
+  );
+  assert(
+    providerSendAccepted({ url: "https://chatgpt.com/c/abc", assistantCount: 1, stopStreaming: false }, { url: "https://chatgpt.com/c/abc", assistantCount: 2, stopStreaming: false }),
+    "provider send acceptance should accept assistant-count increases on existing conversations",
+  );
+  assert(
+    providerSendAccepted({ url: "https://grok.com/chat/abc", assistantCount: 1, stopStreaming: false }, { url: "https://grok.com/chat/def", assistantCount: 1, stopStreaming: false }),
+    "provider send acceptance should accept provider conversation id changes",
+  );
   assert(
     resolveStableConversationUrlCandidate("https://chatgpt.com/c/abc?model=gpt", undefined) === "https://chatgpt.com/c/abc",
     "conversation helpers should normalize direct conversation URLs into stable candidates",

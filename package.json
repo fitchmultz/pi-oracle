@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "description": "ChatGPT and Grok web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
@@ -80,8 +80,8 @@
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.79.0",
-    "@earendil-works/pi-coding-agent": "^0.79.0",
+    "@earendil-works/pi-ai": "0.79.1",
+    "@earendil-works/pi-coding-agent": "0.79.1",
     "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",

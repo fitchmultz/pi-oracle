@@ -29,6 +29,10 @@ function oracleReadinessFromError(error: unknown): "auth_needed" | "config_error
   return /auth seed profile/i.test(message) ? "auth_needed" : "config_error";
 }
 
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+  return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
+}
+
 function expandOraclePromptTemplate(source: string, args: string): string {
   return source.replaceAll("$@", args).replaceAll("$ARGUMENTS", args);
 }
@@ -37,6 +41,19 @@ function parseOracleInput(text: string): { command: "oracle" | "oracle-followup"
   const match = text.match(/^\/(oracle(?:-followup)?)(?:\s+([\s\S]*))?$/);
   if (!match) return undefined;
   return { command: match[1] as "oracle" | "oracle-followup", args: (match[2] ?? "").trim() };
+}
+
+function formatOracleUserCommand(command: "oracle" | "oracle-followup", args: string): string {
+  return `/${command} ${args}`;
+}
+
+function oracleDispatchMessage(command: "oracle" | "oracle-followup", args: string, template: string) {
+  return {
+    customType: "oracle-dispatch-request",
+    content: expandOraclePromptTemplate(template, args),
+    display: false,
+    details: { command, userRequest: args },
+  };
 }
 
 export default function oracleExtension(pi: ExtensionAPI) {
@@ -77,7 +94,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const config = loadOracleConfig(ctx.cwd);
+      const config = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isProjectTrusted(ctx) });
       setOracleReadiness(ctx, "loaded");
       void assertOracleSubmitPrerequisites(config)
         .then(() => setOracleReadiness(ctx, "ready"))
@@ -103,6 +120,14 @@ export default function oracleExtension(pi: ExtensionAPI) {
     return ["print", "json", "rpc"].includes(ctx.mode) ? { promptPaths: [promptDir] } : undefined;
   });
 
+  pi.on("before_agent_start", async (event) => {
+    const parsed = parseOracleInput(event.prompt);
+    if (!parsed?.args || (parsed.command === "oracle-followup" && !/^\S+\s+\S/.test(parsed.args))) return;
+    const template = parsed.command === "oracle" ? oraclePrompt : oracleFollowupPrompt;
+    if (!template?.trim()) return;
+    return { message: oracleDispatchMessage(parsed.command, parsed.args, template) };
+  });
+
   pi.on("input", (event, ctx) => {
     if (ctx.mode !== "tui" || event.source !== "interactive") return { action: "continue" };
     const parsed = parseOracleInput(event.text);
@@ -117,15 +142,8 @@ export default function oracleExtension(pi: ExtensionAPI) {
       return { action: "handled" };
     }
     ctx.ui.notify("Preparing oracle job… running preflight", "info");
-    pi.sendMessage(
-      {
-        customType: "oracle-dispatch-request",
-        content: expandOraclePromptTemplate(template, parsed.args),
-        display: false,
-        details: { command: parsed.command, userRequest: parsed.args },
-      },
-      { triggerTurn: true },
-    );
+    const delivery = event.streamingBehavior ? { deliverAs: event.streamingBehavior } : undefined;
+    pi.sendUserMessage(formatOracleUserCommand(parsed.command, parsed.args), delivery);
     return { action: "handled" };
   });
 

@@ -29,9 +29,9 @@ const AUTO_SWITCH_LABEL = "Auto-switch to Thinking";
 const THINKING_EFFORT_COMBOBOX_LABEL = "Thinking effort";
 const PRO_THINKING_EFFORT_COMBOBOX_LABEL = "Pro thinking effort";
 const EFFORT_LABELS = new Set(["Light", "Standard", "Extended", "Heavy"]);
-const COMPACT_INTELLIGENCE_MENU_PATTERN = /Intelligence.*Instant.*Medium.*High.*Pro/i;
-const COMPACT_INTELLIGENCE_CONTROL_PATTERN = /^(?:Instant(?:\s+5s)?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Pro(?:\s+5\+\s*min)?)$/i;
-const COMPACT_INTELLIGENCE_OPENER_PATTERN = /^(?:Instant|Medium|High|Pro)$/i;
+const COMPACT_INTELLIGENCE_MENU_PATTERN = /(?:Intelligence.*Instant.*Medium.*High.*Pro|^(?:Instant|Medium|High|Extra High|Pro Standard|Pro Extended)$)/i;
+const COMPACT_INTELLIGENCE_CONTROL_PATTERN = /^(?:Instant(?:\s+5s)?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Extra High|Pro\s+5\+\s*min|Pro Standard|Pro Extended)$/i;
+const COMPACT_INTELLIGENCE_OPENER_PATTERN = /^(?:Instant|Medium|High|Extra High|Pro|Pro Standard|Pro Extended)$/i;
 const BARE_EFFORT_PATTERN = /^(light|standard|extended|heavy)(?:, click to remove)?$/i;
 const INSTANT_CHIP_PATTERN = /^instant(?:, click to remove)?$/i;
 const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
@@ -160,6 +160,14 @@ function parseComposerChipSelection(label) {
     };
   }
 
+  const proPrefixedEffortMatch = normalized.match(/^pro\s+(standard|extended)$/i);
+  if (proPrefixedEffortMatch) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (proPrefixedEffortMatch[1].toLowerCase()),
+    };
+  }
+
   const proMatch = normalized.match(PRO_CHIP_PATTERN);
   if (proMatch) {
     return {
@@ -196,7 +204,22 @@ function parseCompactIntelligenceSelection(label) {
       compactTier: "high",
     };
   }
-  if (/^Pro(?:\s+5\+\s*min)?$/i.test(normalized)) {
+  if (/^Extra High$/i.test(normalized)) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("thinking"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ ("heavy"),
+      compactTier: "extra-high",
+    };
+  }
+  const proEffortMatch = normalized.match(/^Pro\s+(Standard|Extended)$/i);
+  if (proEffortMatch) {
+    return {
+      modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
+      effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (proEffortMatch[1].toLowerCase()),
+      compactTier: "pro",
+    };
+  }
+  if (/^Pro\s+5\+\s*min$/i.test(normalized)) {
     return {
       modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
       compactTier: "pro",
@@ -214,7 +237,7 @@ function hasRemovableComposerModelChip(entries) {
 
 function hasCompactIntelligenceMenuContext(entries) {
   return entries.some((entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)))
-    || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && /\d/.test(String(entry.label || "")) && parseCompactIntelligenceSelection(entry.label));
+    || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && parseCompactIntelligenceSelection(entry.label));
 }
 
 function hasLegacyEffortCombobox(entries) {
@@ -227,7 +250,6 @@ function hasLegacyEffortCombobox(entries) {
 
 function compactSelectionFromEntry(entry, _entries, _options = {}) {
   if (entry.disabled || !COMPACT_INTELLIGENCE_CONTROL_KINDS.has(entry.kind || "")) return undefined;
-  if (!/\d/.test(String(entry.label || ""))) return undefined;
   return parseCompactIntelligenceSelection(entry.label);
 }
 
@@ -241,14 +263,16 @@ function compactSelectionMatchesRequested(selection, compactSelection) {
   }
 
   if (selection.modelFamily === "pro") {
-    // The compact picker exposes one Pro tier instead of separate Pro efforts.
-    return compactSelection.compactTier === "pro";
+    if (compactSelection.compactTier !== "pro") return false;
+    if (!compactSelection.effort) return true;
+    return compactSelection.effort === (selection.effort || "standard");
   }
 
   if (selection.modelFamily === "thinking") {
     const requestedEffort = selection.effort || "standard";
     if (compactSelection.compactTier === "medium") return requestedEffort === "light" || requestedEffort === "standard";
-    if (compactSelection.compactTier === "high") return requestedEffort === "extended" || requestedEffort === "heavy";
+    if (compactSelection.compactTier === "high") return requestedEffort === "extended";
+    if (compactSelection.compactTier === "extra-high") return requestedEffort === "heavy";
   }
 
   return false;
@@ -369,7 +393,7 @@ export function effortSelectionVisible(snapshot, effortLabel) {
     if (compactSelection?.modelFamily === "thinking") {
       return compactSelectionMatchesRequested({ modelFamily: "thinking", effort: /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiEffort} */ (normalizedEffort), autoSwitchToThinking: false }, compactSelection);
     }
-    if (compactSelection?.modelFamily === "pro") return true;
+    if (compactSelection?.modelFamily === "pro") return !compactSelection.effort || compactSelection.effort === normalizedEffort;
     if (entry.kind === "combobox" && normalizeText(entry.value).toLowerCase() === normalizedEffort) return true;
     const chipSelection = entry.kind === "button" ? parseComposerChipSelection(entry.label) : undefined;
     if (chipSelection?.effort === normalizedEffort) return true;
@@ -411,17 +435,16 @@ export function snapshotHasModelConfigurationUi(snapshot) {
       ),
   );
   const visibleCompactControls = entries.filter(
-    (entry) => !entry.disabled && entry.kind === "menuitemradio" && /\d/.test(String(entry.label || "")) && parseCompactIntelligenceSelection(entry.label),
+    (entry) => !entry.disabled && entry.kind === "menuitemradio" && parseCompactIntelligenceSelection(entry.label),
   );
   const hasCompactIntelligenceMenu = entries.some(
     (entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)),
   );
-  const hasCloseButton = entries.some((entry) => entry.kind === "button" && entry.label === "Close" && !entry.disabled);
   const hasIntelligenceHeading = entries.some((entry) => entry.kind === "heading" && normalizeText(entry.label) === "Intelligence" && !entry.disabled);
   const hasEffortCombobox = entries.some(
     (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,
   );
-  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasCloseButton || hasIntelligenceHeading || hasEffortCombobox;
+  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasIntelligenceHeading || hasEffortCombobox;
 }
 
 /**

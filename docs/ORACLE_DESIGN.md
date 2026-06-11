@@ -7,7 +7,7 @@ Companion doc:
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
 
 Compatibility target:
-- `pi` 0.79.0+ is the suggested tested floor for current project-trust-aware package/runtime validation
+- `pi` 0.79.1+ is the suggested tested floor for current project-trust-aware package/runtime validation
 - package metadata keeps pi runtime packages as optional wildcard peers, so this suggested floor is not enforced as a hard npm install requirement
 - current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 
@@ -107,7 +107,7 @@ The extension now follows the current `pi` session lifecycle model:
 ### `/oracle ...`
 
 `/oracle <request>` should not directly drive ChatGPT or Grok.
-In TUI mode, the extension intercepts it before prompt-template expansion, injects hidden dispatch instructions, and shows only compact user-facing status before the agent starts work. In print/json/rpc modes, the extension exposes the prompt template so one-shot `/oracle` still expands and runs normally.
+In TUI mode, the extension intercepts it before prompt-template expansion, re-injects the compact slash request as the visible user message so prompt-history/up-arrow recall survives session reloads, injects hidden dispatch instructions before the agent starts, and shows only compact user-facing status. In print/json/rpc modes, the extension exposes the prompt template so one-shot `/oracle` still expands and runs normally.
 
 It instructs the agent to:
 
@@ -230,7 +230,7 @@ Merged config locations:
 - global: `~/.pi/agent/extensions/oracle.json`
 - project: `.pi/extensions/oracle.json`
 
-Project config remains restricted to safe overrides only. On Pi 0.79.0+, pi itself gates project-local inputs behind project trust, but `pi-oracle` keeps its historical risk-on extension behavior for this package-specific safe override file: `.pi/extensions/oracle.json` loads by default for compatibility, and is ignored only when the run passes `--no-approve` or the project has a saved “do not trust” decision. This preserves the existing extension experience while still honoring explicit opt-out/distrust decisions. Browser/auth settings remain global-only because they control local privileged browser state.
+Project config remains restricted to safe overrides only. On Pi 0.79.1+, pi itself gates project-local inputs behind project trust, but `pi-oracle` keeps its historical risk-on extension behavior for this package-specific safe override file: `.pi/extensions/oracle.json` loads by default for compatibility, and is ignored when Pi reports the project is untrusted, including `--no-approve` or saved “do not trust” decisions. This preserves the existing extension experience while still honoring explicit opt-out/distrust decisions. Browser/auth settings remain global-only because they control local privileged browser state.
 
 ### Current config shape
 
@@ -632,6 +632,9 @@ Remaining non-blocking hardening work:
 - keep hardening model-selection verification against future ChatGPT UI variation
 
 Recent proof points:
+- Pi 0.79.1 release gate: `npm run release:check` passed on 2026-06-11 after the project-trust, prompt-history, ChatGPT selector, and send-acceptance updates, including `verify:oracle` plus Crabbox macOS, Ubuntu, and Windows native `platform-build` and `real-extension` suites
+- Pi 0.79.1 platform artifacts: `.artifacts/platform-smoke/run-1781196218405-311wzs` (macOS platform-build), `.artifacts/platform-smoke/run-1781196261807-eb0391` (macOS real-extension), `.artifacts/platform-smoke/run-1781196230636-ze1hai` (Ubuntu platform-build), `.artifacts/platform-smoke/run-1781196265638-kxiwh9` (Ubuntu real-extension), `.artifacts/platform-smoke/run-1781196255488-ucuf35` (Windows native platform-build), `.artifacts/platform-smoke/run-1781196369098-4qlzjs` (Windows native real-extension)
+- Pi 0.79.1 live source-extension send-acceptance smoke: new-chat job `4b98776f-d422-4bfb-8a6a-7aef73c31bf6` reached `https://chatgpt.com/c/6a2ac99d-fc5c-83e8-88d7-5e1e8f427499` and completed; same-thread follow-up job `abb4f590-96a1-4aab-b91a-c0a7cc15a162` completed on the unchanged conversation URL after send-acceptance evidence
 - Pi 0.79.0 release gate: `npm run release:check` passed on 2026-06-08, including `verify:oracle` plus Crabbox macOS, Ubuntu, and Windows native `platform-build` and `real-extension` suites
 - Pi 0.79.0 platform artifacts: `.artifacts/platform-smoke/run-1780938522145-50q2f2` (macOS platform-build), `.artifacts/platform-smoke/run-1780938572090-bi87g5` (macOS real-extension), `.artifacts/platform-smoke/run-1780938542847-quridb` (Ubuntu platform-build), `.artifacts/platform-smoke/run-1780938587248-c8uo4c` (Ubuntu real-extension), `.artifacts/platform-smoke/run-1780938585007-l0xapp` (Windows native platform-build), `.artifacts/platform-smoke/run-1780938820527-c1j8tt` (Windows native real-extension)
 - Pi 0.79.0 isolated local-extension model-agent smoke: `.artifacts/real-smoke/run-1780935835596-pfbn5o` passed with `PI_ORACLE_REAL_TEST_MODEL_AGENT=1 npm run smoke:real:source`

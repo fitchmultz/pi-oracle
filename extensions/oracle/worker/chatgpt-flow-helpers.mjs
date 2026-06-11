@@ -5,6 +5,7 @@
 // Invariants/Assumptions: Snapshot text comes from agent-browser `snapshot -i`; URL inputs may be malformed and must fail safely.
 
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleStableValueState} OracleStableValueState */
+/** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleSendAcceptanceState} OracleSendAcceptanceState */
 
 /**
  * @param {string} snapshot
@@ -52,11 +53,37 @@ export function stripUrlQueryAndHash(url) {
  * @returns {boolean}
  */
 export function isConversationPathUrl(url) {
+  return Boolean(conversationIdFromUrl(url));
+}
+
+/**
+ * @param {string | undefined} url
+ * @returns {string | undefined}
+ */
+export function conversationIdFromUrl(url) {
+  if (typeof url !== "string" || !url.trim()) return undefined;
   try {
-    return /\/(?:c|chat)\/[A-Za-z0-9-]+$/i.test(new URL(url).pathname);
+    const match = new URL(url).pathname.match(/\/(?:c|chat)\/([A-Za-z0-9-]+)$/i);
+    return match?.[1];
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * @param {OracleSendAcceptanceState} before
+ * @param {OracleSendAcceptanceState} after
+ * @returns {boolean}
+ */
+export function providerSendAccepted(before, after) {
+  const beforeUrlKnown = before.urlKnown !== false;
+  const afterUrlKnown = after.urlKnown !== false;
+  const beforeConversationId = beforeUrlKnown ? conversationIdFromUrl(before.url) : undefined;
+  const afterConversationId = afterUrlKnown ? conversationIdFromUrl(after.url) : undefined;
+  if (beforeUrlKnown && afterUrlKnown && afterConversationId && afterConversationId !== beforeConversationId) return true;
+  if ((after.assistantCount ?? 0) > (before.assistantCount ?? 0)) return true;
+  if (after.stopStreaming === true && before.stopStreaming !== true) return true;
+  return false;
 }
 
 /**

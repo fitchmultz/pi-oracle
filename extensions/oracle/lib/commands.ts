@@ -79,6 +79,10 @@ function parseOracleAuthProvider(args: string): OracleProvider | undefined {
   throw new Error("Usage: /oracle-auth [chatgpt|grok]");
 }
 
+function isProjectTrusted(ctx: ExtensionCommandContext): boolean {
+  return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
+}
+
 function emitCommandOutput(ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
   if (ctx.mode === "print") {
     process.stdout.write(`${message}\n`);
@@ -95,7 +99,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         const provider = parseOracleAuthProvider(args);
         const providerLabel = provider === "grok" ? "Grok" : provider === "chatgpt" ? "ChatGPT" : "configured provider";
         emitCommandOutput(ctx, `Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
-        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider);
+        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider, { projectConfigTrusted: isProjectTrusted(ctx) });
         emitCommandOutput(ctx, result, "info");
       } catch (error) {
         emitCommandOutput(ctx, error instanceof Error ? error.message : String(error), "warning");

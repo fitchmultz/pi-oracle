@@ -27,9 +27,9 @@ The extension is loaded from the local checkout with:
 pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts"
 ```
 
-That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79.0+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
+That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79.1+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
 
-The local extension now intercepts TUI `/oracle` and `/oracle-followup` before prompt-template expansion and reads the in-repo prompt files as hidden dispatch instructions, so do not pass `--prompt-template` for normal local-extension validation. In print/json/rpc modes, the extension contributes the prompt templates itself.
+The local extension now intercepts TUI `/oracle` and `/oracle-followup` before prompt-template expansion, re-injects the compact slash request as the visible user message for prompt-history/up-arrow recall, and reads the in-repo prompt files as hidden dispatch instructions, so do not pass `--prompt-template` for normal local-extension validation. In print/json/rpc modes, the extension contributes the prompt templates itself.
 
 Do not add `https://github.com/fitchmultz/pi-oracle` to this repository's `.pi/settings.json` just to test local oracle changes. If you already keep `npm:pi-oracle` installed globally, mixing the global npm package with a project-local git package creates two distinct package identities and can trigger prompt/tool conflicts. Use the explicit CLI extension flag above instead.
 

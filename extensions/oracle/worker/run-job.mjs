@@ -30,13 +30,14 @@ import {
   effortSelectionVisible,
   snapshotCanSafelySkipModelConfiguration,
   snapshotHasModelConfigurationUi,
+  snapshotHasModelOpener,
   snapshotHasUsableComposerControls,
   snapshotStronglyMatchesRequestedModel,
   snapshotWeaklyMatchesRequestedModel,
   autoSwitchToThinkingSelectionVisible,
   stripChatGptResponseChrome,
 } from "./chatgpt-ui-helpers.mjs";
-import { assistantSnapshotSlice, nextStableValueState, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { assistantSnapshotSlice, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
@@ -784,8 +785,8 @@ function snapshotHasCompactIntelligenceMenuControls(snapshot) {
   return Boolean(findEntry(snapshot, (candidate) => {
     if (candidate.disabled) return false;
     const label = normalizeSnapshotLabel(candidate.label);
-    return (candidate.kind === "menu" && /Intelligence.*Instant.*Medium.*High.*Pro/i.test(label))
-      || (candidate.kind === "menuitemradio" && /^(?:Instant\s+5s|Medium\s+5\s*[–-]\s*30s|High\s+15\s*[–-]\s*60s|Pro\s+5\+\s*min)$/i.test(label));
+    return (candidate.kind === "menu" && /(?:Intelligence.*Instant.*Medium.*High.*Pro|^(?:Instant|Medium|High|Extra High|Pro Extended)$)/i.test(label))
+      || (candidate.kind === "menuitemradio" && /^(?:Instant(?:\s+5s)?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Extra High|Pro\s+5\+\s*min|Pro Standard|Pro Extended)$/i.test(label));
   }));
 }
 
@@ -793,9 +794,10 @@ function matchesRequestedModelControl(candidate, selection, options = {}) {
   if (!["button", "radio", "menuitemradio"].includes(candidate.kind || "") || typeof candidate.label !== "string" || candidate.disabled) return false;
   if (candidate.kind === "button") {
     if (/\bexpanded=true\b/.test(String(candidate.line || ""))) return false;
-    if (options.ignoreCompactTierButtons && /^(?:Instant|Medium|High|Pro)$/i.test(candidate.label)) return false;
-    if (options.ignoreCompactOnlyButtons && /^(?:Medium|High)$/i.test(candidate.label)) return false;
+    if (options.ignoreCompactTierButtons && /^(?:Instant|Medium|High|Extra High|Pro|Pro Extended)$/i.test(candidate.label)) return false;
+    if (options.ignoreCompactOnlyButtons && /^(?:Medium|High|Extra High)$/i.test(candidate.label)) return false;
   }
+  if (selection.modelFamily === "pro" && /^Pro(?:\s+Extended)?$/i.test(candidate.label)) return true;
   return matchesRequestedModelControlLabel(candidate.label, selection);
 }
 
@@ -869,7 +871,41 @@ async function maybeClickLabeledEntry(job, label, options = {}) {
 }
 
 async function openEffortDropdown(job) {
-  const snapshot = await snapshotText(job);
+  let snapshot = await snapshotText(job);
+  if (job.selection?.modelFamily === "pro") {
+    let proEffortEntry = findEntry(
+      snapshot,
+      (candidate) => candidate.kind === "menuitem" && candidate.label === "Pro effort options" && !candidate.disabled,
+    );
+    if (!proEffortEntry) {
+      const opener = findEntry(snapshot, matchesModelConfigurationOpener);
+      if (opener) {
+        await clickRef(job, opener.ref);
+        await agentBrowser(job, "wait", "500");
+        snapshot = await snapshotText(job);
+        proEffortEntry = findEntry(
+          snapshot,
+          (candidate) => candidate.kind === "menuitem" && candidate.label === "Pro effort options" && !candidate.disabled,
+        );
+      }
+    }
+    if (proEffortEntry) {
+      try {
+        await clickRef(job, proEffortEntry.ref);
+        return true;
+      } catch {
+        // Fall through to DOM click. ChatGPT's tiny trailing Pro effort icon can
+        // be covered at the accessibility click point by the parent Pro row.
+      }
+    }
+    const clicked = await evalPage(job, toJsonScript(`
+      const el = document.querySelector('[aria-label="Pro effort options"], [data-composer-intelligence-pro-effort-action]');
+      if (!el) return false;
+      el.click();
+      return true;
+    `));
+    if (clicked) return true;
+  }
   const effortLabels = new Set(["Light", "Standard", "Extended", "Heavy"]);
   const entry = findEntry(
     snapshot,
@@ -1167,46 +1203,128 @@ async function waitForSendReady(job) {
   throw new Error(`Timed out waiting for ${labelsForJob(job).send} to become enabled`);
 }
 
-async function clickSend(job) {
-  const entry = await waitForSendReady(job);
-  if (isGrokJob(job)) {
-    const result = await evalPage(job, toJsonScript(`
-      const button = document.querySelector('button[aria-label="Submit"]');
-      if (!button || button.disabled) return { ok: false };
-      button.click();
-      return { ok: true };
-    `));
-    if (result?.ok) return;
+async function activateSendButton(job) {
+  const result = await evalPage(job, toJsonScript(`
+    const labels = ${JSON.stringify(labelsForJob(job))};
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const button = buttons.find((candidate) => {
+      const label = (candidate.getAttribute('aria-label') || candidate.textContent || '').trim();
+      return label === labels.send;
+    });
+    if (!button) return { ok: false, reason: 'send button not found' };
+    if (button.disabled || button.getAttribute('aria-disabled') === 'true') return { ok: false, reason: 'send button disabled' };
+    button.click();
+    return { ok: true };
+  `));
+  return result;
+}
+
+async function sendAcceptanceState(job, baselineAssistantCount) {
+  const [urlResult, snapshot, messages] = await Promise.all([
+    currentUrl(job).then((url) => ({ url, ok: true })).catch(() => ({ url: "", ok: false })),
+    snapshotText(job).catch(() => ""),
+    assistantMessages(job).catch(() => []),
+  ]);
+  return {
+    url: urlResult.url,
+    urlKnown: urlResult.ok,
+    assistantCount: Math.max(baselineAssistantCount, messages.length),
+    stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming"),
+  };
+}
+
+async function clickSend(job, baselineAssistantCount) {
+  await waitForSendReady(job);
+  const beforeSend = await sendAcceptanceState(job, baselineAssistantCount);
+  const activation = await activateSendButton(job);
+  if (!activation?.ok) throw new Error(`Could not activate ${labelsForJob(job).send}: ${activation?.reason || "DOM activation failed"}`);
+  await log(`Activated ${labelsForJob(job).send}; waiting for provider acceptance evidence`);
+  if (await waitForSendAccepted(job, beforeSend, { timeoutMs: 20_000 })) return;
+
+  await captureDiagnostics(job, "send-not-accepted");
+  throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} message did not leave the composer after activating ${labelsForJob(job).send}`);
+}
+
+async function waitForSendAccepted(job, beforeSend, options = {}) {
+  const timeoutAt = Date.now() + (options.timeoutMs || 15_000);
+  while (Date.now() < timeoutAt) {
+    await heartbeat();
+    const afterSend = await sendAcceptanceState(job, beforeSend.assistantCount || 0);
+    if (providerSendAccepted(beforeSend, afterSend)) return true;
+    await sleep(500);
   }
-  await clickRef(job, entry.ref);
+  return false;
+}
+
+async function dismissProFeedbackModal(job, snapshot) {
+  const entries = parseSnapshotEntries(snapshot);
+  const hasProFeedback = entries.some((entry) => entry.kind === "heading" && entry.label === "Pro feedback" && !entry.disabled);
+  if (!hasProFeedback) return false;
+  const close = entries.find((entry) => entry.kind === "button" && entry.label === CHATGPT_LABELS.close && !entry.disabled);
+  if (close) {
+    await clickRef(job, close.ref).catch(() => undefined);
+    await agentBrowser(job, "wait", "500");
+    if (!(await pageText(job).catch(() => "")).includes("Pro feedback")) return true;
+  }
+  await agentBrowser(job, "press", "Escape").catch(() => undefined);
+  await agentBrowser(job, "wait", "500");
+  if (!(await pageText(job).catch(() => "")).includes("Pro feedback")) return true;
+
+  const dismissed = await evalPage(job, toJsonScript(`
+    const dialogText = document.body.innerText || '';
+    if (!/Pro feedback/.test(dialogText)) return false;
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => (candidate.getAttribute('aria-label') || candidate.textContent || '').trim() === 'Close');
+    if (!button) return false;
+    button.click();
+    return true;
+  `));
+  if (dismissed) await agentBrowser(job, "wait", "500");
+  return Boolean(dismissed);
 }
 
 async function openModelConfiguration(job) {
-  const initialSnapshot = await snapshotText(job);
-  if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
+  const timeoutAt = Date.now() + 15_000;
+  let lastSnapshot = "";
 
-  for (const predicate of [matchesModelConfigurationOpener]) {
-    const snapshot = await snapshotText(job);
-    const entry = findEntry(snapshot, predicate);
-    if (!entry) continue;
-    await clickRef(job, entry.ref);
-    await agentBrowser(job, "wait", "800");
-    const after = await snapshotText(job);
-    if (snapshotHasModelConfigurationUi(after)) return after;
-    if (canUseOpenModelMenuForSelection(after, job.selection)) return after;
+  while (Date.now() < timeoutAt) {
+    const initialSnapshot = await snapshotText(job);
+    lastSnapshot = initialSnapshot;
+    if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
+    if (await dismissProFeedbackModal(job, initialSnapshot)) continue;
 
-    const configureEntry = findEntry(
-      after,
-      (candidate) => candidate.kind === "menuitem" && candidate.label === CHATGPT_LABELS.configure && !candidate.disabled,
-    );
+    for (const predicate of [matchesModelConfigurationOpener]) {
+      const snapshot = await snapshotText(job);
+      lastSnapshot = snapshot;
+      const entry = findEntry(snapshot, predicate);
+      if (!entry) continue;
+      await clickRef(job, entry.ref);
+      await agentBrowser(job, "wait", "800");
+      const after = await snapshotText(job);
+      lastSnapshot = after;
+      if (snapshotHasModelConfigurationUi(after)) return after;
+      if (canUseOpenModelMenuForSelection(after, job.selection)) return after;
 
-    if (configureEntry) {
-      await clickRef(job, configureEntry.ref);
-      await agentBrowser(job, "wait", "1200");
-      const postConfigure = await snapshotText(job);
-      if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
-      if (canUseOpenModelMenuForSelection(postConfigure, job.selection)) return postConfigure;
+      const configureEntry = findEntry(
+        after,
+        (candidate) => candidate.kind === "menuitem" && candidate.label === CHATGPT_LABELS.configure && !candidate.disabled,
+      );
+
+      if (configureEntry) {
+        await clickRef(job, configureEntry.ref);
+        await agentBrowser(job, "wait", "1200");
+        const postConfigure = await snapshotText(job);
+        lastSnapshot = postConfigure;
+        if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
+        if (canUseOpenModelMenuForSelection(postConfigure, job.selection)) return postConfigure;
+      }
     }
+
+    if (composerControlsVisible(lastSnapshot, job) && !snapshotHasModelOpener(lastSnapshot)) {
+      await agentBrowser(job, "wait", "1000");
+      continue;
+    }
+    await agentBrowser(job, "wait", "500");
   }
 
   throw new Error("Could not open model configuration UI");
@@ -1313,7 +1431,11 @@ async function configureModel(job) {
         throw new Error(`Could not open effort dropdown for requested effort: ${effortLabel}`);
       }
       await agentBrowser(job, "wait", "300");
-      await clickLabeledEntry(job, effortLabel, { kind: "option" });
+      if (job.selection.modelFamily === "pro" && await maybeClickLabeledEntry(job, `Pro ${effortLabel}`, { kind: "menuitemradio" })) {
+        // Current ChatGPT exposes Pro effort choices as nested menu radio items.
+      } else {
+        await clickLabeledEntry(job, effortLabel, { kind: "option" });
+      }
       await agentBrowser(job, "wait", "400");
       const effortSnapshot = await snapshotText(job);
       verificationSnapshot = effortSnapshot;
@@ -2082,8 +2204,8 @@ async function run() {
     await setComposerText(currentJob, await readFile(currentJob.promptPath, "utf8"));
     const baselineAssistantCount = (await assistantMessages(currentJob)).length;
     await log(`Assistant response count before send: ${baselineAssistantCount}`);
-    await clickSend(currentJob);
-    await log(`Waiting ${POST_SEND_SETTLE_MS}ms after send to avoid streaming interruption`);
+    await clickSend(currentJob, baselineAssistantCount);
+    await log(`Send accepted; waiting ${POST_SEND_SETTLE_MS}ms after send to avoid streaming interruption`);
     await sleep(POST_SEND_SETTLE_MS);
 
     const observedChatUrl = isGrokJob(currentJob)
