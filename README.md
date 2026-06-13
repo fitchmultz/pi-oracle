@@ -134,6 +134,10 @@ If the wake-up does not arrive, run:
 /oracle-followup <job-id> Tighten the migration plan around rollback risk, and include the most relevant surrounding files/docs as long as the archive stays comfortably within the 250 MiB limit.
 ```
 
+```text
+/oracle Continue existing ChatGPT conversation 6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6. Review the current auth code and include enough surrounding context to propose concrete fixes.
+```
+
 ## How it works
 
 ```mermaid
@@ -153,13 +157,14 @@ Key design choices:
 - **Tools own execution.** `oracle_submit` builds the archive, admits or queues the job, starts the worker, and returns immediately.
 - **Auth uses a seed profile.** `/oracle-auth` imports cookies into an isolated seed profile; each job clones that seed into its own temporary runtime profile.
 - **Follow-ups preserve provider thread state.** `/oracle-followup <job-id> ...` resolves the prior job's saved provider URL and submits the next prompt with `followUpJobId`.
+- **Existing ChatGPT browser threads are opt-in.** Normal `/oracle` jobs still start a fresh provider thread. When the user explicitly provides a ChatGPT conversation id or `https://chatgpt.com/c/...` URL, the agent passes `chatGptConversationId` so `oracle_submit` opens that existing thread in the isolated runtime.
 - **Wake-up is best effort, storage is durable.** A missed wake-up does not lose the result.
 
 ## Commands and tools
 
 User-facing commands:
 
-- `/oracle <request>` — prepare context and dispatch a ChatGPT or Grok web oracle job
+- `/oracle <request>` — prepare context and dispatch a ChatGPT or Grok web oracle job. If the request explicitly includes an existing ChatGPT conversation id/URL, the agent can continue that browser-created thread; otherwise `/oracle` starts a fresh thread as before.
 - `/oracle-followup <job-id> <request>` — continue an earlier oracle job in the same provider thread
 - `/oracle-auth [chatgpt|grok]` — sync provider cookies into the isolated oracle auth seed profile
 - `/oracle-read [job-id]` — inspect job status and saved response preview
@@ -171,7 +176,7 @@ Agent-facing tools:
 
 - `oracle_preflight`
 - `oracle_auth`
-- `oracle_submit`
+- `oracle_submit` (`chatGptConversationId` is optional and only for explicitly continuing an existing ChatGPT browser conversation id/URL; omit it for the default fresh thread)
 - `oracle_read`
 - `oracle_cancel`
 

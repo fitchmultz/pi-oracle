@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.10 - 2026-06-13
+
+### Added
+- added explicit existing ChatGPT browser-thread targeting for `/oracle`, `oracle_preflight`, and `oracle_submit` through optional `chatGptConversationId`, accepting raw ChatGPT conversation ids or full `https://chatgpt.com/c/...` / `https://chat.openai.com/c/...` URLs while preserving fresh-thread defaults when omitted
+
+### Validation
+- verified existing-thread preflight and submit flows in isolated `pi` sessions, including persisted `chatUrl` / `conversationId` job metadata with a fake worker
+- ran the full `npm run verify:oracle` release gate
+
 ## 0.7.9 - 2026-06-11
 
 ### Fixed

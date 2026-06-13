@@ -137,7 +137,7 @@ import {
   tryAcquireConversationLease,
   tryAcquireRuntimeLease,
 } from "../extensions/oracle/lib/runtime.ts";
-import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, mergeArchiveEntryGroupsForTesting, registerOracleTools, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
+import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, mergeArchiveEntryGroupsForTesting, registerOracleTools, resolveChatGptConversationReference, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
@@ -3606,6 +3606,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(promptSource.includes("`preset`"), "/oracle prompt should document oracle_submit preset parameter");
   assert(promptSource.includes("For ChatGPT, **`preset`** is the only model-selection parameter"), "/oracle prompt should state preset is the only ChatGPT selector");
   assert(promptSource.includes("provider: \"grok\""), "/oracle prompt should document Grok provider routing");
+  assert(promptSource.includes("chatGptConversationId"), "/oracle prompt should route explicit existing ChatGPT conversation ids through oracle_submit.chatGptConversationId");
+  assert(promptSource.includes("Omit `chatGptConversationId` unless the user explicitly asks"), "/oracle prompt should preserve fresh-thread defaults unless an existing ChatGPT thread is explicit");
+  assert(promptSource.includes("6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6"), "/oracle prompt should show the existing ChatGPT conversation id shape agents should recognize");
   assert(promptSource.includes("canonical preset registry"), "/oracle prompt should point callers to the canonical registry instead of a hard-coded preset list");
   assert(promptSource.includes("Do not pass `modelFamily`, `effort`, or `autoSwitchToThinking`"), "/oracle prompt should tell callers not to pass legacy fields");
   assert(promptSource.includes("Matching human-readable preset labels"), "/oracle prompt should explain preset label normalization");
@@ -3632,6 +3635,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(designSource.includes("`oracle_preflight`"), "design doc should document the oracle_preflight tool");
   assert(designSource.includes("`oracle_auth`"), "design doc should document the agent-facing oracle_auth tool");
   assert(designSource.includes("`/oracle-followup <job-id> <request>`"), "design doc should document the user-facing follow-up command");
+  assert(designSource.includes("`chatGptConversationId` into a user/browser-created ChatGPT"), "design doc should document explicit existing ChatGPT browser thread targeting");
+  assert(designSource.includes("Omit both for the default fresh-thread behavior"), "design doc should state thread-target options preserve fresh-thread defaults when omitted");
   assert(designSource.includes("call `oracle_preflight` immediately"), "design doc should describe the /oracle preflight-first flow");
   assert(designSource.includes("bias toward context-rich archives when they fit within the provider ceiling"), "design doc should describe the context-rich /oracle flow within the upload ceiling");
   assert(designSource.includes("retryable archive-selection miss"), "design doc should explain that archive-too-large submit failures are retryable archive-selection misses");
@@ -3666,6 +3671,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
   assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
   assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
+  assert(readmeSource.includes("chatGptConversationId"), "README should document explicit existing ChatGPT thread targeting through chatGptConversationId");
+  assert(readmeSource.includes("Normal `/oracle` jobs still start a fresh provider thread"), "README should state existing ChatGPT thread targeting is opt-in and defaults remain fresh-thread");
+  assert(readmeSource.includes("6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6"), "README should include an existing ChatGPT conversation id example");
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("The `/oracle` prompt now runs an early oracle preflight"), "README quickstart should explain the early oracle preflight guard");
   assert(readmeSource.includes("context-rich relevant archive up to the selected provider's upload ceiling"), "README should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
@@ -3706,13 +3714,28 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
   assert(Check(preflightSchema, { provider: "grok" }), "oracle_preflight should accept optional provider selection");
   assert(Check(preflightSchema, { followUpJobId: "sanity-job" }), "oracle_preflight should accept optional follow-up job id selection");
+  assert(Check(preflightSchema, { provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }), "oracle_preflight should accept optional existing ChatGPT conversation id selection");
   assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
   assert(asRecord(preflightProperties?.provider)?.type === "string", "oracle_preflight should expose optional provider selection for provider-specific readiness checks");
   assert(asRecord(preflightProperties?.followUpJobId)?.type === "string", "oracle_preflight should expose optional follow-up job id selection for same-thread readiness checks");
+  assert(asRecord(preflightProperties?.chatGptConversationId)?.type === "string", "oracle_preflight should expose optional existing ChatGPT conversation id selection for browser-created threads");
   assert(!Array.isArray((asRecord(preflightTool.parameters)?.required)), "oracle_preflight should not require caller arguments");
   assert(asRecord(authProperties?.provider)?.type === "string", "oracle_auth should expose optional provider selection for provider-specific auth refresh");
   assert(!Array.isArray((asRecord(authTool.parameters)?.required)), "oracle_auth should not require caller arguments");
   assert(asRecord(submitProperties.preset)?.type === "string", "oracle submit preset schema should validate preset as a string before execute-time normalization");
+  assert(asRecord(submitProperties.chatGptConversationId)?.type === "string", "oracle submit schema should expose optional existing ChatGPT conversation id targeting");
+  assert(
+    Check(submitSchema, { prompt: "sanity", files: ["README.md"], provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }),
+    "oracle_submit tool-call validation should accept an explicit existing ChatGPT conversation id",
+  );
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], chatGptConversationId: "   " }),
+    "oracle_submit tool-call validation should reject blank existing ChatGPT conversation ids",
+  );
+  const normalizedExistingChat = resolveChatGptConversationReference("6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", DEFAULT_CONFIG);
+  assert(normalizedExistingChat?.chatUrl === "https://chatgpt.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", "oracle_submit should normalize raw existing ChatGPT conversation ids to a conversation URL");
+  const normalizedExistingChatUrl = resolveChatGptConversationReference("https://chat.openai.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6?model=gpt", DEFAULT_CONFIG);
+  assert(normalizedExistingChatUrl?.chatUrl === "https://chat.openai.com/c/6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6", "oracle_submit should preserve allowed ChatGPT URL origins while stripping query/hash for existing thread targeting");
   for (const [presetAlias, presetId] of representativePresetAliases) {
     assert(
       Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: presetAlias }),

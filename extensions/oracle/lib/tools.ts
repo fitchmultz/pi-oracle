@@ -25,6 +25,7 @@ import {
   resolveOracleConfigForProvider,
   resolveOracleGrokMode,
   resolveOracleSubmitPreset,
+  type OracleConfig,
   type OracleProvider,
 } from "./config.js";
 import {
@@ -94,11 +95,21 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     }),
   ),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
+  chatGptConversationId: Type.Optional(Type.String({
+    description: "Existing ChatGPT conversation id, or full https://chatgpt.com/c/... URL, to continue. Omit for default behavior: starting a fresh oracle thread. Do not combine with followUpJobId.",
+    minLength: 1,
+    pattern: "^.*\\S.*$",
+  })),
 });
 
 const ORACLE_PREFLIGHT_PARAMS = Type.Object({
   provider: Type.Optional(Type.String({ description: `Provider readiness to check. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.` })),
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose provider/thread readiness should be checked." })),
+  chatGptConversationId: Type.Optional(Type.String({
+    description: "Existing ChatGPT conversation id, or full https://chatgpt.com/c/... URL, whose provider/thread readiness should be checked. Do not combine with followUpJobId.",
+    minLength: 1,
+    pattern: "^.*\\S.*$",
+  })),
 });
 
 const ORACLE_AUTH_PARAMS = Type.Object({
@@ -750,12 +761,59 @@ export function getQueueAdmissionFailure(args: {
   return undefined;
 }
 
-function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
+type OracleConversationTarget = {
   followUpToJobId?: string;
   chatUrl?: string;
   conversationId?: string;
   provider?: "chatgpt" | "grok";
-} {
+  label?: string;
+};
+
+const CHATGPT_CONVERSATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{7,}$/;
+const CHATGPT_CONVERSATION_URL_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
+
+function chatGptConversationOrigin(config: Pick<OracleConfig, "browser">): string {
+  try {
+    const parsed = new URL(config.browser.chatUrl);
+    if (CHATGPT_CONVERSATION_URL_HOSTS.has(parsed.hostname.toLowerCase())) return parsed.origin;
+  } catch {
+    // Fall through to the canonical ChatGPT origin.
+  }
+  return "https://chatgpt.com";
+}
+
+export function resolveChatGptConversationReference(
+  rawReference: string | undefined,
+  config: Pick<OracleConfig, "browser">,
+): { chatUrl: string; conversationId: string } | undefined {
+  if (rawReference === undefined) return undefined;
+  const reference = rawReference.trim();
+  if (!reference) throw new Error("ChatGPT conversation id must be a non-empty string");
+
+  try {
+    const parsed = new URL(reference);
+    const host = parsed.hostname.toLowerCase();
+    const conversationId = parseConversationId(parsed.toString());
+    if (parsed.protocol !== "https:" || !CHATGPT_CONVERSATION_URL_HOSTS.has(host) || !conversationId) {
+      throw new Error();
+    }
+    return {
+      chatUrl: `${parsed.origin}/c/${conversationId}`,
+      conversationId,
+    };
+  } catch {
+    if (!CHATGPT_CONVERSATION_ID_PATTERN.test(reference)) {
+      throw new Error(`Invalid ChatGPT conversation id or URL: ${rawReference}`);
+    }
+    const origin = chatGptConversationOrigin(config);
+    return {
+      chatUrl: `${origin}/c/${reference}`,
+      conversationId: reference,
+    };
+  }
+}
+
+function resolveFollowUp(previousJobId: string | undefined, cwd: string): OracleConversationTarget {
   if (!previousJobId) return {};
   const previous = readJob(previousJobId);
   if (!previous) {
@@ -770,12 +828,35 @@ function resolveFollowUp(previousJobId: string | undefined, cwd: string): {
   if (!previous.chatUrl) {
     throw new Error(`Follow-up oracle job ${previousJobId} has no persisted chat URL`);
   }
+  const conversationId = previous.conversationId || parseConversationId(previous.chatUrl);
   return {
     followUpToJobId: previous.id,
     chatUrl: previous.chatUrl,
-    conversationId: previous.conversationId || parseConversationId(previous.chatUrl),
+    conversationId,
     provider: previous.selection?.provider === "grok" ? "grok" : "chatgpt",
+    label: `follow-up job ${previous.id}`,
   };
+}
+
+function resolveConversationTarget(args: {
+  followUpJobId?: string;
+  chatGptConversationId?: string;
+  cwd: string;
+  config: OracleConfig;
+}): OracleConversationTarget {
+  if (args.followUpJobId !== undefined && args.chatGptConversationId !== undefined) {
+    throw new Error("Pass either followUpJobId or chatGptConversationId, not both");
+  }
+  if (args.chatGptConversationId !== undefined) {
+    const target = resolveChatGptConversationReference(args.chatGptConversationId, args.config);
+    if (!target) return {};
+    return {
+      ...target,
+      provider: "chatgpt",
+      label: `ChatGPT conversation ${target.conversationId}`,
+    };
+  }
+  return resolveFollowUp(args.followUpJobId, args.cwd);
 }
 
 type OracleToolName = "oracle_auth" | "oracle_submit" | "oracle_read" | "oracle_cancel";
@@ -1036,6 +1117,23 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
     };
   }
 
+  if ((toolName === "oracle_submit" || toolName === "oracle_preflight") && message === "Pass either followUpJobId or chatGptConversationId, not both") {
+    return {
+      code: "oracle_thread_target_conflict",
+      message,
+      suggestedNextStep: "Retry with exactly one same-thread target: followUpJobId for an oracle-created thread, or chatGptConversationId for an existing ChatGPT browser thread.",
+    };
+  }
+
+  if ((toolName === "oracle_submit" || toolName === "oracle_preflight") && (message === "ChatGPT conversation id must be a non-empty string" || message.startsWith("Invalid ChatGPT conversation id or URL: "))) {
+    return {
+      code: "invalid_chatgpt_conversation_id",
+      message,
+      rejectedValue: typeof params.chatGptConversationId === "string" ? params.chatGptConversationId : undefined,
+      suggestedNextStep: "Retry with a ChatGPT conversation id like 6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6 or a full https://chatgpt.com/c/... URL, or omit chatGptConversationId to start a fresh thread.",
+    };
+  }
+
   if (toolName === "oracle_submit" && message.startsWith("Follow-up oracle job not found: ")) {
     return {
       code: "follow_up_job_not_found",
@@ -1164,7 +1262,7 @@ function isProjectTrusted(ctx: ExtensionContext): boolean {
   return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
 }
 
-async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: unknown; followUpJobId?: unknown } = {}): Promise<OraclePreflightDetails> {
+async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: unknown; followUpJobId?: unknown; chatGptConversationId?: unknown } = {}): Promise<OraclePreflightDetails> {
   const sessionFile = getSessionFile(ctx);
   if (!hasPersistedSessionFile(sessionFile)) {
     return {
@@ -1184,14 +1282,18 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
   let provider: OracleProvider | undefined;
   try {
     const followUpJobId = params.followUpJobId;
+    const chatGptConversationId = params.chatGptConversationId;
     if (followUpJobId !== undefined && typeof followUpJobId !== "string") {
       throw new Error("oracle_preflight followUpJobId must be a string");
     }
+    if (chatGptConversationId !== undefined && typeof chatGptConversationId !== "string") {
+      throw new Error("oracle_preflight chatGptConversationId must be a string");
+    }
     const baseConfig = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isProjectTrusted(ctx) });
-    const followUp = resolveFollowUp(followUpJobId, ctx.cwd);
-    provider = normalizeOracleProvider(params.provider, followUp.provider ?? baseConfig.defaults.provider, "oracle_preflight");
-    if (followUp.provider && provider !== followUp.provider) {
-      throw new Error(`Follow-up job ${followUpJobId} uses provider ${followUp.provider}; cannot check it with ${provider}.`);
+    const target = resolveConversationTarget({ followUpJobId, chatGptConversationId, cwd: ctx.cwd, config: baseConfig });
+    provider = normalizeOracleProvider(params.provider, target.provider ?? baseConfig.defaults.provider, "oracle_preflight");
+    if (target.provider && provider !== target.provider) {
+      throw new Error(`${target.label ?? "Oracle conversation"} requires provider ${target.provider}; cannot check it with ${provider}.`);
     }
     config = resolveOracleConfigForProvider(baseConfig, provider);
   } catch (error) {
@@ -1201,14 +1303,14 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
       session: { persisted: true, sessionFile },
       config: { ready: false },
       auth: { ready: false },
-      error: buildOracleToolErrorDetails("oracle_preflight", error, {}),
+      error: buildOracleToolErrorDetails("oracle_preflight", error, asRecord(params) ?? {}),
     };
   }
 
   try {
     await assertOracleSubmitPrerequisites(config);
   } catch (error) {
-    const errorDetails = buildOracleToolErrorDetails("oracle_preflight", error, {});
+    const errorDetails = buildOracleToolErrorDetails("oracle_preflight", error, asRecord(params) ?? {});
     return {
       ready: false,
       provider,
@@ -1251,7 +1353,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     description: "Check whether oracle is ready in this session before spending time gathering context or preparing a submission.",
     promptSnippet: "Check oracle readiness before expensive /oracle preparation.",
     promptGuidelines: [
-      "Call oracle_preflight before doing expensive /oracle preparation. Pass provider='grok' when the user explicitly asks for Grok, or followUpJobId for same-thread follow-ups. If ready is false, stop immediately and report the suggested next step instead of reading files or crafting archive inputs.",
+      "Call oracle_preflight before doing expensive /oracle preparation. Pass provider='grok' when the user explicitly asks for Grok, followUpJobId for same-thread follow-ups from oracle-created jobs, or chatGptConversationId when the user explicitly provides an existing ChatGPT browser conversation id/URL. If ready is false, stop immediately and report the suggested next step instead of reading files or crafting archive inputs.",
     ],
     parameters: ORACLE_PREFLIGHT_PARAMS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1299,10 +1401,12 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     label: "Oracle Submit",
     description:
       "Dispatch a background ChatGPT or Grok web oracle job after gathering context. Always pass a prompt and exact project-relative archive inputs. " +
-      "Optional provider: set `provider` to `grok` when the user asks for Grok; Grok currently supports only Heavy. Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults; canonical preset ids are listed in the README and ORACLE_SUBMIT_PRESETS registry, and matching labels are normalized at submit time.",
+      "Optional provider: set `provider` to `grok` when the user asks for Grok; Grok currently supports only Heavy. Optional ChatGPT model: set parameter `preset`, or omit it for configured defaults; canonical preset ids are listed in the README and ORACLE_SUBMIT_PRESETS registry, and matching labels are normalized at submit time. " +
+      "Optional thread target: pass `chatGptConversationId` only when the user explicitly provides an existing ChatGPT browser conversation id/URL to continue; omit it for the default fresh oracle thread.",
     promptSnippet: "Dispatch a background ChatGPT or Grok web oracle job after gathering repo context.",
     promptGuidelines: [
       "Gather context before calling oracle_submit.",
+      "If the user explicitly provides an existing ChatGPT browser conversation id or https://chatgpt.com/c/... URL, pass it as chatGptConversationId and force provider='chatgpt'; otherwise omit chatGptConversationId so oracle_submit starts a fresh thread by default.",
       "If the immediately preceding oracle run failed because ChatGPT or Grok login is required or the worker explicitly said to rerun /oracle-auth, call oracle_auth once before retrying the submission; pass provider='grok' for Grok retries. Do not loop auth refreshes.",
       "Prefer context-rich archives up to the provider ceiling because more relevant surrounding context is usually better than less: 250 MB for ChatGPT and 200 MiB for Grok.",
       "By default, archive the whole repo by passing '.' for broad or unclear requests; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and nested secrets directories anywhere in the repo.",
@@ -1328,10 +1432,15 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
         const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);
-        const followUp = resolveFollowUp(params.followUpJobId, projectCwd);
-        const provider = normalizeOracleProvider(params.provider, followUp.provider ?? baseConfig.defaults.provider, "oracle_submit");
-        if (followUp.provider && provider !== followUp.provider) {
-          throw new Error(`Follow-up job ${params.followUpJobId} uses provider ${followUp.provider}; cannot continue it with ${provider}.`);
+        const target = resolveConversationTarget({
+          followUpJobId: params.followUpJobId,
+          chatGptConversationId: params.chatGptConversationId,
+          cwd: projectCwd,
+          config: baseConfig,
+        });
+        const provider = normalizeOracleProvider(params.provider, target.provider ?? baseConfig.defaults.provider, "oracle_submit");
+        if (target.provider && provider !== target.provider) {
+          throw new Error(`${target.label ?? "Oracle conversation"} requires provider ${target.provider}; cannot continue it with ${provider}.`);
         }
         if (provider === "grok" && typeof params.preset === "string") {
           throw new Error("oracle_submit preset is only valid for ChatGPT. For Grok, use provider='grok' and mode='heavy'.");
@@ -1340,7 +1449,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           ? resolveOracleGrokMode(normalizeGrokMode(params.mode, baseConfig.defaults.grokMode))
           : resolveOracleSubmitPreset(typeof params.preset === "string" ? coerceOracleSubmitPresetId(params.preset) : baseConfig.defaults.preset);
         const config = resolveOracleConfigForProvider(baseConfig, provider);
-        const targetChatUrl = followUp.chatUrl;
+        const targetChatUrl = target.chatUrl;
         // Validate caller-specified archive paths before surfacing unrelated local setup failures such as a missing auth seed profile.
         resolveArchiveInputs(projectCwd, params.files);
         await assertOracleSubmitPrerequisites(config);
@@ -1405,7 +1514,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                   prompt: params.prompt,
                   files: params.files,
                   selection,
-                  followUpToJobId: followUp.followUpToJobId,
+                  followUpToJobId: target.followUpToJobId,
                   chatUrl: targetChatUrl,
                   requestSource: "tool",
                 },
@@ -1425,18 +1534,18 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             }
 
             runtimeLeaseAcquired = true;
-            if (followUp.conversationId) {
+            if (target.conversationId) {
               const conversationAttempt = await tryAcquireConversationLease({
                 jobId,
-                conversationId: followUp.conversationId,
+                conversationId: target.conversationId,
                 projectId,
                 sessionId,
                 createdAt: admittedAt,
               });
               if (!conversationAttempt.acquired) {
                 throw new Error(
-                  `Oracle conversation ${followUp.conversationId} is already in use by job ${conversationAttempt.blocker?.jobId ?? "unknown"}. ` +
-                    "Concurrent follow-ups to the same ChatGPT thread are not allowed.",
+                  `Oracle conversation ${target.conversationId} is already in use by job ${conversationAttempt.blocker?.jobId ?? "unknown"}. ` +
+                    "Concurrent jobs targeting the same ChatGPT thread are not allowed.",
                 );
               }
               conversationLeaseAcquired = true;
@@ -1448,7 +1557,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                 prompt: params.prompt,
                 files: params.files,
                 selection,
-                followUpToJobId: followUp.followUpToJobId,
+                followUpToJobId: target.followUpToJobId,
                 chatUrl: targetChatUrl,
                 requestSource: "tool",
               },
@@ -1563,7 +1672,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             runtimeId: runtimeLeaseAcquired ? runtime.runtimeId : undefined,
             runtimeProfileDir: runtimeLeaseAcquired ? runtime.runtimeProfileDir : undefined,
             runtimeSessionName: workerSpawned ? runtime.runtimeSessionName : undefined,
-            conversationId: conversationLeaseAcquired ? followUp.conversationId : undefined,
+            conversationId: conversationLeaseAcquired ? target.conversationId : undefined,
           }).catch(() => ({ attempted: [], warnings: [] }));
           if (job && cleanupReport.warnings.length > 0) {
             await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);

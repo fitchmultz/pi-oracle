@@ -157,7 +157,10 @@ The authenticated seed profile remains the source of truth for future oracle run
 Agent-facing submissions resolve a provider first. ChatGPT submissions use **`preset`**; the canonical registry is `ORACLE_SUBMIT_PRESETS` in `extensions/oracle/lib/config.ts`. Grok submissions use **`mode: "heavy"`** today and reject ChatGPT-only presets. For ChatGPT, **`preset` is the only model-selection parameter** on `oracle_submit`; there are no `modelFamily`, `effort`, or `autoSwitchToThinking` fields. Submit-time inputs accept canonical preset ids plus matching human-readable labels/common hyphen-space variants, and the tool normalizes them back to the canonical id before persisting job state. Prompt-template guidance biases toward omitting provider/model fields and using configured defaults unless the task or user explicitly asks for one. It also biases toward context-rich archives up to the provider ceiling, narrowing only when the user explicitly asks for a tight archive, privacy/sensitivity requires it, or size pressure forces it. When local archive creation still exceeds that ceiling after default exclusions and whole-repo auto-pruning, prompt guidance now treats the failure as a retryable archive-selection miss rather than a terminal dead end: agents should cut scope automatically, retry once or twice, and only surface the cut decisions if the archive still cannot fit.
 
 1. resolve the provider and preset/mode (submit-time or config default) into an execution snapshot
-2. resolve optional `followUpJobId` into a prior `chatUrl` and `conversationId`
+2. resolve optional thread targeting:
+   - `followUpJobId` into a prior oracle job `chatUrl` and `conversationId`, or
+   - `chatGptConversationId` into a user/browser-created ChatGPT `https://chatgpt.com/c/<id>` URL
+   Omit both for the default fresh-thread behavior.
 3. build the archive first into a temporary path
 4. allocate a unique runtime:
    - `runtimeId`
@@ -166,7 +169,7 @@ Agent-facing submissions resolve a provider first. ChatGPT submissions use **`pr
 5. under the global admission lock, first promote any older queued jobs that can now run
 6. if runtime capacity is still available:
    - acquire the runtime lease
-   - acquire the conversation lease for follow-up jobs
+   - acquire the conversation lease for same-thread jobs, including follow-ups and explicit existing ChatGPT conversation ids
    - create `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` job state as `submitted`
 7. otherwise create `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` job state as `queued`
 8. move the prepared archive into the job directory with a unique filename
@@ -184,7 +187,8 @@ Per job:
    - the job’s `runtimeProfileDir`
    - headless by default
 3. open either:
-   - the saved `chatUrl` for follow-up jobs, or
+   - the saved `chatUrl` for follow-up jobs,
+   - the normalized `chatGptConversationId` URL for explicit existing ChatGPT browser threads, or
    - the configured provider URL
 4. classify page state before touching the UI
 5. fail fast on:
@@ -495,11 +499,13 @@ Same-thread continuity is persisted as data, not runtime browser state.
 
 Approach:
 
-- expose `/oracle-followup <job-id> <request>` as the user-facing way to continue the same provider thread later
+- expose `/oracle-followup <job-id> <request>` as the user-facing way to continue an oracle-created provider thread later
+- allow `/oracle`/`oracle_submit` to opt into a browser-created ChatGPT thread only when the user explicitly supplies `chatGptConversationId` as a raw id or `https://chatgpt.com/c/...` URL
 - store `chatUrl` only after the conversation URL stabilizes
 - derive and persist `conversationId` from that URL when possible
 - for a follow-up job, resolve `followUpJobId` to the prior `chatUrl`
-- acquire a conversation lease before launching the follow-up
+- for an explicit existing ChatGPT thread, normalize `chatGptConversationId` to `https://chatgpt.com/c/<id>` without requiring prior oracle job state
+- acquire a conversation lease before launching the same-thread job
 - launch a fresh isolated browser using a fresh runtime clone of the auth seed
 - open that URL
 - continue there if authentication and page-state checks pass

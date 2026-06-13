@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "description": "ChatGPT and Grok web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
