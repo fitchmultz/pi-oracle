@@ -57,7 +57,7 @@ Environment:
   PLATFORM_SMOKE_WINDOWS_WORK_ROOT Windows work root
   PI_ORACLE_SMOKE_*              Project-specific aliases for the PLATFORM_SMOKE_* knobs above
   PI_ORACLE_REAL_TEST_PROVIDER   Real smoke provider (default: zai)
-  PI_ORACLE_REAL_TEST_MODEL      Real smoke model (default: glm-5.1)
+  PI_ORACLE_REAL_TEST_MODEL      Real smoke model (default: glm-5.2)
   ZAI_API_KEY                    Default real-smoke provider API key for optional model-agent debugging
 `);
 }

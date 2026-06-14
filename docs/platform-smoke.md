@@ -36,7 +36,7 @@ Target setup:
 Real runtime suite auth:
 
 - Default deterministic installed-tool smoke does not require provider API keys.
-- Provider/model defaults remain `zai/glm-5.1` for optional model-agent debugging.
+- Provider/model defaults remain `zai/glm-5.2` for optional model-agent debugging.
 - Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` to run the slower model-agent path; then the provider auth env is required (`ZAI_API_KEY` by default, reported only as present/redacted).
 - Override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL`; auth variable names live in `platform-smoke.config.mjs`.
 

@@ -40,7 +40,7 @@ export default {
   nodeValidationMajor: 24,
   realSmoke: {
     defaultProvider: "zai",
-    defaultModel: "glm-5.1",
+    defaultModel: "glm-5.2",
     authEnvByProvider: {
       zai: ["ZAI_API_KEY"],
       openai: ["OPENAI_API_KEY"],

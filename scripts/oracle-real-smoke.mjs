@@ -14,7 +14,7 @@ const require = createRequire(import.meta.url);
 const tsxCli = require.resolve("tsx/cli");
 
 const DEFAULT_PROVIDER = "zai";
-const DEFAULT_MODEL = "glm-5.1";
+const DEFAULT_MODEL = "glm-5.2";
 const DEFAULT_TIMEOUT_MS = 180_000;
 const PACKAGE_NAME = "pi-oracle";
 

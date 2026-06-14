@@ -54,7 +54,7 @@ function realSmokeProvider(config = {}) {
 }
 
 function realSmokeModel(config = {}) {
-  return process.env.PI_ORACLE_REAL_TEST_MODEL || config.realSmoke?.defaultModel || "glm-5.1";
+  return process.env.PI_ORACLE_REAL_TEST_MODEL || config.realSmoke?.defaultModel || "glm-5.2";
 }
 
 function truthy(value) {
