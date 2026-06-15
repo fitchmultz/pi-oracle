@@ -216,7 +216,9 @@ function parseJobArchivePath(jobDir) {
 }
 
 async function tarList(archivePath) {
-  const result = await runCommand(process.platform === "win32" ? "tar.exe" : "tar", ["--zstd", "-tf", process.platform === "win32" ? basename(archivePath) : archivePath], {
+  const target = process.platform === "win32" ? basename(archivePath) : archivePath;
+  const args = archivePath.endsWith(".tar.gz") ? ["-tzf", target] : ["--zstd", "-tf", target];
+  const result = await runCommand(process.platform === "win32" ? "tar.exe" : "tar", args, {
     cwd: process.platform === "win32" ? dirname(archivePath) : process.cwd(),
     env: process.env,
     timeoutMs: 60_000,

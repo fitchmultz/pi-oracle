@@ -28,6 +28,7 @@ import type { OracleJobLifecycleEvent as SharedOracleJobLifecycleEvent, OracleJo
 import { hasDurableWorkerHandoff as sharedHasDurableWorkerHandoff } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
+import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { withJobLock, withLock } from "./locks.js";
 import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
 
@@ -911,7 +912,7 @@ export async function createJob(
   const logsDir = join(jobDir, "logs");
   const workerLogPath = join(logsDir, "worker.log");
   const promptPath = join(jobDir, "prompt.md");
-  const archivePath = join(jobDir, `context-${id}.tar.zst`);
+  const archivePath = join(jobDir, `context-${id}.${resolveOracleProviderArchivePlan(input.selection.provider).archiveExtension}`);
   const responsePath = join(jobDir, "response.md");
   const reasoningPath = join(jobDir, "reasoning.md");
   const artifactsManifestPath = join(jobDir, "artifacts.json");

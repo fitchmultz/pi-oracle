@@ -22,6 +22,9 @@ import { getProjectId } from "./runtime.js";
 export const ORACLE_PROVIDERS = ["chatgpt", "grok"] as const;
 export type OracleProvider = (typeof ORACLE_PROVIDERS)[number];
 
+export { resolveOracleArchiveFormat, resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
+export type { OracleArchiveFormat, OracleProviderArchivePlan } from "./provider-capabilities.js";
+
 export const MODEL_FAMILIES = ["instant", "thinking", "pro", "grok"] as const;
 export type OracleModelFamily = (typeof MODEL_FAMILIES)[number];
 
@@ -209,13 +212,19 @@ export function getProviderAuthSeedProfileDir(config: OracleConfig, provider: Or
 }
 
 export function resolveOracleConfigForProvider(config: OracleConfig, provider: OracleProvider): OracleConfig {
-  if (provider === "chatgpt") return config;
+  const defaults = {
+    ...config.defaults,
+    provider,
+  };
+  if (provider === "chatgpt") {
+    return {
+      ...config,
+      defaults,
+    };
+  }
   return {
     ...config,
-    defaults: {
-      ...config.defaults,
-      provider,
-    },
+    defaults,
     browser: {
       ...config.browser,
       authSeedProfileDir: getProviderAuthSeedProfileDir(config, provider),

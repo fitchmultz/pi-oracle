@@ -4,13 +4,10 @@
 // Usage: Imported by the oracle extension entrypoint and sanity tests to register tools against the pi API.
 // Invariants/Assumptions: The pi runtime validates TypeBox schemas before execute, while execute owns semantic normalization.
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { createReadStream } from "node:fs";
-import { lstat, mkdtemp, readdir, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
+import { rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, posix } from "node:path";
-import { sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
+import { join } from "node:path";
+import { createArchive, type ArchiveCreationResult, type ArchiveSizeBreakdownRow } from "./archive.js";
 import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -45,7 +42,6 @@ import {
   pruneTerminalOracleJobs,
   reconcileStaleOracleJobs,
   resolveArchiveInputs,
-  sha256File,
   shouldAdvanceQueueAfterCancellation,
   spawnWorker,
   terminateWorkerPid,
@@ -53,6 +49,7 @@ import {
   type OracleJob,
 } from "./jobs.js";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "./queue.js";
+import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { refreshOracleStatus } from "./poller.js";
 import {
   allocateRuntime,
@@ -124,568 +121,8 @@ const ORACLE_CANCEL_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
 });
 
-const CHATGPT_MAX_ARCHIVE_BYTES = 250 * 1024 * 1024;
-const GROK_MAX_ARCHIVE_BYTES = 200 * 1024 * 1024;
-const MAX_ARCHIVE_BYTES = CHATGPT_MAX_ARCHIVE_BYTES;
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
-const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = MAX_ARCHIVE_BYTES;
-const ARCHIVE_COMMAND_TIMEOUT_MS = 120_000;
-const ARCHIVE_COMMAND_KILL_GRACE_MS = 2_000;
-const ARCHIVE_PIPE_FAILURE_ERROR_CODES = new Set(["EPIPE", "ERR_STREAM_DESTROYED"]);
-
-const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
-  ".git",
-  ".hg",
-  ".svn",
-  ".pi",
-  ".oracle-context",
-  ".cursor",
-  ".artifacts",
-  ".crabbox",
-  "node_modules",
-  "target",
-  ".venv",
-  "venv",
-  "__pycache__",
-  ".pytest_cache",
-  ".mypy_cache",
-  ".ruff_cache",
-  ".tox",
-  ".nox",
-  ".hypothesis",
-  ".next",
-  ".nuxt",
-  ".svelte-kit",
-  ".turbo",
-  ".parcel-cache",
-  ".cache",
-  ".gradle",
-  ".terraform",
-  "DerivedData",
-  ".build",
-  ".pnpm-store",
-  ".serverless",
-  ".aws-sam",
-  "secrets",
-  ".secrets",
-]);
-const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_AT_REPO_ROOT = new Set(["coverage", "htmlcov", "tmp", "temp", ".tmp", "dist", "build", "out"]);
-const DEFAULT_ARCHIVE_EXCLUDED_FILES = new Set([
-  ".coverage",
-  ".DS_Store",
-  ".env",
-  ".netrc",
-  ".npmrc",
-  ".pypirc",
-  ".scratchpad.md",
-  "Thumbs.db",
-  "id_dsa",
-  "id_ecdsa",
-  "id_ed25519",
-  "id_rsa",
-]);
-const DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES = [".db", ".key", ".p12", ".pfx", ".pyc", ".pyd", ".pyo", ".pem", ".sqlite", ".sqlite3", ".tsbuildinfo", ".tfstate"];
-const DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS = [".tfstate."];
-const DEFAULT_ARCHIVE_EXCLUDED_ENV_ALLOWLIST = new Set([".env.dist", ".env.example", ".env.sample", ".env.template"]);
-const DEFAULT_ARCHIVE_EXCLUDED_PATH_SEQUENCES = [[".yarn", "cache"]] as const;
-const ADAPTIVE_ARCHIVE_PRUNE_DIR_NAMES_ANYWHERE = new Set(["build", "dist", "out", "coverage", "htmlcov", "tmp", "temp", ".tmp"]);
-const ADAPTIVE_ARCHIVE_PRUNE_PROTECTED_ANCESTOR_DIR_NAMES = new Set(["src", "source", "sources", "lib"]);
-
-type ArchiveSizeBreakdownRow = { relativePath: string; bytes: number };
-type ArchiveCreationResult = {
-  sha256: string;
-  archiveBytes: number;
-  initialArchiveBytes?: number;
-  autoPrunedPrefixes: ArchiveSizeBreakdownRow[];
-  includedEntries: string[];
-};
-
-function appendArchiveEntries(target: string[], source: Iterable<string>): void {
-  for (const entry of source) target.push(entry);
-}
-
-function getErrorCode(error: unknown): string | undefined {
-  return error && typeof error === "object" && "code" in error && typeof error.code === "string"
-    ? error.code
-    : undefined;
-}
-
-function mergeArchiveEntryGroups(groups: Iterable<Iterable<string>>): string[] {
-  const merged: string[] = [];
-  for (const group of groups) appendArchiveEntries(merged, group);
-  return merged;
-}
-
-export function mergeArchiveEntryGroupsForTesting(groups: Iterable<Iterable<string>>): string[] {
-  return mergeArchiveEntryGroups(groups);
-}
-
-function pathContainsSequence(relativePath: string, sequence: readonly string[]): boolean {
-  const segments = relativePath.split("/").filter(Boolean);
-  if (sequence.length === 0 || segments.length < sequence.length) return false;
-  for (let index = 0; index <= segments.length - sequence.length; index += 1) {
-    if (sequence.every((segment, offset) => segments[index + offset] === segment)) return true;
-  }
-  return false;
-}
-
-function getRelativeDepth(relativePath: string): number {
-  return relativePath.split("/").filter(Boolean).length;
-}
-
-function formatBytes(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
-}
-
-function formatDirectoryLabel(relativePath: string): string {
-  return relativePath.endsWith("/") ? relativePath : `${relativePath}/`;
-}
-
-function summarizeByKey(
-  entrySizes: ArchiveSizeBreakdownRow[],
-  keyForEntry: (relativePath: string) => string | undefined,
-  limit = 7,
-): ArchiveSizeBreakdownRow[] {
-  const totals = new Map<string, number>();
-  for (const entry of entrySizes) {
-    const key = keyForEntry(entry.relativePath);
-    if (!key) continue;
-    totals.set(key, (totals.get(key) ?? 0) + entry.bytes);
-  }
-  return [...totals.entries()]
-    .map(([relativePath, bytes]) => ({ relativePath, bytes }))
-    .sort((left, right) => right.bytes - left.bytes || left.relativePath.localeCompare(right.relativePath))
-    .slice(0, limit);
-}
-
-function summarizeTopLevelIncludedPaths(entrySizes: ArchiveSizeBreakdownRow[]): ArchiveSizeBreakdownRow[] {
-  return summarizeByKey(entrySizes, (relativePath) => {
-    const [topLevel, ...rest] = relativePath.split("/").filter(Boolean);
-    if (!topLevel) return undefined;
-    return rest.length > 0 ? `${topLevel}/` : topLevel;
-  });
-}
-
-function getAdaptivePrunePrefix(relativePath: string): string | undefined {
-  const segments = relativePath.split("/").filter(Boolean);
-  for (let index = 0; index < segments.length - 1; index += 1) {
-    const name = segments[index];
-    if (!ADAPTIVE_ARCHIVE_PRUNE_DIR_NAMES_ANYWHERE.has(name)) continue;
-    const ancestors = segments.slice(0, index);
-    if (ancestors.some((segment) => ADAPTIVE_ARCHIVE_PRUNE_PROTECTED_ANCESTOR_DIR_NAMES.has(segment))) continue;
-    return segments.slice(0, index + 1).join("/");
-  }
-  return undefined;
-}
-
-function summarizeAdaptivePruneCandidates(
-  entrySizes: ArchiveSizeBreakdownRow[],
-  minimumBytes = 0,
-): ArchiveSizeBreakdownRow[] {
-  return summarizeByKey(entrySizes, getAdaptivePrunePrefix, Number.POSITIVE_INFINITY).filter((entry) => entry.bytes >= minimumBytes);
-}
-
-function pruneEntriesByPrefix(entries: string[], prefix: string): string[] {
-  return entries.filter((entry) => entry !== prefix && !entry.startsWith(`${prefix}/`));
-}
-
-function shouldExcludeArchivePath(relativePath: string, isDirectory: boolean, options?: { forceInclude?: boolean }): boolean {
-  const normalized = posix.normalize(relativePath).replace(/^\.\//, "");
-  if (!normalized || normalized === ".") return false;
-  if (options?.forceInclude) return false;
-  const name = basename(normalized);
-  if (DEFAULT_ARCHIVE_EXCLUDED_PATH_SEQUENCES.some((sequence) => pathContainsSequence(normalized, sequence))) return true;
-  if (isDirectory) {
-    if (DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE.has(name)) return true;
-    if (getRelativeDepth(normalized) === 1 && DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_AT_REPO_ROOT.has(name)) return true;
-    return false;
-  }
-  if (DEFAULT_ARCHIVE_EXCLUDED_FILES.has(name)) return true;
-  if (name.startsWith(".env.") && !DEFAULT_ARCHIVE_EXCLUDED_ENV_ALLOWLIST.has(name)) return true;
-  if (DEFAULT_ARCHIVE_EXCLUDED_SUFFIXES.some((suffix) => name.endsWith(suffix))) return true;
-  if (DEFAULT_ARCHIVE_EXCLUDED_SUBSTRINGS.some((needle) => name.includes(needle))) return true;
-  return false;
-}
-
-async function isSymlinkToDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-async function shouldExcludeArchiveChild(
-  absolutePath: string,
-  relativePath: string,
-  child: { isDirectory(): boolean; isSymbolicLink(): boolean },
-  options?: { forceInclude?: boolean },
-): Promise<boolean> {
-  const isDirectoryLike = child.isDirectory() || (child.isSymbolicLink() && await isSymlinkToDirectory(absolutePath));
-  return shouldExcludeArchivePath(relativePath, isDirectoryLike, options);
-}
-
-async function expandArchiveEntries(cwd: string, relativePath: string, options?: { forceIncludeSubtree?: boolean }): Promise<string[]> {
-  const normalized = posix.normalize(relativePath).replace(/^\.\//, "");
-  if (normalized === ".") {
-    const children = await readdir(cwd, { withFileTypes: true });
-    const results: string[] = [];
-    for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
-      const childRelative = child.name;
-      if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child)) continue;
-      if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative));
-      else results.push(childRelative);
-    }
-    return results;
-  }
-
-  const absolute = join(cwd, normalized);
-  const entry = await lstat(absolute);
-  if (!entry.isDirectory()) return [normalized];
-  if (shouldExcludeArchivePath(normalized, true, { forceInclude: options?.forceIncludeSubtree })) return [];
-
-  const children = await readdir(absolute, { withFileTypes: true });
-  const results: string[] = [];
-  for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
-    const childRelative = posix.join(normalized, child.name);
-    if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child, { forceInclude: options?.forceIncludeSubtree })) continue;
-    if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative, { forceIncludeSubtree: options?.forceIncludeSubtree }));
-    else results.push(childRelative);
-  }
-  return results;
-}
-
-async function resolveExpandedArchiveEntriesFromInputs(
-  cwd: string,
-  entries: Array<{ absolute: string; relative: string }>,
-): Promise<string[]> {
-  const expandedGroups = await Promise.all(entries.map(async (entry) => {
-    const statEntry = await lstat(entry.absolute);
-    const forceIncludeSubtree = statEntry.isDirectory() && entry.relative !== "." && shouldExcludeArchivePath(entry.relative, true);
-    return expandArchiveEntries(cwd, entry.relative, { forceIncludeSubtree });
-  }));
-  return Array.from(new Set(mergeArchiveEntryGroups(expandedGroups))).sort();
-}
-
-export async function resolveExpandedArchiveEntries(cwd: string, files: string[]): Promise<string[]> {
-  return resolveExpandedArchiveEntriesFromInputs(cwd, resolveArchiveInputs(cwd, files));
-}
-
-function isWholeRepoArchiveSelection(entries: Array<{ absolute: string; relative: string }>): boolean {
-  return entries.length === 1 && entries[0]?.relative === ".";
-}
-
-async function measureArchiveEntrySizes(cwd: string, entries: string[]): Promise<ArchiveSizeBreakdownRow[]> {
-  return Promise.all(entries.map(async (relativePath) => ({ relativePath, bytes: (await lstat(join(cwd, relativePath))).size })));
-}
-
-function formatArchiveOversizeError(args: {
-  archiveBytes: number;
-  maxBytes: number;
-  entrySizes: ArchiveSizeBreakdownRow[];
-  autoPrunedPrefixes: ArchiveSizeBreakdownRow[];
-  adaptivePruneMinBytes?: number;
-}): string {
-  const topLevel = summarizeTopLevelIncludedPaths(args.entrySizes);
-  const adaptiveCandidates = summarizeAdaptivePruneCandidates(args.entrySizes, args.adaptivePruneMinBytes).slice(0, 7);
-  return [
-    `Oracle archive exceeds provider upload limit (${formatBytes(args.maxBytes)}) after default exclusions${args.autoPrunedPrefixes.length > 0 ? " and automatic generic generated-output-dir pruning" : ""}.`,
-    `The local archive measured ${formatBytes(args.archiveBytes)} (${args.archiveBytes} bytes), so submission stopped before dispatch.`,
-    args.autoPrunedPrefixes.length > 0 ? "Automatically pruned generic generated-output paths before failing:" : undefined,
-    ...args.autoPrunedPrefixes.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
-    topLevel.length > 0 ? "Approx top-level included sizes:" : undefined,
-    ...topLevel.map((entry) => `- ${entry.relativePath} — ${formatBytes(entry.bytes)}`),
-    adaptiveCandidates.length > 0 ? "Largest remaining generic generated-output-dir candidates:" : undefined,
-    ...adaptiveCandidates.map((entry) => `- ${formatDirectoryLabel(entry.relativePath)} — ${formatBytes(entry.bytes)}`),
-    "Recommended retry order: (1) remove the largest obviously irrelevant/generated/history/export content, (2) if it still does not fit, keep only the directly relevant subtrees plus adjacent docs/tests/config, (3) if it still does not fit, explain what was cut before asking the user.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function writeOctal(value: number, width: number): Buffer {
-  const text = Math.max(0, Math.floor(value)).toString(8).slice(-(width - 1)).padStart(width - 1, "0") + "\0";
-  return Buffer.from(text, "ascii");
-}
-
-function writeTarName(header: Buffer, name: string): void {
-  const normalized = name.replaceAll("\\", "/");
-  const nameBytes = Buffer.byteLength(normalized);
-  if (nameBytes <= 100) {
-    header.write(normalized, 0, 100, "utf8");
-    return;
-  }
-  const parts = normalized.split("/");
-  const fileName = parts.pop() || "";
-  const prefix = parts.join("/");
-  if (Buffer.byteLength(fileName) > 100 || Buffer.byteLength(prefix) > 155) {
-    throw new Error(`archive path is too long for portable tar header: ${normalized}`);
-  }
-  header.write(fileName, 0, 100, "utf8");
-  header.write(prefix, 345, 155, "utf8");
-}
-
-function buildTarHeader(name: string, options: { mode: number; size: number; mtimeMs: number; type: "file" | "directory" | "symlink"; linkName?: string }): Buffer {
-  const header = Buffer.alloc(512);
-  writeTarName(header, options.type === "directory" && !name.endsWith("/") ? `${name}/` : name);
-  writeOctal(options.mode & 0o7777, 8).copy(header, 100);
-  writeOctal(0, 8).copy(header, 108);
-  writeOctal(0, 8).copy(header, 116);
-  writeOctal(options.size, 12).copy(header, 124);
-  writeOctal(Math.floor(options.mtimeMs / 1000), 12).copy(header, 136);
-  Buffer.from("        ", "ascii").copy(header, 148);
-  header[156] = options.type === "directory" ? 53 : options.type === "symlink" ? 50 : 48;
-  if (options.linkName) header.write(options.linkName.replaceAll("\\", "/"), 157, 100, "utf8");
-  header.write("ustar", 257, 6, "ascii");
-  header.write("00", 263, 2, "ascii");
-  let checksum = 0;
-  for (const byte of header) checksum += byte;
-  const checksumText = checksum.toString(8).padStart(6, "0");
-  header.write(`${checksumText}\0 `, 148, 8, "ascii");
-  return header;
-}
-
-async function writeChunk(stream: NodeJS.WritableStream, chunk: Buffer): Promise<void> {
-  if (!stream.write(chunk)) await once(stream, "drain");
-}
-
-async function writeWindowsTarArchiveToZstd(cwd: string, entries: string[], archivePath: string, timeout: AbortSignal): Promise<void> {
-  const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv(process.env);
-  const zstd = spawn("zstd", ["-19", "-T0", "-f", "-o", archivePath], {
-    cwd,
-    env: scrubbedEnv,
-    stdio: ["pipe", "ignore", "pipe"],
-    signal: timeout,
-  });
-  let stderr = "";
-  zstd.stderr?.on("data", (chunk) => {
-    stderr += String(chunk);
-  });
-  try {
-    for (const entry of entries) {
-      const normalizedEntry = entry.replaceAll("\\", "/");
-      const absolutePath = join(cwd, normalizedEntry);
-      const info = await lstat(absolutePath);
-      if (info.isSymbolicLink()) {
-        await writeChunk(zstd.stdin, buildTarHeader(normalizedEntry, { mode: info.mode, size: 0, mtimeMs: info.mtimeMs, type: "symlink", linkName: await readlink(absolutePath) }));
-        continue;
-      }
-      if (info.isDirectory()) {
-        await writeChunk(zstd.stdin, buildTarHeader(normalizedEntry, { mode: info.mode, size: 0, mtimeMs: info.mtimeMs, type: "directory" }));
-        continue;
-      }
-      if (!info.isFile()) continue;
-      await writeChunk(zstd.stdin, buildTarHeader(normalizedEntry, { mode: info.mode, size: info.size, mtimeMs: info.mtimeMs, type: "file" }));
-      for await (const chunk of createReadStream(absolutePath)) {
-        await writeChunk(zstd.stdin, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      const padding = info.size % 512 === 0 ? 0 : 512 - (info.size % 512);
-      if (padding > 0) await writeChunk(zstd.stdin, Buffer.alloc(padding));
-    }
-    await writeChunk(zstd.stdin, Buffer.alloc(1024));
-    zstd.stdin.end();
-  } catch (error) {
-    zstd.stdin.destroy();
-    zstd.kill();
-    throw error;
-  }
-  const code = await new Promise<number | null>((resolve, reject) => {
-    zstd.once("error", reject);
-    zstd.once("close", resolve);
-  });
-  if (code !== 0) throw new Error(`zstd archive compression failed with status ${code}: ${stderr.trim()}`);
-}
-
-async function writeArchiveFile(
-  cwd: string,
-  entries: string[],
-  archivePath: string,
-  listPath: string,
-  options?: { commandTimeoutMs?: number },
-): Promise<number> {
-  await writeFile(listPath, Buffer.from(`${entries.join("\0")}\0`), { mode: 0o600 });
-  await rm(archivePath, { force: true }).catch(() => undefined);
-
-  if (process.platform === "win32") {
-    const timeoutController = new AbortController();
-    const timeout = setTimeout(() => timeoutController.abort(), options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS);
-    try {
-      await writeWindowsTarArchiveToZstd(cwd, entries, archivePath, timeoutController.signal);
-      return (await stat(archivePath)).size;
-    } catch (error) {
-      if (timeoutController.signal.aborted) {
-        throw new Error(`Oracle archive subprocess timed out after ${options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS}ms`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv();
-    const tarArgs = ["--null", "-cf", "-", "-C", cwd, "-T", basename(listPath)];
-    const tar = spawn(process.env.PI_ORACLE_TEST_TAR_BIN ?? "tar", tarArgs, {
-      cwd: dirname(listPath),
-      env: scrubbedEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const zstd = spawn(process.env.PI_ORACLE_TEST_ZSTD_BIN ?? "zstd", ["-19", "-T0", "-f", "-o", archivePath], {
-      env: scrubbedEnv,
-      stdio: ["pipe", "ignore", "pipe"],
-    });
-
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-    let timeout: NodeJS.Timeout | undefined;
-    let killGraceTimer: NodeJS.Timeout | undefined;
-    let tarCode: number | null | undefined;
-    let zstdCode: number | null | undefined;
-
-    const clearTimers = () => {
-      if (timeout) clearTimeout(timeout);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
-    };
-
-    const terminateChildren = () => {
-      tar.kill("SIGTERM");
-      zstd.kill("SIGTERM");
-      killGraceTimer = setTimeout(() => {
-        tar.kill("SIGKILL");
-        zstd.kill("SIGKILL");
-      }, ARCHIVE_COMMAND_KILL_GRACE_MS);
-      killGraceTimer.unref?.();
-    };
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      if (error) {
-        settled = true;
-        clearTimers();
-        terminateChildren();
-        rejectPromise(error);
-        return;
-      }
-      if (tarCode === undefined || zstdCode === undefined) return;
-      settled = true;
-      clearTimers();
-      if (timedOut) {
-        rejectPromise(new Error(stderr || `Oracle archive subprocess timed out after ${options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS}ms`));
-        return;
-      }
-      if (tarCode === 0 && zstdCode === 0) resolvePromise();
-      else rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}, zstd=${zstdCode})`));
-    };
-
-    const handlePipeError = (error: unknown) => {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      if (ARCHIVE_PIPE_FAILURE_ERROR_CODES.has(getErrorCode(normalized) ?? "")) {
-        stderr = `${stderr}${stderr ? "\n" : ""}${normalized.message}`;
-        tar.stdout.unpipe(zstd.stdin);
-        terminateChildren();
-        finish();
-        return;
-      }
-      finish(normalized);
-    };
-
-    const commandTimeoutMs = options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS;
-    if (commandTimeoutMs > 0) {
-      timeout = setTimeout(() => {
-        timedOut = true;
-        stderr = `${stderr}${stderr ? "\n" : ""}Oracle archive subprocess timed out after ${commandTimeoutMs}ms`;
-        terminateChildren();
-      }, commandTimeoutMs);
-      timeout.unref?.();
-    }
-
-    tar.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    zstd.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    tar.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
-    zstd.on("error", (error) => finish(error instanceof Error ? error : new Error(String(error))));
-    tar.stdout.on("error", handlePipeError);
-    zstd.stdin.on("error", handlePipeError);
-    tar.on("close", (code) => {
-      tarCode = code;
-      finish();
-    });
-    zstd.on("close", (code) => {
-      zstdCode = code;
-      finish();
-    });
-    tar.stdout.pipe(zstd.stdin);
-  });
-
-  return (await stat(archivePath)).size;
-}
-
-export async function createArchiveForTesting(
-  cwd: string,
-  files: string[],
-  archivePath: string,
-  options?: { maxBytes?: number; adaptivePruneMinBytes?: number; commandTimeoutMs?: number },
-): Promise<ArchiveCreationResult> {
-  const archiveInputs = resolveArchiveInputs(cwd, files);
-  const wholeRepoSelection = isWholeRepoArchiveSelection(archiveInputs);
-  let expandedEntries = await resolveExpandedArchiveEntriesFromInputs(cwd, archiveInputs);
-  if (expandedEntries.length === 0) {
-    throw new Error("Oracle archive inputs are empty after default exclusions");
-  }
-
-  const listDir = await mkdtemp(join(tmpdir(), "oracle-filelist-"));
-  const listPath = join(listDir, "files.list");
-  const maxBytes = options?.maxBytes ?? MAX_ARCHIVE_BYTES;
-  const adaptivePruneMinBytes = options?.adaptivePruneMinBytes ?? 0;
-  const autoPrunedPrefixes: ArchiveSizeBreakdownRow[] = [];
-  let initialArchiveBytes: number | undefined;
-
-  try {
-    while (true) {
-      if (expandedEntries.length === 0) {
-        throw new Error("Oracle archive inputs are empty after default exclusions and automatic size pruning");
-      }
-
-      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath, { commandTimeoutMs: options?.commandTimeoutMs });
-      if (archiveBytes <= maxBytes) {
-        return {
-          sha256: await sha256File(archivePath),
-          archiveBytes,
-          initialArchiveBytes,
-          autoPrunedPrefixes,
-          includedEntries: [...expandedEntries],
-        };
-      }
-
-      if (initialArchiveBytes === undefined) initialArchiveBytes = archiveBytes;
-      const entrySizes = await measureArchiveEntrySizes(cwd, expandedEntries);
-      if (!wholeRepoSelection) {
-        throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
-      }
-
-      const nextCandidate = summarizeAdaptivePruneCandidates(entrySizes, adaptivePruneMinBytes).find(
-        (entry) => !autoPrunedPrefixes.some((pruned) => pruned.relativePath === entry.relativePath),
-      );
-      if (!nextCandidate) {
-        throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
-      }
-
-      autoPrunedPrefixes.push(nextCandidate);
-      expandedEntries = pruneEntriesByPrefix(expandedEntries, nextCandidate.relativePath);
-    }
-  } finally {
-    await rm(listDir, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-async function createArchive(cwd: string, files: string[], archivePath: string, maxBytes = MAX_ARCHIVE_BYTES): Promise<ArchiveCreationResult> {
-  return createArchiveForTesting(cwd, files, archivePath, { maxBytes });
-}
-
+const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = resolveOracleProviderArchivePlan("chatgpt").maxArchiveBytes;
 function normalizeOracleProvider(value: unknown, fallback: OracleProvider, toolName = "oracle_submit"): OracleProvider {
   if (value === undefined) return fallback;
   if (typeof value !== "string") throw new Error(`${toolName} provider must be a string`);
@@ -701,10 +138,6 @@ function normalizeGrokMode(value: unknown, fallback: "heavy"): "heavy" {
   const normalized = value.trim().toLowerCase();
   if (normalized === "heavy" || normalized === "grok heavy" || normalized === "grok-heavy") return "heavy";
   throw new Error(`Unknown Grok oracle mode: ${value}. Only heavy is currently supported.`);
-}
-
-function getProviderMaxArchiveBytes(provider: "chatgpt" | "grok"): number {
-  return provider === "grok" ? GROK_MAX_ARCHIVE_BYTES : CHATGPT_MAX_ARCHIVE_BYTES;
 }
 
 export interface QueuedArchivePressure {
@@ -1308,7 +741,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
   }
 
   try {
-    await assertOracleSubmitPrerequisites(config);
+    await assertOracleSubmitPrerequisites(config, provider);
   } catch (error) {
     const errorDetails = buildOracleToolErrorDetails("oracle_preflight", error, asRecord(params) ?? {});
     return {
@@ -1452,7 +885,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         const targetChatUrl = target.chatUrl;
         // Validate caller-specified archive paths before surfacing unrelated local setup failures such as a missing auth seed profile.
         resolveArchiveInputs(projectCwd, params.files);
-        await assertOracleSubmitPrerequisites(config);
+        await assertOracleSubmitPrerequisites(config, provider);
         try {
           await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: projectCwd }, async () => {
             await reconcileStaleOracleJobs();
@@ -1463,7 +896,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         }
 
         const jobId = randomUUID();
-        const tempArchivePath = join(tmpdir(), `oracle-archive-${jobId}.tar.zst`);
+        const archivePlan = resolveOracleProviderArchivePlan(selection.provider);
+        const tempArchivePath = join(tmpdir(), `oracle-archive-${jobId}.${archivePlan.archiveExtension}`);
         const runtime = allocateRuntime(config);
         let job: OracleJob | undefined;
         let archive: ArchiveCreationResult | undefined;
@@ -1475,7 +909,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
 
         try {
-          archive = await createArchive(projectCwd, params.files, tempArchivePath, getProviderMaxArchiveBytes(selection.provider));
+          archive = await createArchive(projectCwd, params.files, tempArchivePath, archivePlan.maxArchiveBytes, archivePlan.archiveFormat);
           const currentArchive = archive;
           await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
             await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });

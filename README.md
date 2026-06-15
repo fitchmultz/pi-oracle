@@ -11,7 +11,7 @@ You: /oracle Review the pending changes. Include the whole repo unless a narrowe
 
 pi-oracle:
   1. preflights local session/auth readiness
-  2. builds a context-rich `.tar.zst` repo archive
+  2. builds a context-rich provider archive (`.tar.zst` for ChatGPT, `.tar.gz` for Grok)
   3. starts an isolated provider web runtime in the background
   4. uploads the archive and prompt to the selected provider
   5. saves the response/artifacts under /tmp/oracle-<job-id>/
@@ -80,7 +80,7 @@ You need:
 - Suggested tested floor: `pi` 0.79.4 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
-- `agent-browser`, `tar`, and `zstd` available on the machine
+- `agent-browser` and `tar` available on the machine; `zstd` is also required when submitting ChatGPT `.tar.zst` archives
 - on macOS APFS clone mode, `cp` available on PATH or via `PI_ORACLE_CP_PATH`; Linux/Windows runtime profile copies use Node's recursive copy
 - a normal persisted `pi` session, not `pi --no-session`
 - on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
@@ -144,7 +144,7 @@ If the wake-up does not arrive, run:
 flowchart LR
     A["/oracle request"] --> B["Agent preflights, then gathers a context-rich relevant repo slice"]
     B --> C["Agent chooses context-rich archive inputs"]
-    C --> D["oracle_submit builds .tar.zst archive"]
+    C --> D["oracle_submit builds provider-specific archive"]
     D --> E["Detached worker clones isolated auth seed profile"]
     E --> F["Selected provider receives archive + prompt"]
     F --> G["Response/artifacts saved under oracle job dir"]
@@ -260,12 +260,12 @@ If macOS prompts for Keychain access during `/oracle-auth`, allow access for the
 
 ## Available providers and presets
 
-| Provider | Mode / preset | Upload ceiling |
-| --- | --- | --- |
-| ChatGPT | Presets below | 250 MiB |
-| Grok | `heavy` only | 200 MiB |
+| Provider | Mode / preset | Archive format | Upload ceiling |
+| --- | --- | --- | --- |
+| ChatGPT | Presets below | `.tar.zst` | 250 MiB |
+| Grok | `heavy` only | `.tar.gz` | 200 MiB |
 
-Grok accepts the same `.tar.zst` archives that pi-oracle builds. Manual testing against `https://grok.com` found a 200 MiB file is accepted and a 200 MiB + 1 byte file is rejected, so pi-oracle caps Grok archives at 200 MiB.
+Grok uploads now use `.tar.gz` archives. Grok may accept `.tar.zst` uploads, but its execution environment can lack `zstd` tooling to extract them; gzip-compressed tar keeps extraction on standard tools. Manual testing against `https://grok.com` found a 200 MiB upload is accepted and a 200 MiB + 1 byte upload is rejected, so pi-oracle caps Grok archives at 200 MiB.
 
 ## Available ChatGPT presets
 
@@ -355,7 +355,7 @@ This usually means the cookie import worked but the source cookies are not the a
 
 ### A local dependency like `agent-browser`, `tar`, or `zstd` is missing
 
-Install the missing local dependency and rerun the command. On macOS APFS clone mode, `cp` must also be available on PATH or configured with `PI_ORACLE_CP_PATH`; Linux and Windows profile copies use Node's recursive copy.
+Install the missing local dependency and rerun the command. `zstd` is only needed for ChatGPT `.tar.zst` archive submissions; Grok submissions use `.tar.gz`. On macOS APFS clone mode, `cp` must also be available on PATH or configured with `PI_ORACLE_CP_PATH`; Linux and Windows profile copies use Node's recursive copy.
 
 ### Auto-detection picked the wrong browser profile
 

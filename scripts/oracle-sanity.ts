@@ -9,7 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { basename, delimiter, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { ProjectTrustStore, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
@@ -21,6 +21,9 @@ import {
   getOracleConfigLoadDetails,
   loadOracleConfig,
   ORACLE_SUBMIT_PRESETS,
+  resolveOracleArchiveFormat,
+  resolveOracleConfigForProvider,
+  resolveOracleGrokMode,
   resolveOracleSubmitPreset,
   type OracleConfig,
   type OracleSubmitPresetId,
@@ -137,7 +140,8 @@ import {
   tryAcquireConversationLease,
   tryAcquireRuntimeLease,
 } from "../extensions/oracle/lib/runtime.ts";
-import { createArchiveForTesting, getQueueAdmissionFailure, getQueuedArchivePressure, mergeArchiveEntryGroupsForTesting, registerOracleTools, resolveChatGptConversationReference, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/tools.ts";
+import { createArchiveForTesting, mergeArchiveEntryGroupsForTesting, resolveExpandedArchiveEntries } from "../extensions/oracle/lib/archive.ts";
+import { getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools, resolveChatGptConversationReference } from "../extensions/oracle/lib/tools.ts";
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
@@ -179,6 +183,19 @@ async function assertRejects(block: () => Promise<unknown>, failureMessage: stri
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function listArchiveEntries(archivePath: string): string[] {
+  if (process.platform === "win32") {
+    const args = archivePath.endsWith(".tar.gz")
+      ? ["-tzf", basename(archivePath)]
+      : ["--zstd", "-tf", basename(archivePath)];
+    return execFileSync("tar.exe", args, { cwd: dirname(archivePath), encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+  }
+  const command = archivePath.endsWith(".tar.gz")
+    ? `tar -tzf ${shellQuote(archivePath)}`
+    : `zstd -dc ${shellQuote(archivePath)} | tar -tf -`;
+  return execFileSync("sh", ["-c", command], { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
 }
 
 async function writeExecutableScript(path: string, content: string): Promise<void> {
@@ -1318,6 +1335,8 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     assert(missingSeedText.includes("Preflight checks the persisted pi session, local oracle config, and ChatGPT auth seed"), "blocked oracle preflight text should explain what readiness covers before archive work starts");
 
     await writeFile(configPath, `${JSON.stringify({ defaults: { provider: "grok" }, browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    const grokDefaultConfig = loadOracleConfig(process.cwd(), { projectConfigTrusted: true });
+    assert(resolveOracleConfigForProvider(grokDefaultConfig, "chatgpt").defaults.provider === "chatgpt", "explicit ChatGPT selection should produce a self-consistent ChatGPT config even when the configured default is Grok");
     const missingGrokSeedResult = await preflightTool.execute!("oracle-preflight-missing-grok-seed", {}, undefined, () => { }, persistedCtx) as { content?: unknown; details?: unknown };
     const missingGrokSeedText = String(asRecord(Array.isArray(missingGrokSeedResult.content) ? missingGrokSeedResult.content[0] : undefined)?.text ?? "");
     const missingGrokSeedDetails = asRecord(missingGrokSeedResult.details);
@@ -1338,6 +1357,28 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     const readyGrokAuth = asRecord(readyGrokDetails?.auth);
     assert(readyGrokDetails?.ready === true && readyGrokDetails?.provider === "grok", "oracle preflight should pass when the selected Grok auth seed is ready");
     assert(readyGrokAuth?.seedProfileDir === grokSeedDir, "oracle preflight ready details should report the selected Grok auth seed path");
+
+    const originalNoZstdPath = process.env.PATH;
+    const fakeBinDir = join(fixtureDir, "fake-bin-no-zstd");
+    await mkdir(fakeBinDir, { recursive: true, mode: 0o700 });
+    const fakeCommandSuffix = process.platform === "win32" ? ".cmd" : "";
+    const fakeCommandBody = process.platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n";
+    await writeExecutableScript(join(fakeBinDir, `tar${fakeCommandSuffix}`), fakeCommandBody);
+    await writeExecutableScript(join(fakeBinDir, `agent-browser${fakeCommandSuffix}`), fakeCommandBody);
+    await mkdir(defaultSeedDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(defaultSeedDir, ".oracle-seed-generation"), `${new Date().toISOString()}\n`, { mode: 0o600 });
+    await writeFile(configPath, `${JSON.stringify({ defaults: { provider: "grok" }, browser: { authSeedProfileDir: defaultSeedDir, cloneStrategy: "copy" } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    try {
+      process.env.PATH = fakeBinDir;
+      const grokNoZstdResult = await preflightTool.execute!("oracle-preflight-grok-no-zstd", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+      assert(asRecord(grokNoZstdResult.details)?.ready === true, "Grok preflight should not require local zstd because Grok archives use tar.gz");
+      const chatGptNoZstdResult = await preflightTool.execute!("oracle-preflight-explicit-chatgpt-no-zstd", { provider: "chatgpt" }, undefined, () => { }, persistedCtx) as { details?: unknown };
+      const chatGptNoZstdError = asRecord(asRecord(chatGptNoZstdResult.details)?.error);
+      assert(chatGptNoZstdError?.code === "local_dependency_missing" && chatGptNoZstdError?.rejectedValue === "zstd", "explicit ChatGPT preflight should require zstd even when the configured default provider is Grok");
+    } finally {
+      if (originalNoZstdPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalNoZstdPath;
+    }
 
     await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await mkdir(defaultSeedDir, { recursive: true, mode: 0o700 });
@@ -1677,7 +1718,7 @@ async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: Oracl
     assert(persistedJob?.projectId === workspaceRoot, "oracle submit should persist the workspace root as the project id when invoked from a subdirectory cwd");
     assert(persistedJob?.selection.preset === "thinking_light", "oracle submit should honor workspace-root project config defaults when invoked from a subdirectory cwd");
 
-    const archiveEntries = execFileSync("sh", ["-c", `zstd -dc ${shellQuote(persistedJob.archivePath)} | tar -tf -`], { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+    const archiveEntries = listArchiveEntries(persistedJob.archivePath);
     assert(archiveEntries.includes("README.md"), "whole-repo archive selection from a subdirectory should still include workspace-root files");
     assert(archiveEntries.includes("packages/app/nested.txt"), "whole-repo archive selection from a subdirectory should still include nested project files");
   } finally {
@@ -3524,6 +3565,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const indexSource = await readFile(new URL("../extensions/oracle/index.ts", import.meta.url), "utf8");
   const commandsSource = await readFile(new URL("../extensions/oracle/lib/commands.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
+  const archiveSource = await readFile(new URL("../extensions/oracle/lib/archive.ts", import.meta.url), "utf8");
   const configSource = await readFile(new URL("../extensions/oracle/lib/config.ts", import.meta.url), "utf8");
   const jobsSource = await readFile(new URL("../extensions/oracle/lib/jobs.ts", import.meta.url), "utf8");
   const pollerSource = await readFile(new URL("../extensions/oracle/lib/poller.ts", import.meta.url), "utf8");
@@ -3702,6 +3744,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("Retry after ..."), "README troubleshooting should mention the oracle-clean retry-after hint");
   assert(readmeSource.includes("## Available providers and presets"), "README should document available oracle preset ids");
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
+  assert(readmeSource.includes("Grok uploads now use `.tar.gz` archives"), "README should document Grok's gzip archive format because Grok lacks zstd extraction tools");
   assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
   assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
   for (const [presetId, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
@@ -3771,8 +3814,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
   assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
   assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath"), "oracle submit should build archives from the stable workspace-root cwd");
+  assert(toolsSource.includes("resolveOracleProviderArchivePlan(selection.provider)"), "oracle submit should select archive format, extension, and size limit from the resolved provider archive plan");
   assert(toolsSource.includes("requirePersistedSessionFile(getSessionFile(ctx), \"submit oracle jobs\")"), "oracle submit should reject no-session contexts instead of collapsing them onto a project-level ephemeral session id");
-  assert(toolsSource.includes("await assertOracleSubmitPrerequisites(config);"), "oracle submit should preflight locally knowable blockers before archiving or persisting jobs");
+  assert(toolsSource.includes("await assertOracleSubmitPrerequisites(config, provider);"), "oracle submit should preflight locally knowable blockers against the selected provider before archiving or persisting jobs");
   assert(toolsSource.includes("buildOracleToolErrorResult"), "oracle tools should centralize structured error payload creation");
   assert(toolsSource.includes('pi.on("tool_result"'), "oracle tools should register a tool_result hook so structured oracle errors still surface with isError=true");
   assert(toolsSource.includes("job: redactJobDetails(job"), "oracle submit should now return structured job details under details.job");
@@ -3940,7 +3984,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(jobsSource.includes("markOracleJobCreated"), "job creation should register durable lifecycle breadcrumbs through the shared lifecycle helper");
   assert(jobsSource.includes("cancelRequestedAt"), "oracle jobs should persist durable cancel intent before reconciling worker teardown");
   assert(jobsSource.includes("Recovered requested cancellation"), "reconcile should preserve requested-cancel semantics instead of always failing stale active jobs");
-  assert(toolsSource.includes("zstd.stdin.on(\"error\", handlePipeError)"), "oracle archive creation should guard the zstd stdin pipe so downstream early exits do not crash the host process");
+  assert(archiveSource.includes("target.input.on(\"error\", handlePipeError)"), "oracle archive creation should guard compressor input pipes so downstream early exits do not crash the host process");
   assert(sharedObservabilitySource.includes("heartbeat:"), "shared observability helpers should surface heartbeat freshness in active job summaries");
   assert(sharedObservabilitySource.includes("formatOracleCancelOutcome"), "shared observability helpers should centralize truthful cancel outcome messaging");
   assert(commandsSource.includes("formatOracleCancelOutcome"), "oracle cancel command should use the shared truthful cancel outcome formatter");
@@ -3960,6 +4004,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const browserProfileHelpersSource = await readFile(new URL("../extensions/oracle/shared/browser-profile-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
+  const archiveSource = await readFile(new URL("../extensions/oracle/lib/archive.ts", import.meta.url), "utf8");
   const runtimeSource = await readFile(new URL("../extensions/oracle/lib/runtime.ts", import.meta.url), "utf8");
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
@@ -4046,8 +4091,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(queueSource.includes("runQueuedJobPromotionPass"), "global queued promotion should delegate the shared queued-promotion orchestration helper");
   assert(queueSource.includes("transitionOracleJobPhase"), "global queued promotion should apply queue state changes through the shared lifecycle helper");
   assert(toolsSource.includes("appendCleanupWarnings(job.id, cleanupReport.warnings)"), "submit failure teardown should persist cleanup warnings when runtime cleanup is incomplete");
-  assert(toolsSource.includes("ARCHIVE_COMMAND_TIMEOUT_MS = 120_000"), "archive creation should enforce a subprocess timeout envelope");
-  assert(toolsSource.includes("Oracle archive subprocess timed out after"), "archive creation should surface timeout failures clearly");
+  assert(archiveSource.includes("ARCHIVE_COMMAND_TIMEOUT_MS = 120_000"), "archive creation should enforce a subprocess timeout envelope");
+  assert(archiveSource.includes("Oracle archive subprocess timed out after"), "archive creation should surface timeout failures clearly");
   assert(workerSource.includes("applyOracleJobCleanupWarnings"), "worker should persist cleanup warnings when runtime teardown is incomplete through the shared lifecycle helper");
   assert(workerSource.includes("Stopping queued cleanup promotion after"), "cleanup-driven queued promotion should stop when teardown leaves warnings");
   assert(workerSource.includes("if (existing?.jobId === job.id) return true;"), "cleanup-driven queued promotion should reuse same-job conversation leases during retry");
@@ -4194,6 +4239,49 @@ async function testArchiveDefaultExclusions(): Promise<void> {
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(excludedOnlyDir, { recursive: true, force: true });
+  }
+}
+
+async function testGrokArchiveUsesGzipTarFormat(config: OracleConfig): Promise<void> {
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-grok-gzip-"));
+  const archivePath = join(tmpdir(), `oracle-archive-grok-gzip-${randomUUID()}.tar.gz`);
+  const jobId = `sanity-grok-archive-${randomUUID()}`;
+  try {
+    await writeFile(join(fixtureDir, "README.md"), "# grok archive\n", { encoding: "utf8", mode: 0o600 });
+    assert(resolveOracleArchiveFormat("chatgpt") === "tar.zst", "ChatGPT archives should stay zstd-compressed tar files");
+    assert(resolveOracleArchiveFormat("grok") === "tar.gz", "Grok archives should use gzip-compressed tar files because Grok lacks zstd extraction tools");
+
+    const archive = await createArchiveForTesting(fixtureDir, ["."], archivePath, {
+      archiveFormat: resolveOracleArchiveFormat("grok"),
+      maxBytes: 16 * 1024,
+    });
+    assert(archive.archiveBytes > 0, "Grok tar.gz archive creation should report a non-empty archive size");
+    assert(listArchiveEntries(archivePath).includes("README.md"), "Grok tar.gz archives should remain normal tar archives that providers can extract without zstd");
+
+    const runtime = {
+      runtimeId: `runtime-${randomUUID()}`,
+      runtimeSessionName: `oracle-runtime-${randomUUID()}`,
+      runtimeProfileDir: `/tmp/oracle-runtime-${randomUUID()}`,
+      seedGeneration: new Date().toISOString(),
+    };
+    const job = await createJob(
+      jobId,
+      {
+        prompt: "sanity",
+        files: ["README.md"],
+        selection: resolveOracleGrokMode("heavy"),
+        requestSource: "tool",
+      },
+      fixtureDir,
+      `/tmp/oracle-sanity-grok-session-${randomUUID()}.jsonl`,
+      config,
+      runtime,
+    );
+    assert(job.archivePath.endsWith(".tar.gz"), "Grok oracle jobs should persist a .tar.gz archive path");
+  } finally {
+    await rm(archivePath, { force: true });
+    await cleanupJob(jobId).catch(() => undefined);
+    await rm(fixtureDir, { recursive: true, force: true });
   }
 }
 
@@ -5912,6 +6000,7 @@ async function runPlatformSanity(): Promise<void> {
 
   sanityProgress("platform archive/process/helpers");
   await testArchiveDefaultExclusions();
+  await testGrokArchiveUsesGzipTarFormat(config);
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();
@@ -6006,6 +6095,7 @@ async function main() {
   await testResponseTimeoutGuard();
   sanityProgress("archive");
   await testArchiveDefaultExclusions();
+  await testGrokArchiveUsesGzipTarFormat(config);
   await testWorkspaceRootPrefersNearestProjectMarkersOverUnrelatedAncestorGit();
   testArchiveEntryGroupMergeHandlesLargeArrays();
   testArchiveRejectsBlankInputs();

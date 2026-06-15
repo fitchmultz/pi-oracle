@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.7.12 - 2026-06-15
+
+### Changed
+- switched Grok oracle submissions to gzip-compressed tar archives (`.tar.gz`) so Grok can extract uploaded context without `zstd`
+- centralized provider archive policy for archive format, upload ceiling, and local compression prerequisites
+- split oracle archive construction out of the agent-facing tool orchestration module
+
+### Fixed
+- preserved ChatGPT `.tar.zst` submissions and `zstd` preflight requirements when ChatGPT is explicitly selected while Grok is the configured default provider
+
+### Validation
+- ran the full `npm run verify:oracle` release gate
+- verified isolated local `pi` submissions create extractable Grok `.tar.gz` and explicit ChatGPT `.tar.zst` archives
+
 ## 0.7.11 - 2026-06-15
 
 ### Changed

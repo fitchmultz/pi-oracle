@@ -11,7 +11,8 @@ import { delimiter, dirname, join } from "node:path";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
-import type { OracleConfig } from "./config.js";
+import type { OracleConfig, OracleProvider } from "./config.js";
+import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
 
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
@@ -49,12 +50,15 @@ function cpCommand(): string {
   return process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 }
 
-function requiredOracleDependencies(config: OracleConfig): Array<{ name: string; command: string }> {
+function requiredOracleDependencies(config: OracleConfig, provider = config.defaults.provider): Array<{ name: string; command: string }> {
+  const archivePlan = resolveOracleProviderArchivePlan(provider);
   const dependencies = [
     { name: "agent-browser", command: AGENT_BROWSER_BIN },
     { name: "tar", command: "tar" },
-    { name: "zstd", command: "zstd" },
   ];
+  if (archivePlan.requiresZstd) {
+    dependencies.push({ name: "zstd", command: "zstd" });
+  }
   if (config.browser.cloneStrategy === "apfs-clone" && process.platform === "darwin") {
     dependencies.push({ name: "cp", command: cpCommand() });
   }
@@ -325,11 +329,11 @@ export async function assertOracleAuthSeedProfileReady(config: OracleConfig): Pr
   }
 }
 
-export async function assertOracleSubmitPrerequisites(config: OracleConfig): Promise<void> {
+export async function assertOracleSubmitPrerequisites(config: OracleConfig, provider: OracleProvider = config.defaults.provider): Promise<void> {
   assertSafeOracleProfilePath(config.browser.runtimeProfilesDir, "runtime profiles", config);
   await assertOracleAuthSeedProfileReady(config);
   await assertConfiguredBrowserExecutableReady(config.browser.executablePath);
-  for (const dependency of requiredOracleDependencies(config)) {
+  for (const dependency of requiredOracleDependencies(config, provider)) {
     await assertRequiredLocalDependencyReady(dependency.name, dependency.command);
   }
   await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles");

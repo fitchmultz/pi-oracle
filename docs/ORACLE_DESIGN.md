@@ -17,7 +17,7 @@ Create a `pi` extension that lets the user or agent consult ChatGPT.com or Grok 
 
 - manual invocation via `/oracle ...`
 - automatic invocation by the agent in rare high-difficulty cases
-- mandatory project-context archive upload (`.tar.zst`)
+- mandatory project-context archive upload (`.tar.zst` for ChatGPT, `.tar.gz` for Grok)
 - long-running execution in the background
 - durable response/artifact persistence plus best-effort wake-the-agent behavior when the oracle response is ready
 - oracle requires a persisted pi session identity; in-memory/no-session contexts are rejected instead of risking cross-session wake-up misdelivery
@@ -340,7 +340,8 @@ Default location: `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`
 ${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/
   job.json
   prompt.md
-  context-<job-id>.tar.zst
+  context-<job-id>.tar.zst   # ChatGPT
+  context-<job-id>.tar.gz    # Grok
   response.md
   artifacts.json
   artifacts/
@@ -570,7 +571,7 @@ Retained from the earlier MVP:
 - `oracle_auth`, `oracle_submit`, `oracle_read`, `oracle_cancel`
 - detached background worker model
 - `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/...` state layout
-- shell-safe archive creation using `tar` piped to `zstd`
+- shell-safe archive creation using tar streams: `zstd` compression for ChatGPT and gzip compression for Grok
 - private permissions and atomic writes
 - stale-worker reconciliation
 - upload ordering: attach → confirm → fill → send
