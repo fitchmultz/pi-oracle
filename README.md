@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Validated on macOS, Linux, and Windows native with Chromium-family browsers and pi `0.79.1`. Pi `0.79.1+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Validated on macOS, Linux, and Windows native with Chromium-family browsers and pi `0.79.4`. Pi `0.79.4+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -77,7 +77,7 @@ You need:
 
 - macOS, Linux, or Windows native
 - Node.js 22 or newer
-- Suggested tested floor: `pi` 0.79.1 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
+- Suggested tested floor: `pi` 0.79.4 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
 - `agent-browser`, `tar`, and `zstd` available on the machine
@@ -184,7 +184,7 @@ Agent-facing tools:
 
 Most users can start with defaults. Set an agent-level config only when you need a non-default provider, mode, preset, or browser profile.
 
-Pi 0.79.1 gates project-local inputs behind project trust. `pi-oracle` preserves its historical risk-on extension behavior for existing users: project-local `.pi/extensions/oracle.json` safe overrides still load by default for compatibility. They are ignored when you explicitly opt out of project-local inputs with `--no-approve` or save a “do not trust” decision for the project. Privileged browser/auth settings still come only from the agent-level config.
+Pi 0.79.4 gates project-local inputs behind project trust. `pi-oracle` preserves its historical risk-on extension behavior for existing users: project-local `.pi/extensions/oracle.json` safe overrides still load by default for compatibility. They are ignored when you explicitly opt out of project-local inputs with `--no-approve` or save a “do not trust” decision for the project. Privileged browser/auth settings still come only from the agent-level config.
 
 `~/.pi/agent/extensions/oracle.json`
 

@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { getAgentDir, hasProjectTrustInputs, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import {
   assertNotKnownBrowserUserDataPath,
@@ -351,7 +351,7 @@ function isProjectConfigTrusted(cwd: string, agentDir: string, projectConfigExis
   const trustCwd = options?.projectConfigTrustCwd ?? cwd;
   const cliOverride = getProjectTrustCliOverride();
   if (cliOverride !== undefined) return cliOverride;
-  if (!projectConfigExists && !hasProjectTrustInputs(trustCwd)) return true;
+  if (!projectConfigExists && !hasTrustRequiringProjectResources(trustCwd)) return true;
   try {
     const trustStore = new ProjectTrustStore(agentDir);
     const trustDecision = trustStore.get(trustCwd);

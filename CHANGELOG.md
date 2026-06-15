@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.11 - 2026-06-15
+
+### Changed
+- updated the local pi development and validation baseline to `@earendil-works/*` `0.79.4`
+- refreshed oracle docs and sanity-check baselines for pi `0.79.4`
+
+### Validation
+- ran the full `npm run verify:oracle` release gate under pi `0.79.4`
+
 ## 0.7.10 - 2026-06-13
 
 ### Added

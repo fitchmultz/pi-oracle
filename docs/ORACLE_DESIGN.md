@@ -7,7 +7,7 @@ Companion doc:
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
 
 Compatibility target:
-- `pi` 0.79.1+ is the suggested tested floor for current project-trust-aware package/runtime validation
+- `pi` 0.79.4+ is the suggested tested floor for current project-trust-aware package/runtime validation
 - package metadata keeps pi runtime packages as optional wildcard peers, so this suggested floor is not enforced as a hard npm install requirement
 - current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 
@@ -234,7 +234,7 @@ Merged config locations:
 - global: `~/.pi/agent/extensions/oracle.json`
 - project: `.pi/extensions/oracle.json`
 
-Project config remains restricted to safe overrides only. On Pi 0.79.1+, pi itself gates project-local inputs behind project trust, but `pi-oracle` keeps its historical risk-on extension behavior for this package-specific safe override file: `.pi/extensions/oracle.json` loads by default for compatibility, and is ignored when Pi reports the project is untrusted, including `--no-approve` or saved “do not trust” decisions. This preserves the existing extension experience while still honoring explicit opt-out/distrust decisions. Browser/auth settings remain global-only because they control local privileged browser state.
+Project config remains restricted to safe overrides only. On Pi 0.79.4+, pi itself gates project-local inputs behind project trust, but `pi-oracle` keeps its historical risk-on extension behavior for this package-specific safe override file: `.pi/extensions/oracle.json` loads by default for compatibility, and is ignored when Pi reports the project is untrusted, including `--no-approve` or saved “do not trust” decisions. This preserves the existing extension experience while still honoring explicit opt-out/distrust decisions. Browser/auth settings remain global-only because they control local privileged browser state.
 
 ### Current config shape
 

@@ -90,7 +90,7 @@ On each required target, `platform-build`:
 5. runs `npm pack`;
 6. creates a fresh target-local pi project;
 7. runs `npm install --no-save <packed tarball>`;
-8. runs `pi install -l ./node_modules/pi-oracle --approve` so Pi 0.79.1 project-trust gating intentionally trusts the temporary fixture;
+8. runs `pi install -l ./node_modules/pi-oracle --approve` so Pi 0.79.4 project-trust gating intentionally trusts the temporary fixture;
 9. runs `pi list --approve`;
 10. asserts the installed package came from `node_modules/pi-oracle` and did not use `pi -e` / source-extension shortcuts.
 
