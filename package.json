@@ -1,6 +1,6 @@
 {
   "name": "pi-oracle",
-  "version": "0.7.12",
+  "version": "0.7.13",
   "description": "ChatGPT and Grok web-oracle extension for pi with isolated browser auth, async jobs, and project-context archives.",
   "private": false,
   "license": "MIT",
@@ -36,7 +36,8 @@
     "platform-smoke.config.mjs",
     "scripts/platform-smoke.mjs",
     "scripts/platform-smoke",
-    "scripts/oracle-real-smoke.mjs"
+    "scripts/oracle-real-smoke.mjs",
+    "scripts/oracle-chatgpt-preset-proof.mjs"
   ],
   "pi": {
     "extensions": [
@@ -49,7 +50,7 @@
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
     "pack:check": "npm pack --dry-run",
-    "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
+    "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
     "test": "npm run verify:oracle",
     "prepublishOnly": "npm run release:check",
     "check:platform-smoke": "node --check scripts/platform-smoke.mjs && node --check scripts/platform-smoke/assertions.mjs && node --check scripts/platform-smoke/artifacts.mjs && node --check scripts/platform-smoke/crabbox-runner.mjs && node --check scripts/platform-smoke/doctor.mjs && node --check scripts/platform-smoke/targets.mjs && node scripts/platform-smoke/invariants.mjs",
@@ -61,12 +62,14 @@
     "smoke:platform:windows-native": "node scripts/platform-smoke.mjs run --target windows-native",
     "smoke:real": "npm run smoke:real:packed",
     "smoke:real:doctor": "node scripts/oracle-real-smoke.mjs doctor",
-    "release:check": "npm run verify:oracle && npm run smoke:platform:all",
+    "release:check": "npm run verify:oracle && npm run release:proof:chatgpt-presets && npm run smoke:platform:all",
     "check:oracle-real-smoke": "node --check scripts/oracle-real-smoke.mjs",
+    "check:oracle-release-proof": "node --check scripts/oracle-chatgpt-preset-proof.mjs",
+    "release:proof:chatgpt-presets": "node scripts/oracle-chatgpt-preset-proof.mjs check",
     "smoke:real:packed": "node scripts/oracle-real-smoke.mjs run --mode packed",
     "smoke:real:source": "node scripts/oracle-real-smoke.mjs run --mode source",
     "sanity:oracle:platform": "node scripts/oracle-sanity-runner.mjs --mode platform",
-    "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run sanity:oracle:platform && npm run pack:check"
+    "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run sanity:oracle:platform && npm run pack:check"
   },
   "dependencies": {
     "@steipete/sweet-cookie": "^0.3.0"

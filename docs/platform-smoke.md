@@ -49,7 +49,8 @@ Use the narrowest workflow that proves the change. Do not run the full platform 
 | Everyday local iteration | `npm run verify:oracle` | Syntax, bundle, platform-smoke invariants, type checks, oracle sanity, and package dry-run pass locally. |
 | Platform-sensitive change | `npm run smoke:platform:doctor`, then `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` | Target setup is ready and the affected platform/suite works without paying for unrelated targets. |
 | Platform matrix proof | `npm run smoke:platform:all` | Doctor-first packed-install proof passes on every required target and suite. |
-| Publish/release gate | `npm run release:check` | Local verification (`verify:oracle`) passes, then the doctor-first platform matrix passes. |
+| ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` | Fresh loaded-extension proof exists for every canonical ChatGPT preset. |
+| Publish/release gate | `npm run release:check` | Local verification (`verify:oracle`) passes, fresh ChatGPT preset proof exists, then the doctor-first platform matrix passes. |
 
 Platform-sensitive changes include archive behavior, process cleanup, runtime/browser profile handling, package metadata, Crabbox harness code, or anything that may differ across macOS/Linux/Windows.
 
@@ -77,7 +78,7 @@ Full release gate:
 npm run release:check
 ```
 
-`release:check` runs `verify:oracle` before `smoke:platform:all`, matching the Crabbox doctor-first release order: cheap harness checks, doctor, full matrix, then artifact review. `prepublishOnly` runs `npm run release:check`.
+`release:check` runs `verify:oracle`, then `release:proof:chatgpt-presets`, then `smoke:platform:all`, matching the release order: cheap harness checks, fresh live ChatGPT preset proof, doctor, full matrix, then artifact review. `prepublishOnly` runs `npm run release:check`.
 
 ## What `platform-build` proves
 

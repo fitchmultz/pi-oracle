@@ -23,12 +23,14 @@ import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABE
 import {
   buildAllowedChatGptOrigins,
   deriveAssistantCompletionSignature,
+  matchesCompactIntelligenceControlLabel,
   matchesCompactIntelligenceOpenerLabel,
   matchesModelFamilyLabel,
   matchesRequestedModelControlLabel,
   requestedEffortLabel,
   effortSelectionVisible,
   snapshotCanSafelySkipModelConfiguration,
+  snapshotHasClosedCompactSelection,
   snapshotHasModelConfigurationUi,
   snapshotHasModelOpener,
   snapshotHasUsableComposerControls,
@@ -78,6 +80,7 @@ const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000;
 const ARTIFACT_DOWNLOAD_MAX_ATTEMPTS = 2;
 const AGENT_BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 const PROFILE_CLONE_TIMEOUT_MS = 120_000;
+const MODEL_CONFIGURATION_OPEN_TIMEOUT_MS = 45_000;
 const MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS = 20_000;
 const MODEL_CONFIGURATION_SETTLE_POLL_MS = 250;
 const MODEL_CONFIGURATION_CLOSE_RETRY_MS = 1_000;
@@ -1091,15 +1094,9 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
     return { state: "challenge_blocking", message: "ChatGPT is showing a challenge/verification page" };
   }
 
-  const outagePatterns = [
-    /something went wrong/i,
-    /a network error occurred/i,
-    /an error occurred while connecting to the websocket/i,
-    /try again later/i,
-    /rate limit/i,
-  ];
-  if (outagePatterns.some((pattern) => pattern.test(text))) {
-    return { state: "transient_outage_error", message: "ChatGPT is showing a transient outage/error page" };
+  const outageText = detectProviderTransientErrorText(text);
+  if (outageText) {
+    return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/rate-limit page: ${outageText}` };
   }
 
   const allowedOrigins = buildAllowedChatGptOrigins(job.config.browser.chatUrl, job.config.browser.authUrl);
@@ -1162,8 +1159,9 @@ function classifyGrokPage({ url, snapshot, body }) {
   if (/captcha|cloudflare|verify you are human|unusual activity|suspicious activity/i.test(text)) {
     return { state: "challenge_blocking", message: "Grok is showing a challenge/verification page" };
   }
-  if (/something went wrong|network error|try again later|rate limit/i.test(text)) {
-    return { state: "transient_outage_error", message: "Grok is showing a transient outage/error page" };
+  const outageText = detectProviderTransientErrorText(text);
+  if (outageText) {
+    return { state: "transient_outage_error", message: `Grok is showing a transient outage/rate-limit page: ${outageText}` };
   }
   const onGrokOrigin = typeof url === "string" && url.startsWith("https://grok.com");
   if (onGrokOrigin && hasGrokLoginCta(text)) {
@@ -1250,6 +1248,42 @@ function detectUploadErrorText(text) {
   return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
 }
 
+function detectProviderTransientErrorText(text) {
+  const patterns = [
+    "Too many requests",
+    "rate limit",
+    "try again later",
+    "Something went wrong",
+    "A network error occurred",
+    "An error occurred while connecting to the websocket",
+  ];
+  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
+}
+
+function detectProviderVisibleBlockerText(text) {
+  const patterns = [
+    "Too many requests",
+    "rate limit",
+  ];
+  return patterns.find((pattern) => text.toLowerCase().includes(pattern.toLowerCase()));
+}
+
+function formatProviderTransientErrorMessage(job, errorText, context) {
+  const providerLabel = isGrokJob(job) ? "Grok" : "ChatGPT";
+  return `${providerLabel} is showing a transient outage/rate-limit page${context ? ` while ${context}` : ""}: ${errorText}`;
+}
+
+function providerTransientErrorMessage(job, text, context) {
+  const errorText = detectProviderVisibleBlockerText(text);
+  if (!errorText) return "";
+  return formatProviderTransientErrorMessage(job, errorText, context);
+}
+
+function throwIfProviderTransientError(job, text, context) {
+  const message = providerTransientErrorMessage(job, text, context);
+  if (message) throw new Error(message);
+}
+
 function detectResponseFailureText(text) {
   const patterns = [
     "Message delivery timed out",
@@ -1289,6 +1323,7 @@ async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
+    throwIfProviderTransientError(job, snapshot, "uploading the archive");
 
     const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
     if (errorText) {
@@ -1323,6 +1358,7 @@ async function waitForSendReady(job) {
     await heartbeat();
     const snapshot = await snapshotText(job);
     const body = await pageText(job).catch(() => "");
+    throwIfProviderTransientError(job, snapshot, "waiting for send readiness");
     const errorText = detectUploadErrorText(`${snapshot}\n${body}`);
     if (errorText) {
       throw new Error(`Upload error detected: ${errorText}`);
@@ -1366,6 +1402,7 @@ async function sendAcceptanceState(job, baselineAssistantCount) {
     urlKnown: urlResult.ok,
     assistantCount: Math.max(baselineAssistantCount, messages.length),
     stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming"),
+    transientErrorText: detectProviderVisibleBlockerText(snapshot) || "",
   };
 }
 
@@ -1386,6 +1423,7 @@ async function waitForSendAccepted(job, beforeSend, options = {}) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const afterSend = await sendAcceptanceState(job, beforeSend.assistantCount || 0);
+    if (afterSend.transientErrorText) throw new Error(formatProviderTransientErrorMessage(job, afterSend.transientErrorText, "waiting for send acceptance"));
     if (providerSendAccepted(beforeSend, afterSend)) return true;
     await sleep(500);
   }
@@ -1420,12 +1458,13 @@ async function dismissProFeedbackModal(job, snapshot) {
 }
 
 async function openModelConfiguration(job) {
-  const timeoutAt = Date.now() + 15_000;
+  const timeoutAt = Date.now() + MODEL_CONFIGURATION_OPEN_TIMEOUT_MS;
   let lastSnapshot = "";
 
   while (Date.now() < timeoutAt) {
     const initialSnapshot = await snapshotText(job);
     lastSnapshot = initialSnapshot;
+    throwIfProviderTransientError(job, initialSnapshot, "opening model configuration");
     if (snapshotHasModelConfigurationUi(initialSnapshot)) return initialSnapshot;
     if (await dismissProFeedbackModal(job, initialSnapshot)) continue;
 
@@ -1438,6 +1477,7 @@ async function openModelConfiguration(job) {
       await agentBrowser(job, "wait", "800");
       const after = await snapshotText(job);
       lastSnapshot = after;
+      throwIfProviderTransientError(job, after, "opening model configuration");
       if (snapshotHasModelConfigurationUi(after)) return after;
       if (canUseOpenModelMenuForSelection(after, job.selection)) return after;
 
@@ -1451,6 +1491,7 @@ async function openModelConfiguration(job) {
         await agentBrowser(job, "wait", "1200");
         const postConfigure = await snapshotText(job);
         lastSnapshot = postConfigure;
+        throwIfProviderTransientError(job, postConfigure, "opening model configuration");
         if (snapshotHasModelConfigurationUi(postConfigure)) return postConfigure;
         if (canUseOpenModelMenuForSelection(postConfigure, job.selection)) return postConfigure;
       }
@@ -1544,22 +1585,28 @@ async function configureModel(job) {
     throw new Error(`Could not find model family control for ${job.selection.modelFamily}`);
   }
 
+  let compactSelectionVerifiedAfterClick = false;
   if (!alreadyConfiguredInUi && !familyAlreadySelectedInUi && familyEntry) {
+    const clickedCompactControl = matchesCompactIntelligenceControlLabel(familyEntry.label);
     await clickRef(job, familyEntry.ref);
     await agentBrowser(job, "wait", "800");
     familySnapshot = await snapshotText(job);
     verificationSnapshot = familySnapshot;
+    compactSelectionVerifiedAfterClick = clickedCompactControl && snapshotHasClosedCompactSelection(familySnapshot, job.selection);
+    if (compactSelectionVerifiedAfterClick) {
+      await log(`Verified compact ChatGPT selection after menu close for family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
+    }
     const postClickControlOptions = {
       ignoreCompactTierButtons: snapshotHasCompactIntelligenceMenuControls(familySnapshot),
       ignoreCompactOnlyButtons: snapshotHasLegacyEffortCombobox(familySnapshot),
     };
     familyEntry = findEntry(familySnapshot, (candidate) => matchesRequestedModelControl(candidate, job.selection, postClickControlOptions));
-    if (!familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
+    if (!compactSelectionVerifiedAfterClick && !familyEntry && !snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection)) {
       throw new Error(`Requested model family did not remain selected: ${job.selection.modelFamily}`);
     }
   }
 
-  if (job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro") {
+  if ((job.selection.modelFamily === "thinking" || job.selection.modelFamily === "pro") && !compactSelectionVerifiedAfterClick) {
     const effortLabel = requestedEffortLabel(job.selection);
     if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel)) {
       const opened = await openEffortDropdown(job);
@@ -1589,7 +1636,8 @@ async function configureModel(job) {
   if (job.selection.modelFamily === "instant") {
     const desiredAutoSwitchState = job.selection.autoSwitchToThinking === true;
     const currentAutoSwitchState = autoSwitchToThinkingSelectionVisible(familySnapshot);
-    const compactInstantAlreadyVerified = desiredAutoSwitchState && currentAutoSwitchState === undefined && snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
+    const compactInstantAlreadyVerified = compactSelectionVerifiedAfterClick
+      || (desiredAutoSwitchState && currentAutoSwitchState === undefined && snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection));
     if (!compactInstantAlreadyVerified && currentAutoSwitchState !== desiredAutoSwitchState && (desiredAutoSwitchState || currentAutoSwitchState === true)) {
       await clickAutoSwitchToThinkingControl(job);
       await agentBrowser(job, "wait", "400");
@@ -1598,7 +1646,7 @@ async function configureModel(job) {
     }
   }
 
-  const stronglyVerified = snapshotStronglyMatchesRequestedModel(verificationSnapshot, job.selection);
+  const stronglyVerified = compactSelectionVerifiedAfterClick || snapshotStronglyMatchesRequestedModel(verificationSnapshot, job.selection);
   if (!stronglyVerified) {
     throw new Error(`Could not verify requested model settings in configuration UI for ${job.selection.modelFamily}`);
   }
@@ -1793,6 +1841,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming");
     const hasRetryButton = snapshot.includes('button "Retry"');
     const copyResponseCount = isGrokJob(job) ? (snapshot.match(/button "Copy"/g) || []).length : (snapshot.match(/Copy response/g) || []).length;
+    throwIfProviderTransientError(job, snapshot, "waiting for response completion");
     const responseFailureText = detectResponseFailureText(`${snapshot}\n${body}`);
     const messages = await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];

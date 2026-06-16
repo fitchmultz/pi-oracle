@@ -92,7 +92,7 @@ function testCanonicalWorkflowConfig() {
   assert.deepEqual(config.workflows?.release?.commands, ["npm run release:check"], "release workflow should use the full local-plus-platform release gate");
   assert.equal(config.requiredCrabbox?.minVersion, "0.26.0", "Crabbox baseline should match the documented provider contract");
   assert.equal(pkg.scripts["smoke:platform:all"], "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "full platform smoke should remain doctor-first and cover all required targets");
-  assert.match(pkg.scripts["release:check"], /npm run verify:oracle && npm run smoke:platform:all/, "release check should combine local verification and full platform smoke");
+  assert.match(pkg.scripts["release:check"], /npm run verify:oracle && npm run release:proof:chatgpt-presets && npm run smoke:platform:all/, "release check should combine local verification, ChatGPT preset proof, and full platform smoke");
   const runnerSource = readFileSync(new URL("./crabbox-runner.mjs", import.meta.url), "utf8");
   assert.match(runnerSource, /PLATFORM_SMOKE_CRABBOX/, "runner should honor reusable Crabbox binary override");
   assert.match(runnerSource, /PLATFORM_SMOKE_MAC_WORK_ROOT/, "runner should honor reusable macOS work-root override");

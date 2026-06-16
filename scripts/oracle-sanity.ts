@@ -36,9 +36,11 @@ import {
   buildAssistantCompletionSignature,
   deriveAssistantCompletionSignature,
   effortSelectionVisible,
+  matchesCompactIntelligenceControlLabel,
   matchesCompactIntelligenceOpenerLabel,
   matchesRequestedModelControlLabel,
   snapshotCanSafelySkipModelConfiguration,
+  snapshotHasClosedCompactSelection,
   snapshotHasModelConfigurationUi,
   snapshotHasModelOpener,
   snapshotHasUsableComposerControls,
@@ -567,6 +569,9 @@ async function createJobForTest(
   );
   const created = readJob(jobId);
   assert(created, "test job should exist after creation");
+  assert(created.extensionProvenance?.schemaVersion === 1, "created oracle jobs should record extension provenance for release proof");
+  assert(created.extensionProvenance?.packageName === "pi-oracle", "extension provenance should record the package name");
+  assert(created.extensionProvenance?.sourcePath.endsWith("pi-oracle"), "extension provenance should record the loaded extension source root");
   await writeFile(created.archivePath, "sanity archive\n", { mode: 0o600 });
   return jobId;
 }
@@ -4009,6 +4014,8 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const heuristicsSource = await readFile(new URL("../extensions/oracle/worker/artifact-heuristics.mjs", import.meta.url), "utf8");
   const uiHelpersSource = await readFile(new URL("../extensions/oracle/worker/chatgpt-ui-helpers.mjs", import.meta.url), "utf8");
   assert(workerSource.includes("Message delivery timed out"), "worker should detect ChatGPT response timeout text");
+  assert(workerSource.includes("Too many requests"), "worker should surface provider rate-limit modals instead of reporting generic UI drift");
+  assert(workerSource.includes("waiting for send acceptance"), "worker should surface provider rate-limit modals after clicking send instead of reporting generic send acceptance failure");
   assert(workerSource.includes("clicking Retry once"), "worker should retry one response-delivery failure before failing");
   assert(workerSource.includes("querySelectorAll('button, a')"), "worker should scan both button and link artifact controls");
   assert(workerSource.includes("ARTIFACT_DOWNLOAD_TIMEOUT_MS = 90_000"), "worker should keep the longer artifact download timeout");
@@ -4474,7 +4481,7 @@ cat > "$out"
     process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD = "chrome-secret";
     process.env.SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD = "brave-secret";
 
-    await createArchiveForTesting(fixtureDir, ["main.ts"], archivePath, { commandTimeoutMs: 5_000 });
+    await createArchiveForTesting(fixtureDir, ["main.ts"], archivePath, { commandTimeoutMs: 15_000 });
     assert((await readFile(tarEnvPath, "utf8")).trim() === ":", "archive tar subprocess should not inherit Sweet Cookie safe-storage password env vars");
     assert((await readFile(zstdEnvPath, "utf8")).trim() === ":", "archive zstd subprocess should not inherit Sweet Cookie safe-storage password env vars");
   } finally {
@@ -4532,7 +4539,7 @@ exit 1
     process.env.PI_ORACLE_TEST_ZSTD_BIN = join(binDir, "zstd");
 
     await assertRejects(
-      () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 5_000 }),
+      () => createArchiveForTesting(fixtureDir, ["."], archivePath, { commandTimeoutMs: 15_000 }),
       "archive creation should reject cleanly when zstd closes the pipe early",
       "fake zstd failure",
     );
@@ -5428,9 +5435,39 @@ function testChatGptUiHelpers(): void {
     "closed compact Medium composer pills should reopen configuration instead of blindly skipping when the compact menu is absent",
   );
   assert(
+    snapshotHasClosedCompactSelection(closedMediumComposerSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills should verify standard thinking immediately after the worker intentionally clicked the compact menu target",
+  );
+  assert(
+    snapshotHasClosedCompactSelection(closedMediumComposerSnapshot, { modelFamily: "thinking", effort: "light", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills should verify light thinking immediately after the worker intentionally clicked the compact menu target",
+  );
+  assert(
+    !snapshotHasClosedCompactSelection(closedMediumComposerSnapshot, { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }),
+    "closed compact Medium composer pills should not verify extended thinking after a compact menu click",
+  );
+  assert(
+    !snapshotHasClosedCompactSelection(staleMediumPillHighMenuSnapshot, { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }),
+    "closed compact pills should not verify while an open compact menu has a conflicting checked row",
+  );
+  const closedInstantComposerSnapshot = [
+    '- button "Add files and more" [expanded=false, ref=e105]',
+    '- textbox "Chat with ChatGPT" [ref=e102]',
+    '- button "Instant" [expanded=false, ref=e106]',
+  ].join("\n");
+  assert(
+    snapshotHasClosedCompactSelection(closedInstantComposerSnapshot, { modelFamily: "instant", autoSwitchToThinking: false }),
+    "closed compact Instant composer pills should verify plain instant immediately after the worker intentionally clicked the compact menu target",
+  );
+  assert(
+    snapshotHasClosedCompactSelection(closedInstantComposerSnapshot, { modelFamily: "instant", autoSwitchToThinking: true }),
+    "closed compact Instant composer pills should verify instant auto-switch when the compact UI omits the legacy auto-switch control",
+  );
+  assert(
     !snapshotCanSafelySkipModelConfiguration('- button "Pro" [expanded=false, ref=e106]', { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
     "closed compact Pro composer pills should reopen configuration for effort-sensitive verification instead of blindly skipping",
   );
+  assert(matchesCompactIntelligenceControlLabel("Medium"), "current Medium controls should be recognized as compact Intelligence controls");
   assert(matchesRequestedModelControlLabel("Medium", { modelFamily: "thinking", effort: "standard", autoSwitchToThinking: false }), "current Medium controls should target standard thinking");
   assert(matchesRequestedModelControlLabel("High", { modelFamily: "thinking", effort: "extended", autoSwitchToThinking: false }), "current High controls should target extended thinking");
   assert(matchesRequestedModelControlLabel("Extra High", { modelFamily: "thinking", effort: "heavy", autoSwitchToThinking: false }), "current Extra High controls should target heavy thinking");

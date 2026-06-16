@@ -608,7 +608,7 @@ Live-validated after the concurrency redesign:
 
 Still to verify live after this pivot:
 
-- model-selection verification against the current ChatGPT UI under additional real-world variation
+- full ChatGPT preset release matrix evidence must be refreshed before any release; `npm run release:proof:chatgpt-presets` blocks release without one completed loaded-extension ChatGPT job for every canonical preset
 - optional richer terminal semantics for partial artifact failure (`complete_with_artifact_errors`) in more live scenarios
 
 ## Production readiness criteria
@@ -629,7 +629,7 @@ This architecture is now live-validated for the core release path:
 ### Current readiness summary
 
 Current release blockers for the validated scope:
-- none currently known
+- release is blocked until fresh loaded-extension ChatGPT preset proof passes `npm run release:proof:chatgpt-presets` for every canonical `ORACLE_SUBMIT_PRESETS` id
 
 Remaining non-blocking hardening work:
 - broaden live proof of the new lifecycle/state-machine model across more degraded paths
@@ -653,4 +653,4 @@ Recent proof points:
 - repo-owned sanity harness: `npm run sanity:oracle`
 - real installed-extension smoke source of truth: `scripts/oracle-real-smoke.mjs`; required release proof runs packed-install mode (`npm run smoke:real:packed`) and executes installed-package `oracle_submit` deterministically, with optional slower model-agent debugging via `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`; source mode (`npm run smoke:real:source`) is inner-loop/debug only
 - macOS, Ubuntu, and Windows native package/build/runtime smoke source of truth: `docs/platform-smoke.md`; use `npm run verify:oracle` for everyday local iteration, `npm run smoke:platform:doctor` plus a focused target/suite run for platform-sensitive changes, `npm run smoke:platform:all` for doctor-first platform matrix evidence, and `npm run release:check` for the full local-plus-platform release gate
-- release gate: `npm run release:check`, also used by `prepublishOnly`, combines static verification and all required Crabbox platform smokes
+- release gate: `npm run release:check`, also used by `prepublishOnly`, combines static verification, fresh loaded-extension ChatGPT preset proof via `npm run release:proof:chatgpt-presets`, and all required Crabbox platform smokes

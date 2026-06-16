@@ -35,14 +35,33 @@ Do not add `https://github.com/fitchmultz/pi-oracle` to this repository's `.pi/s
 
 `oracle_submit` now preflights missing, unreadable, or unverified auth seed profiles before it creates an archive or persists a job. For archive-inspection smoke tests that intentionally run without real auth, use `oracle_preflight` for the blocker path or create a test seed only in a purpose-built fixture that includes the `.oracle-seed-generation` marker.
 
-## Preset requirement
+## Preset requirements
 
-Use either:
+For ordinary pre-commit isolated smoke tests, use either:
 
 - `instant`
 - `thinking_light`
 
 The examples below use `instant` because it is the fastest smoke-test preset.
+
+For any release, and for any change that touches ChatGPT model selection, run live loaded-extension jobs for every canonical ChatGPT preset from `ORACLE_SUBMIT_PRESETS`:
+
+- `pro_standard`
+- `pro_extended`
+- `thinking_light`
+- `thinking_standard`
+- `thinking_extended`
+- `thinking_heavy`
+- `instant`
+- `instant_auto_switch`
+
+Use prompts that make each saved response contain exact markers `PRESET <preset> OK` and `PACKAGE pi-oracle`. Save the completed job ids/job directories in `.artifacts/chatgpt-preset-proof/latest.json` only after every job completes; `validatedAt` must be later than those completed jobs. The checker reads the actual persisted `job.json`, worker log, and response files. Then run:
+
+```bash
+npm run release:proof:chatgpt-presets
+```
+
+`npm run release:check` runs that proof gate before release. This is intentional: publishing is blocked until every ChatGPT preset has fresh loaded-extension evidence.
 
 ## Prerequisites
 

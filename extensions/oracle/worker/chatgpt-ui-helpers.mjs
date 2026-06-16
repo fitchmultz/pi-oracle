@@ -248,9 +248,29 @@ function hasLegacyEffortCombobox(entries) {
   });
 }
 
-function compactSelectionFromEntry(entry, _entries, _options = {}) {
-  if (entry.disabled || !COMPACT_INTELLIGENCE_CONTROL_KINDS.has(entry.kind || "")) return undefined;
-  return parseCompactIntelligenceSelection(entry.label);
+function compactSelectionFromEntry(entry, _entries, options = {}) {
+  if (entry.disabled) return undefined;
+  const kind = entry.kind || "";
+  if (COMPACT_INTELLIGENCE_CONTROL_KINDS.has(kind)) return parseCompactIntelligenceSelection(entry.label);
+  if (options.allowClosedButtons && kind === "button" && !/\bexpanded=true\b/.test(String(entry.line || ""))) {
+    return parseCompactIntelligenceSelection(entry.label);
+  }
+  return undefined;
+}
+
+export function matchesCompactIntelligenceControlLabel(label) {
+  return Boolean(parseCompactIntelligenceSelection(label));
+}
+
+export function snapshotHasClosedCompactSelection(snapshot, selection) {
+  /** @type {SnapshotEntry[]} */
+  const entries = parseSnapshotEntries(snapshot);
+  if (hasRemovableComposerModelChip(entries) || hasLegacyEffortCombobox(entries) || hasCompactIntelligenceMenuContext(entries)) return false;
+  return entries.some((entry) => {
+    if (entry.kind !== "button" || entry.disabled) return false;
+    const compactSelection = compactSelectionFromEntry(entry, entries, { allowClosedButtons: true });
+    return compactSelectionMatchesRequestedInSnapshot(snapshot, selection, compactSelection);
+  });
 }
 
 function compactSelectionMatchesRequested(selection, compactSelection) {

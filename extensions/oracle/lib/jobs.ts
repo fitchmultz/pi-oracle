@@ -4,9 +4,11 @@
 // Usage: Imported by oracle commands, tools, queue logic, poller flows, and runtime cleanup/reconciliation paths.
 // Invariants/Assumptions: Job mutations happen under per-job locks, worker identity checks defend against PID reuse, and persisted jobs remain the source of truth.
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative as relativePath, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   ACTIVE_ORACLE_JOB_STATUSES,
@@ -117,6 +119,14 @@ export interface OracleArtifactRecord {
   matchesUploadedArchive?: boolean;
 }
 
+export interface OracleExtensionProvenance {
+  schemaVersion: 1;
+  packageName: string;
+  packageVersion: string;
+  sourcePath: string;
+  gitHead?: string;
+}
+
 export interface OracleJob {
   id: string;
   status: OracleJobStatus;
@@ -135,6 +145,7 @@ export interface OracleJob {
   originSessionFile?: string;
   requestSource: "command" | "tool";
   selection: OracleResolvedSelection;
+  extensionProvenance?: OracleExtensionProvenance;
   followUpToJobId?: string;
   chatUrl?: string;
   conversationId?: string;
@@ -452,8 +463,8 @@ export async function cleanupJobResources(
 
 function getCleanupRetentionMs(job: OracleJob): { complete: number; failed: number } {
   return {
-    complete: job.config.cleanup?.completeJobRetentionMs ?? ORACLE_COMPLETE_JOB_RETENTION_MS,
-    failed: job.config.cleanup?.failedJobRetentionMs ?? ORACLE_FAILED_JOB_RETENTION_MS,
+    complete: job.config?.cleanup?.completeJobRetentionMs ?? ORACLE_COMPLETE_JOB_RETENTION_MS,
+    failed: job.config?.cleanup?.failedJobRetentionMs ?? ORACLE_FAILED_JOB_RETENTION_MS,
   };
 }
 
@@ -899,6 +910,39 @@ export async function cancelOracleJob(id: string, reason = "Cancelled by user"):
   });
 }
 
+function readExtensionProvenance(cwd: string): OracleExtensionProvenance {
+  const sourcePath = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+  let packageName = "pi-oracle";
+  let packageVersion = "unknown";
+  try {
+    const packageJson = JSON.parse(readFileSync(join(sourcePath, "package.json"), "utf8")) as { name?: string; version?: string };
+    packageName = packageJson.name || packageName;
+    packageVersion = packageJson.version || packageVersion;
+  } catch {
+    // Keep provenance present even when package metadata is unavailable in an
+    // unusual loader; release proof rejects unknown versions.
+  }
+
+  let gitHead: string | undefined;
+  try {
+    gitHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourcePath, encoding: "utf8" }).trim();
+  } catch {
+    try {
+      gitHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+    } catch {
+      gitHead = undefined;
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    packageName,
+    packageVersion,
+    sourcePath,
+    gitHead,
+  };
+}
+
 export async function createJob(
   id: string,
   input: OracleSubmitInput,
@@ -946,6 +990,7 @@ export async function createJob(
     originSessionFile: sessionFile,
     requestSource: input.requestSource,
     selection: input.selection,
+    extensionProvenance: readExtensionProvenance(cwd),
     followUpToJobId: input.followUpToJobId,
     chatUrl: input.chatUrl,
     conversationId,

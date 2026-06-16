@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.7.13 - 2026-06-15
+
+### Added
+- added a release-blocking ChatGPT preset proof gate (`npm run release:proof:chatgpt-presets`) so publishing requires fresh loaded-extension evidence for every canonical ChatGPT preset
+
+### Fixed
+- fixed compact ChatGPT Intelligence menu handling so selected thinking tiers that close back to `Medium`, `High`, or `Extra High` composer pills are accepted only after an intentional matching menu click instead of falling through to the removed legacy effort dropdown
+- fixed `instant_auto_switch` under the compact ChatGPT UI, where the legacy auto-switch control is absent after selecting the compact `Instant` tier
+- made ChatGPT model-configuration opening tolerate slower compact-UI hydration before reporting UI drift
+- stabilized archive creation when the compression subprocess exits before tar, so the worker terminates upstream tar immediately instead of waiting for the archive timeout
+- surfaced provider rate-limit/outage modals explicitly during ChatGPT model setup, upload, send, and response waits instead of reporting generic UI drift
+
 ## 0.7.12 - 2026-06-15
 
 ### Changed

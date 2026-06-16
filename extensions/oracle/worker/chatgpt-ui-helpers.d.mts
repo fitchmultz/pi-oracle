@@ -13,10 +13,12 @@ export declare function buildAllowedChatGptOrigins(chatUrl: string, authUrl?: st
 export declare function stripChatGptResponseChrome(value: string | undefined): string;
 export declare function matchesModelFamilyLabel(label: string | undefined, family: OracleUiModelFamily): boolean;
 export declare function matchesRequestedModelControlLabel(label: string | undefined, selection: OracleUiSelection): boolean;
+export declare function matchesCompactIntelligenceControlLabel(label: string | undefined): boolean;
 export declare function matchesCompactIntelligenceOpenerLabel(label: string | undefined): boolean;
 export declare function requestedEffortLabel(selection: OracleUiSelection): string | undefined;
 export declare function effortSelectionVisible(snapshot: string, effortLabel: string | undefined): boolean;
 export declare function thinkingChipVisible(snapshot: string): boolean;
+export declare function snapshotHasClosedCompactSelection(snapshot: string, selection: OracleUiSelection): boolean;
 export declare function snapshotHasModelConfigurationUi(snapshot: string): boolean;
 export declare function snapshotHasUsableComposerControls(snapshot: string): boolean;
 export declare function snapshotHasModelOpener(snapshot: string): boolean;

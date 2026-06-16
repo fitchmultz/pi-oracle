@@ -382,7 +382,7 @@ npm test
 npm run verify:oracle
 ```
 
-`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
+`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate now blocks unless fresh live ChatGPT preset proof exists for every canonical preset, then requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
 
 Use the narrowest validation workflow that proves the change:
 
@@ -391,6 +391,7 @@ Use the narrowest validation workflow that proves the change:
 | Everyday local iteration | `npm run verify:oracle` |
 | Platform-sensitive changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
 | Platform matrix proof | `npm run smoke:platform:all` |
+| ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` |
 | Publish/release gate | `npm run release:check` |
 
 For macOS, Ubuntu, and Windows native package/build plus packed runtime validation, use [`docs/platform-smoke.md`](docs/platform-smoke.md). The full release gate is:
@@ -399,9 +400,19 @@ For macOS, Ubuntu, and Windows native package/build plus packed runtime validati
 npm run release:check
 ```
 
+Before a release, run live jobs through the loaded extension for every ChatGPT preset in `ORACLE_SUBMIT_PRESETS`. Each prompt must make the saved response contain exact markers `PRESET <preset> OK` and `PACKAGE pi-oracle`. After every job has completed, save the job ids/job directories in `.artifacts/chatgpt-preset-proof/latest.json`; `validatedAt` must be later than the completed jobs. Start from the checked, intentionally non-valid template:
+
+```bash
+mkdir -p .artifacts/chatgpt-preset-proof
+node scripts/oracle-chatgpt-preset-proof.mjs template > .artifacts/chatgpt-preset-proof/latest.json
+npm run release:proof:chatgpt-presets
+```
+
+The proof checker is intentionally part of `release:check`; it fails if the proof is missing, stale, tied to a different package version/git head, references jobs that completed before the current commit, or lacks actual persisted ChatGPT `.tar.zst` job state and response text for any canonical preset.
+
 The real runtime suite defaults to deterministic installed-tool execution so platform proof stays bounded. Provider/model defaults remain `zai/glm-5.2` for doctor/config and for optional model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL` when needed. For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path. The optional second real-agent negative symlink check is opt-in via `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1`; `npm run sanity:oracle` covers archive/symlink rejection by default without adding another model-agent turn to the platform release gate.
 
-For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). That workflow launches isolated `pi` coding-agent sessions against this checkout and uses `instant` or `thinking_light`, as required by the project validation policy.
+For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](docs/ORACLE_ISOLATED_PI_VALIDATION.md). Ordinary pre-commit smoke runs can still use `instant` or `thinking_light`, but release proof must cover every canonical ChatGPT preset through the loaded extension.
 
 ## Project map
 

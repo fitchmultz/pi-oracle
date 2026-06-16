@@ -578,11 +578,13 @@ async function writeNonWindowsTarArchiveFile(
       (code) => {
         targetCode = code;
         targetDone = true;
+        if (code !== 0 && tarCode === undefined) terminateChildren();
         finish();
       },
       (error) => {
         targetError = error instanceof Error ? error : new Error(String(error));
         targetDone = true;
+        if (tarCode === undefined) terminateChildren();
         finish();
       },
     );
