@@ -240,6 +240,7 @@ export type OracleBrowserRunMode = (typeof BROWSER_RUN_MODES)[number];
 export const CLONE_STRATEGIES = ["apfs-clone", "copy"] as const;
 export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
+const CONFIG_DIR_NAME = ".pi";
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -377,7 +378,7 @@ export function getOracleConfigLoadDetails(cwd: string, options?: OracleConfigLo
   const agentDir = getAgentDir();
   const projectRoot = getProjectId(cwd);
   const agentConfigPath = join(agentDir, "extensions", "oracle.json");
-  const projectConfigPath = join(projectRoot, ".pi", "extensions", "oracle.json");
+  const projectConfigPath = join(projectRoot, CONFIG_DIR_NAME, "extensions", "oracle.json");
   const projectConfigExists = existsSync(projectConfigPath);
   const projectConfigTrusted = isProjectConfigTrusted(projectRoot, agentDir, projectConfigExists, options);
   const projectConfigLoaded = projectConfigExists && projectConfigTrusted;
