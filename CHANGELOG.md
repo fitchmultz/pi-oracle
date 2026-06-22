@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.7.14 - 2026-06-22
+
+### Changed
+- updated the local pi development and validation baseline to `@earendil-works/*` `0.79.10`
+- refreshed oracle docs and sanity contracts for pi `0.79.10`, and removed the obsolete fleet-tested marker
+
+### Fixed
+- used pi's exported `CONFIG_DIR_NAME` for project config and workspace-root detection instead of hardcoding `.pi`
+- clarified `oracle_preflight` path labels so isolated-session probes distinguish the current persisted session from the provider auth seed profile
+- fixed ChatGPT response completion detection for the current DOM, where assistant text uses `data-message-author-role="assistant"` without legacy `.message-bubble` nodes
+
+### Compatibility
+- reviewed the pi `0.79.10` changelog, extension lifecycle docs/types, compaction event docs, project-trust docs, and package/update docs; no oracle compaction hook changes were required
+
+### Validation
+- ran `npm run verify:oracle`, `npm run smoke:real:packed`, source-mode isolated pi model-agent smoke with the `instant` preset, and `npm run smoke:platform:all`
+
 ## 0.7.13 - 2026-06-15
 
 ### Added

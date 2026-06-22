@@ -1790,12 +1790,15 @@ async function grokAssistantMessages(job) {
         return text;
       };
       const bubbles = Array.from(document.querySelectorAll('.message-bubble'));
+      const roleMessages = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
       const sourceNodes = bubbles.length > 0
         ? bubbles
-        : Array.from(document.querySelectorAll('div')).filter((node) => {
-            const classText = String(node.className || '');
-            return classText.includes('group') && classText.includes('flex') && classText.includes('flex-col') && classText.includes('justify-center');
-          });
+        : roleMessages.length > 0
+          ? roleMessages
+          : Array.from(document.querySelectorAll('div')).filter((node) => {
+              const classText = String(node.className || '');
+              return classText.includes('group') && classText.includes('flex') && classText.includes('flex-col') && classText.includes('justify-center');
+            });
       const messages = sourceNodes
         .map((node) => node.closest('[data-message-author-role], [data-testid*="message"], .group') || node)
         .filter((node, index, all) => all.indexOf(node) === index)

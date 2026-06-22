@@ -677,10 +677,10 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
   if (details.ready) {
     return [
       `Oracle preflight ready for ${providerLabel}.`,
-      details.session.sessionFile ? `Persisted session: ${details.session.sessionFile}` : undefined,
-      details.auth.seedProfileDir ? `Auth seed profile: ${details.auth.seedProfileDir}` : undefined,
+      details.session.sessionFile ? `Persisted pi session (current run): ${details.session.sessionFile}` : undefined,
+      details.auth.seedProfileDir ? `Auth seed profile (${providerLabel} login source): ${details.auth.seedProfileDir}` : undefined,
       `Preflight validates the persisted pi session, local oracle config, and ${providerLabel} auth seed created by oracle_auth.`,
-      "You can continue with oracle context gathering and submission.",
+      "If you are dispatching an oracle job, continue with context gathering and submission.",
     ].filter(Boolean).join("\n");
   }
 

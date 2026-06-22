@@ -27,7 +27,7 @@ The extension is loaded from the local checkout with:
 pi --approve --no-extensions -e "$REPO/extensions/oracle/index.ts"
 ```
 
-That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79.8+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
+That ensures the session is exercising the in-repo code, not a globally installed package. `--approve` is intentional for this isolated workflow on Pi 0.79+: the test fixture is this trusted checkout, and non-interactive/scripted validation must not block on the project-trust prompt.
 
 The local extension now intercepts TUI `/oracle` and `/oracle-followup` before prompt-template expansion, re-injects the compact slash request as the visible user message for prompt-history/up-arrow recall, and reads the in-repo prompt files as hidden dispatch instructions, so do not pass `--prompt-template` for normal local-extension validation. In print/json/rpc modes, the extension contributes the prompt templates itself.
 

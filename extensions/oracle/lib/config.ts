@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import {
   assertNotKnownBrowserUserDataPath,
@@ -240,7 +240,6 @@ export type OracleBrowserRunMode = (typeof BROWSER_RUN_MODES)[number];
 export const CLONE_STRATEGIES = ["apfs-clone", "copy"] as const;
 export type OracleCloneStrategy = (typeof CLONE_STRATEGIES)[number];
 
-const CONFIG_DIR_NAME = ".pi";
 const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com", "https://chat.openai.com"]);
 const PROJECT_OVERRIDE_KEYS = new Set(["defaults", "worker", "poller", "artifacts", "cleanup"]);
 const DEFAULT_MAC_CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";

@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { access, cp as copyDirectory, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
@@ -42,8 +43,8 @@ function killProcess(child: ReturnType<typeof spawn>): void {
   child.kill("SIGKILL");
 }
 const WORKSPACE_ROOT_MARKERS = [
-  ".pi/extensions/oracle.json",
-  ".pi",
+  join(CONFIG_DIR_NAME, "extensions", "oracle.json"),
+  CONFIG_DIR_NAME,
   "AGENTS.md",
 ] as const;
 function cpCommand(): string {
