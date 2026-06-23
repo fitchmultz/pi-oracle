@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.15 - 2026-06-23
+
+### Changed
+- updated the local pi development and validation baseline to `@earendil-works/*` `0.80.1`
+- refreshed oracle README and sanity contracts for pi `0.80.1`
+- moved script-only `@earendil-works/pi-ai` type imports to `@earendil-works/pi-ai/compat`, matching the Pi 0.80 source typechecking migration guidance
+
+### Compatibility
+- reviewed the pi `0.80.0` and `0.80.1` changelogs plus current extension lifecycle, project-trust, security, and package docs; no oracle runtime behavior change was required
+
+### Validation
+- ran `npm run release:check`, including `npm run verify:oracle`, fresh live ChatGPT preset proof for every canonical preset, and Crabbox macOS, Ubuntu, and Windows native `platform-build` plus `real-extension` suites
+
 ## 0.7.14 - 2026-06-22
 
 ### Changed

@@ -7,7 +7,7 @@ Companion doc:
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
 
 Compatibility target:
-- `pi` 0.79.10+ is the suggested tested floor for current project-trust-aware package/runtime validation
+- `pi` 0.80.1+ is the suggested tested floor for current project-trust-aware package/runtime validation
 - package metadata keeps pi runtime packages as optional wildcard peers, so this suggested floor is not enforced as a hard npm install requirement
 - current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 

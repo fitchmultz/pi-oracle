@@ -4,5 +4,5 @@ USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends zstd rsync \
   && rm -rf /var/lib/apt/lists/*
-RUN npm install -g agent-browser@0.27.0
+RUN npm install -g agent-browser@0.29.1
 USER circleci
