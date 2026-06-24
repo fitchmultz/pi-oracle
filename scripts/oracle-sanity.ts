@@ -2801,7 +2801,7 @@ async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig)
     try {
       const message = kind === "tool"
         ? (await cancelTool.execute!("oracle-cancel-message-cancelled-test", { jobId: queuedId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
-        : (await cancelCommand.handler(queuedId, ctx), ui.notifications.at(-1)?.message);
+        : (await cancelCommand.handler(queuedId, ctx), ui.notifications.at(-1)?.message ?? pi.sentMessages.at(-1)?.content);
       assert(message === `Cancelled oracle job ${queuedId}.`, `${kind} cancel messaging should say cancelled only when the final status is cancelled`);
     } finally {
       await cleanupJob(queuedId);
@@ -2844,7 +2844,7 @@ async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig)
     try {
       const message = kind === "tool"
         ? (await cancelTool.execute!("oracle-cancel-message-failed-test", { jobId: activeId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
-        : (await cancelCommand.handler(activeId, ctx), ui.notifications.at(-1)?.message);
+        : (await cancelCommand.handler(activeId, ctx), ui.notifications.at(-1)?.message ?? pi.sentMessages.at(-1)?.content);
       assert(readJob(activeId)?.status === "failed", `${kind} cancel message test should drive the job into failed status when worker termination is unsafe`);
       assert(message === `Oracle job ${activeId} failed during cancellation.`, `${kind} cancel messaging should describe failed outcomes explicitly instead of claiming cancellation succeeded`);
     } finally {
@@ -3701,20 +3701,20 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   for (const presetId of Object.keys(ORACLE_SUBMIT_PRESETS)) {
     assert(!designSource.includes(presetId), `design doc should not hard-code preset id ${presetId}`);
   }
-  assert(toolsSource.includes("call oracle_auth once before retrying the submission"), "oracle submit tool guidance should tell agents to refresh auth once before retrying stale-auth failures");
-  assert(toolsSource.includes("details.error.code === 'archive_too_large'"), "oracle submit tool guidance should explicitly recognize retryable archive_too_large failures");
-  assert(toolsSource.includes("retry automatically with a smaller archive"), "oracle submit tool guidance should tell agents to retry archive-too-large failures automatically");
+  assert(toolsSource.includes("call oracle_auth at most once before retrying"), "oracle submit tool guidance should tell agents to refresh auth once before retrying stale-auth failures");
+  assert(toolsSource.includes("details.error.code is 'archive_too_large'"), "oracle submit tool guidance should explicitly recognize retryable archive_too_large failures");
+  assert(toolsSource.includes("retry once with a smaller archive"), "oracle submit tool guidance should tell agents to retry archive-too-large failures once");
   assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle submit tool guidance should only stop after successful/queued submit results, not retryable oversize failures");
-  assert(toolsSource.includes("Prefer context-rich archives up to the provider ceiling"), "oracle tool guidance should tell agents to use the available archive budget generously when it helps");
+  assert(toolsSource.includes("Use context-rich archives when they fit"), "oracle tool guidance should tell agents to use the available archive budget when it helps");
   assert(toolsSource.includes('name: "oracle_auth"'), "oracle tools should register an agent-facing oracle_auth tool");
-  assert(toolsSource.includes("archive the whole repo by passing '.'"), "oracle tool guidance should align with whole-repo archive defaults");
-  assert(toolsSource.includes("Do not default to a one-file archive"), "oracle tool guidance should preserve surrounding context for narrowly described asks when the archive budget allows it");
+  assert(toolsSource.includes("use files='.' for broad repo-wide asks"), "oracle tool guidance should align with whole-repo archive defaults");
+  assert(toolsSource.includes("Default exclusions already skip common bulky outputs"), "oracle tool guidance should summarize default archive exclusions");
   assert(toolsSource.includes("resolveOracleSubmitPreset"), "oracle submit should resolve preset via config helper");
   assert(toolsSource.includes("coerceOracleSubmitPresetId"), "oracle submit should normalize preset label aliases before resolving the canonical preset id");
   assert(toolsSource.includes("ORACLE_SUBMIT_PRESETS registry"), "oracle submit tool description should point preset discovery to the canonical registry");
   assert(!toolsSource.includes("see `preset` field for canonical ids"), "oracle submit tool description should not imply the free-form preset schema exposes canonical ids");
-  assert(toolsSource.includes("For ChatGPT, use `preset` as the only model-selection parameter"), "oracle tool guidance should say preset is the only ChatGPT selector");
-  assert(toolsSource.includes("matching human-readable preset labels are normalized automatically"), "oracle tool guidance should mention preset label normalization");
+  assert(toolsSource.includes("For ChatGPT, use preset only when the user requests model control"), "oracle tool guidance should say preset is the ChatGPT selector");
+  assert(toolsSource.includes("omit it for configured defaults") && toolsSource.includes("matching labels are normalized"), "oracle tool description should mention preset defaults and label normalization");
   assert(!toolsSource.includes("Do not pass modelFamily, effort, or autoSwitchToThinking"), "oracle tool guidance should no longer carry legacy-field prose lists when preset-only guidance already covers the contract");
   assert(readmeSource.includes("Start a normal persisted `pi` session"), "README quickstart should surface the persisted-session requirement before oracle usage");
   assert(readmeSource.includes("/oracle-followup <job-id> <request>"), "README should document the user-facing same-thread follow-up command shape");
@@ -3833,12 +3833,13 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(commandsSource.includes("source: \"oracle_read_command\""), "oracle-read should settle further wake-up retries through explicit command provenance");
   assert(commandsSource.includes("Recent jobs:"), "oracle-status should help users discover job ids when no explicit id is given");
   assert(commandsSource.includes("ctx.mode === \"print\""), "oracle commands should emit stdout-friendly output in pi print mode");
+  assert(commandsSource.includes("oracle-command-output"), "oracle commands should emit displayed custom messages when no UI is available, such as pi JSON mode");
   assert(commandsSource.includes("Usage: /oracle-cancel <job-id>"), "oracle cancel command should require an explicit job id instead of silently cancelling the latest job");
   assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
-  assert(toolsSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle tool guidance should describe whole-repo auto-pruning when archives are still too large");
-  assert(toolsSource.includes("outside obvious source roots like src/ and lib/"), "oracle tool guidance should describe the source-root guard for auto-pruning");
-  assert(toolsSource.includes("If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success"), "oracle tool guidance should explain queued oracle submissions as successful waits");
+  assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle prompt should describe whole-repo auto-pruning when archives are still too large");
+  assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "oracle prompt should describe the source-root guard for auto-pruning");
+  assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle tool guidance should explain queued oracle submissions as successful waits");
   assert(toolsSource.includes('if (latest?.status === "queued" && queuedSubmissionDurable)'), "oracle submit should preserve queued jobs only after the archive and metadata persist durably");
   assert(toolsSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt)"), "oracle submit should terminate a spawned worker if persisting worker metadata fails");
   assert(toolsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel tool should only promote queued jobs after a clean cancellation");
@@ -3946,7 +3947,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(toolsSource.includes("queued jobs and retained pre-submit archives"), "queued archive admission errors should explain that stranded pre-submit archives count against the byte cap");
   assert(pkg.files?.includes("prompts"), "package.json files should include internal oracle command prompts");
   assert(pkg.pi?.extensions?.includes("./extensions/oracle/index.ts"), "package.json pi.extensions should include oracle extension entrypoint");
-  assert(!pkg.pi?.prompts?.includes("./prompts"), "package.json should not register verbose oracle prompts as user-visible prompt-template commands");
+  assert(pkg.pi?.prompts?.includes("./prompts"), "package.json should register oracle prompts so TUI slash completion can discover /oracle and /oracle-followup");
   assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor without an upper bound");
   assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux") && pkg.os?.includes("win32"), "package.json should declare macOS, Linux, and Windows native support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
@@ -3967,11 +3968,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.1", "package.json should use the current Pi 0.80.1 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.1", "package.json should use the current pi-ai 0.80.1 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.2", "package.json should use the current Pi 0.80.2 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.2", "package.json should use the current pi-ai 0.80.2 local development baseline");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
-  assert(readmeSource.includes("Pi `0.80.1+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.1 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.80.1+") || designSource.includes("`pi` 0.80.1+"), "design doc should name the current suggested Pi 0.80.1 compatibility floor");
+  assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
+  assert(readmeSource.includes("Pi `0.80.2+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.2 floor without making it a hard peer requirement");
+  assert(designSource.includes("pi` 0.80.2+") || designSource.includes("`pi` 0.80.2+"), "design doc should name the current suggested Pi 0.80.2 compatibility floor");
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");

@@ -1,5 +1,6 @@
 ---
 description: Prepare and dispatch a ChatGPT or Grok web oracle job
+argument-hint: <request>
 ---
 You are preparing an /oracle job.
 

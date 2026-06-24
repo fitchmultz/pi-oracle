@@ -1,5 +1,6 @@
 ---
 description: Continue an earlier oracle job in the same provider thread
+argument-hint: <job-id> <request>
 ---
 You are preparing an `/oracle-followup` job.
 

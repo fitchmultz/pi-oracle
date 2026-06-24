@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.7.16 - 2026-06-24
+
+### Changed
+- updated the local pi development and validation baseline to `@earendil-works/*` `0.80.2`
+- exposed packaged `/oracle` and `/oracle-followup` prompt templates through the package manifest so TUI slash completion can discover them
+- reduced always-on `oracle_submit` prompt metadata while keeping detailed dispatch rules in the prompt templates
+
+### Fixed
+- made `/oracle-*` command output visible in JSON mode through a displayed custom message instead of UI notifications only
+- deferred Chrome user-agent probing until oracle config is loaded, with a timeout on the Chrome version probe
+
 ## 0.7.15 - 2026-06-23
 
 ### Changed

@@ -308,7 +308,7 @@ function detectDefaultChromeUserAgent(executablePath: string | undefined): strin
   const platformToken = chromeUserAgentPlatformToken(process.platform);
   if (!platformToken) return undefined;
   try {
-    const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv() }).trim();
+    const versionOutput = execFileSync(executablePath, ["--version"], { encoding: "utf8", env: sweetCookieSafeStoragePasswordScrubbedEnv(), timeout: 1000 }).trim();
     const versionMatch = versionOutput.match(/(\d+\.\d+\.\d+\.\d+)/);
     if (!versionMatch) return undefined;
     return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionMatch[1]} Safari/537.36`;
@@ -318,8 +318,17 @@ function detectDefaultChromeUserAgent(executablePath: string | undefined): strin
 }
 
 const detectedChromeExecutablePath = detectDefaultChromeExecutablePath();
-const detectedChromeUserAgent = detectDefaultChromeUserAgent(detectedChromeExecutablePath);
+let detectedChromeUserAgent: string | undefined;
+let detectedChromeUserAgentResolved = false;
 const agentExtensionsDir = join(getAgentDir(), "extensions");
+
+function getDetectedChromeUserAgent(): string | undefined {
+  if (!detectedChromeUserAgentResolved) {
+    detectedChromeUserAgent = detectDefaultChromeUserAgent(detectedChromeExecutablePath);
+    detectedChromeUserAgentResolved = true;
+  }
+  return detectedChromeUserAgent;
+}
 const detectedChromeProfileName = detectDefaultBrowserProfileSource(process.platform);
 
 export interface OracleConfigLoadOptions {
@@ -442,7 +451,7 @@ export const DEFAULT_CONFIG: OracleConfig = {
     authUrl: "https://chatgpt.com/auth/login",
     runMode: "headless",
     executablePath: detectedChromeExecutablePath,
-    userAgent: detectedChromeUserAgent,
+    userAgent: undefined,
     args: ["--disable-blink-features=AutomationControlled"],
   },
   auth: {
@@ -732,5 +741,14 @@ export function loadOracleConfig(cwd: string, options?: OracleConfigLoadOptions)
   const details = getOracleConfigLoadDetails(cwd, options);
   const globalConfig = readJson(details.agentConfigPath);
   const projectConfig = details.projectConfigLoaded ? filterProjectConfig(readJson(details.projectConfigPath)) : undefined;
-  return validateOracleConfig(deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig));
+  const globalBrowser = isObject(globalConfig) ? globalConfig.browser : undefined;
+  const hasConfiguredUserAgent = isObject(globalBrowser) && globalBrowser.userAgent !== undefined;
+  const defaults = {
+    ...DEFAULT_CONFIG,
+    browser: {
+      ...DEFAULT_CONFIG.browser,
+      userAgent: hasConfiguredUserAgent ? undefined : getDetectedChromeUserAgent(),
+    },
+  };
+  return validateOracleConfig(deepMerge(deepMerge(defaults, globalConfig), projectConfig));
 }

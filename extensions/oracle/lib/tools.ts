@@ -10,13 +10,14 @@ import { join } from "node:path";
 import { createArchive, type ArchiveCreationResult, type ArchiveSizeBreakdownRow } from "./archive.js";
 import { runOracleAuthBootstrap } from "./auth.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
 import { getLatestOracleJobLifecycleEvent, getLatestOracleTerminalLifecycleEvent, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.js";
 import {
   coerceOracleSubmitPresetId,
   loadOracleConfig,
+  GROK_MODES,
   ORACLE_PROVIDERS,
   ORACLE_SUBMIT_PRESET_IDS,
   resolveOracleConfigForProvider,
@@ -64,6 +65,16 @@ import {
   tryAcquireRuntimeLease,
 } from "./runtime.js";
 
+const ORACLE_PROVIDER_PARAM_DESCRIPTION = `Oracle web provider. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.`;
+const ORACLE_PROVIDER_PARAM = Type.Optional(Type.String({
+  description: ORACLE_PROVIDER_PARAM_DESCRIPTION,
+  enum: [...ORACLE_PROVIDERS],
+}));
+const ORACLE_GROK_MODE_PARAM = Type.Optional(Type.String({
+  description: "Provider mode. For Grok, only heavy is currently supported. Omit to use the configured default mode.",
+  enum: [...GROK_MODES],
+}));
+
 const ORACLE_SUBMIT_PARAMS = Type.Object({
   prompt: Type.String({ description: "Prompt text to send to ChatGPT or Grok web." }),
   files: Type.Array(Type.String({
@@ -74,11 +85,7 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
   }),
-  provider: Type.Optional(
-    Type.String({
-      description: `Oracle web provider. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}. Use grok when the user asks to oracle to Grok. Grok archives are capped at 200 MiB.`,
-    }),
-  ),
+  provider: ORACLE_PROVIDER_PARAM,
   preset: Type.Optional(
     Type.String({
       description:
@@ -86,40 +93,36 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
         "Matching human-readable preset labels and common hyphen/space variants are normalized automatically. Do not pass preset when provider is grok.",
     }),
   ),
-  mode: Type.Optional(
-    Type.String({
-      description: "Provider mode. For Grok, only heavy is currently supported. Omit to use the configured default mode.",
-    }),
-  ),
+  mode: ORACLE_GROK_MODE_PARAM,
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose chat thread should be continued." })),
   chatGptConversationId: Type.Optional(Type.String({
     description: "Existing ChatGPT conversation id, or full https://chatgpt.com/c/... URL, to continue. Omit for default behavior: starting a fresh oracle thread. Do not combine with followUpJobId.",
     minLength: 1,
     pattern: "^.*\\S.*$",
   })),
-});
+}, { additionalProperties: false });
 
 const ORACLE_PREFLIGHT_PARAMS = Type.Object({
-  provider: Type.Optional(Type.String({ description: `Provider readiness to check. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.` })),
+  provider: ORACLE_PROVIDER_PARAM,
   followUpJobId: Type.Optional(Type.String({ description: "Earlier oracle job id whose provider/thread readiness should be checked." })),
   chatGptConversationId: Type.Optional(Type.String({
     description: "Existing ChatGPT conversation id, or full https://chatgpt.com/c/... URL, whose provider/thread readiness should be checked. Do not combine with followUpJobId.",
     minLength: 1,
     pattern: "^.*\\S.*$",
   })),
-});
+}, { additionalProperties: false });
 
 const ORACLE_AUTH_PARAMS = Type.Object({
-  provider: Type.Optional(Type.String({ description: `Provider auth seed to refresh. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.` })),
-});
+  provider: ORACLE_PROVIDER_PARAM,
+}, { additionalProperties: false });
 
 const ORACLE_READ_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
-});
+}, { additionalProperties: false });
 
 const ORACLE_CANCEL_PARAMS = Type.Object({
   jobId: Type.String({ description: "Oracle job id." }),
-});
+}, { additionalProperties: false });
 
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
 const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = resolveOracleProviderArchivePlan("chatgpt").maxArchiveBytes;
@@ -130,6 +133,24 @@ function normalizeOracleProvider(value: unknown, fallback: OracleProvider, toolN
   if (normalized === "chatgpt" || normalized === "chat-gpt" || normalized === "openai") return "chatgpt";
   if (normalized === "grok" || normalized === "xai" || normalized === "x.ai") return "grok";
   throw new Error(`Unknown ${toolName} provider: ${value}. Use chatgpt or grok.`);
+}
+
+function prepareOracleProviderAliases<T>(args: unknown, toolName: string): T {
+  const record = asRecord(args);
+  if (!record) return args as T;
+  return {
+    ...record,
+    provider: typeof record.provider === "string" ? normalizeOracleProvider(record.provider, "chatgpt", toolName) : record.provider,
+  } as T;
+}
+
+function prepareOracleSubmitArguments(args: unknown): Static<typeof ORACLE_SUBMIT_PARAMS> {
+  const record = asRecord(args);
+  if (!record) return args as Static<typeof ORACLE_SUBMIT_PARAMS>;
+  return {
+    ...prepareOracleProviderAliases<Record<string, unknown>>(record, "oracle_submit"),
+    mode: typeof record.mode === "string" ? normalizeGrokMode(record.mode, "heavy") : record.mode,
+  } as Static<typeof ORACLE_SUBMIT_PARAMS>;
 }
 
 function normalizeGrokMode(value: unknown, fallback: "heavy"): "heavy" {
@@ -789,6 +810,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "Call oracle_preflight before doing expensive /oracle preparation. Pass provider='grok' when the user explicitly asks for Grok, followUpJobId for same-thread follow-ups from oracle-created jobs, or chatGptConversationId when the user explicitly provides an existing ChatGPT browser conversation id/URL. If ready is false, stop immediately and report the suggested next step instead of reading files or crafting archive inputs.",
     ],
     parameters: ORACLE_PREFLIGHT_PARAMS,
+    prepareArguments: (args) => prepareOracleProviderAliases(args, "oracle_preflight"),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const details = await runOraclePreflight(ctx, params);
       return {
@@ -809,6 +831,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "If oracle_auth itself fails, stop and report the failure instead of looping.",
     ],
     parameters: ORACLE_AUTH_PARAMS,
+    prepareArguments: (args) => prepareOracleProviderAliases(args, "oracle_auth"),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
@@ -838,26 +861,16 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
       "Optional thread target: pass `chatGptConversationId` only when the user explicitly provides an existing ChatGPT browser conversation id/URL to continue; omit it for the default fresh oracle thread.",
     promptSnippet: "Dispatch a background ChatGPT or Grok web oracle job after gathering repo context.",
     promptGuidelines: [
-      "Gather context before calling oracle_submit.",
-      "If the user explicitly provides an existing ChatGPT browser conversation id or https://chatgpt.com/c/... URL, pass it as chatGptConversationId and force provider='chatgpt'; otherwise omit chatGptConversationId so oracle_submit starts a fresh thread by default.",
-      "If the immediately preceding oracle run failed because ChatGPT or Grok login is required or the worker explicitly said to rerun /oracle-auth, call oracle_auth once before retrying the submission; pass provider='grok' for Grok retries. Do not loop auth refreshes.",
-      "Prefer context-rich archives up to the provider ceiling because more relevant surrounding context is usually better than less: 250 MB for ChatGPT and 200 MiB for Grok.",
-      "By default, archive the whole repo by passing '.' for broad or unclear requests; default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like .env files, key material, credential dotfiles, local database files, and nested secrets directories anywhere in the repo.",
-      "For narrower asks, still include nearby tests, docs, configs, and adjacent modules when they may improve answer quality. Only narrow aggressively when the user explicitly asks, privacy/sensitivity requires it, or size pressure forces it.",
-      "Do not default to a one-file archive for a single function, file, or stack trace if the relevant surrounding context still fits comfortably within the limit.",
-      "When files='.' and the post-exclusion archive is still too large, submit automatically prunes the largest nested directories matching generic generated-output names like build/, dist/, out/, coverage/, and tmp/ outside obvious source roots like src/ and lib/ until the archive fits or no candidate remains; successful submissions report what was pruned.",
-      "If a submitted oracle job later fails because upload is rejected, retry smaller: remove the largest obviously irrelevant/generated content first, then narrow to modified files plus adjacent files plus directly relevant subtrees, then explain the cut or ask the user if still needed.",
-      "If oracle_submit fails before dispatch with details.error.code === 'archive_too_large' or an upload-limit message, treat that as retryable and retry automatically with a smaller archive.",
-      "For archive_too_large retries, use the reported top-level size summary and any auto-pruned paths to decide what to cut: first remove the largest obviously irrelevant/generated/history/export content, then if needed narrow to the directly relevant subtrees plus adjacent docs/tests/config.",
-      "Do not loop forever: stop after at most two total oracle_submit attempts for the same request, and if it still does not fit explain what was cut and why.",
-      "For any other submit-time error, stop and report the error instead of retrying automatically.",
-      "If oracle_submit returns a queued job instead of an immediately dispatched one, treat that as success and stop exactly the same way.",
-      "After a successful or queued oracle_submit, stop; do not continue the task while the oracle job is running. If oracle_submit failed with retryable archive_too_large, narrow the archive and retry first.",
-      "For ChatGPT, use `preset` as the only model-selection parameter on oracle_submit. " +
-      `Canonical ids: ${ORACLE_SUBMIT_PRESET_IDS.join(", ")}. ` +
-      "matching human-readable preset labels are normalized automatically. Omit preset to use the configured default. For Grok, pass provider='grok' and omit preset; only Heavy is supported today.",
+      "Call oracle_preflight first, then gather enough context to choose archive inputs before oracle_submit.",
+      "Use context-rich archives when they fit; use files='.' for broad repo-wide asks. Default exclusions already skip common bulky outputs and obvious credentials/private data.",
+      "Pass chatGptConversationId only when the user explicitly provides an existing ChatGPT conversation id/URL; otherwise omit it for a fresh thread.",
+      "If auth is stale, call oracle_auth at most once before retrying. If oracle_auth fails, stop and report it.",
+      "If details.error.code is 'archive_too_large', retry once with a smaller archive using the reported size/pruning details; do not loop.",
+      "After a successful or queued oracle_submit, stop and report only the dispatch summary. Do not keep working while the oracle job runs.",
+      "For ChatGPT, use preset only when the user requests model control; otherwise omit it. For Grok, pass provider='grok' and omit preset.",
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
+    prepareArguments: prepareOracleSubmitArguments,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
@@ -877,6 +890,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         }
         if (provider === "grok" && typeof params.preset === "string") {
           throw new Error("oracle_submit preset is only valid for ChatGPT. For Grok, use provider='grok' and mode='heavy'.");
+        }
+        if (provider === "chatgpt" && typeof params.mode === "string") {
+          throw new Error("oracle_submit mode is only valid for Grok. For ChatGPT, omit mode and use preset for model selection.");
         }
         const selection = provider === "grok"
           ? resolveOracleGrokMode(normalizeGrokMode(params.mode, baseConfig.defaults.grokMode))
