@@ -61,6 +61,12 @@ function truthy(value) {
   return ["1", "true", "yes", "on"].includes(String(value ?? "").toLowerCase());
 }
 
+function positiveTimeoutMs(value, label) {
+  const timeoutMs = Number(value ?? DEFAULT_TIMEOUT_MS);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`${label} must be a finite positive millisecond value`);
+  return timeoutMs;
+}
+
 function commandExists(command, args = ["--version"]) {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, { stdio: "ignore", shell: process.platform === "win32" });
@@ -130,7 +136,7 @@ async function doctor() {
 }
 
 function runCommand(command, args, options) {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = positiveTimeoutMs(options.timeoutMs, "command timeout");
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -375,7 +381,7 @@ async function runPiAgent({ prepared, agentDir, sessionDir, jobsDir, prompt, out
 async function run(mode = "packed") {
   const provider = env("PI_ORACLE_REAL_TEST_PROVIDER") ?? DEFAULT_PROVIDER;
   const model = env("PI_ORACLE_REAL_TEST_MODEL") ?? DEFAULT_MODEL;
-  const timeoutMs = Number(env("PI_ORACLE_REAL_TEST_TIMEOUT_MS") ?? DEFAULT_TIMEOUT_MS);
+  const timeoutMs = positiveTimeoutMs(env("PI_ORACLE_REAL_TEST_TIMEOUT_MS"), "PI_ORACLE_REAL_TEST_TIMEOUT_MS");
   const artifactRoot = resolve(env("PI_ORACLE_REAL_TEST_ARTIFACT_ROOT") ?? ".artifacts/real-smoke");
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const runDir = join(artifactRoot, runId);

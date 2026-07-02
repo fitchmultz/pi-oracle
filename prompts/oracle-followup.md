@@ -6,6 +6,12 @@ You are preparing an `/oracle-followup` job.
 
 Do not answer the user's request directly yet.
 
+Hard requirements:
+- Do not plan instead of submitting. The point of `/oracle-followup` is dispatch.
+- Do not claim preflight, auth, archive prep, or submission happened unless the matching tool call actually happened in this turn.
+- If a required tool call is unavailable or fails, stop and report that exact blocker instead of fabricating progress.
+- After a successful or queued `oracle_submit`, your final answer must be only a terse dispatch summary with the job id and response path. Do not ask questions, offer to watch/poll/read, list next steps, or continue working.
+
 Required workflow:
 1. Parse the user request as `<job-id> <follow-up request>`.
 2. If the request does not include both a prior oracle job id and a follow-up request, stop and report: `Usage: /oracle-followup <job-id> <request>. Find the job id in the earlier oracle response or via /oracle-status.`
@@ -14,7 +20,7 @@ Required workflow:
 5. If `oracle_preflight` reports `ready: false`, stop before any expensive prep. Do not read files, search the codebase, prepare archive inputs, or call `oracle_auth` automatically. Report the blocking issue plus the suggested next step.
 6. Treat the parsed job id as `followUpJobId` for `oracle_submit`.
 7. Understand whether the follow-up request is explicitly narrow or genuinely broad.
-8. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the provider archive ceiling: 250 MB for ChatGPT, 200 MiB for Grok.
+8. Gather enough repo context to choose archive inputs and write a strong oracle prompt. Bias toward context-rich submissions when they fit within the provider archive ceiling: 250 MiB for ChatGPT, 200 MiB for Grok.
 9. If the follow-up request is explicit and narrow, start from the directly relevant area but still include nearby files, tests, docs, configs, and adjacent modules when they may improve answer quality. Keep the archive tightly minimal only when the user explicitly asks for that, privacy/sensitivity requires it, or size pressure forces it.
 10. If the follow-up request is broad, architectural, release-oriented, or otherwise repo-wide, gather broader context and usually archive `.`.
 11. Choose archive inputs for the follow-up oracle job.
@@ -35,7 +41,7 @@ Rules:
 - If the immediately preceding oracle run for this follow-up failed because ChatGPT/Grok login is required, the worker said to rerun `/oracle-auth`, or stale auth clearly blocked execution, stop and tell the user to run `/oracle-auth` (or `/oracle-auth grok` for Grok). Do not call `oracle_auth` automatically from `/oracle-followup`.
 - This prompt exists so normal users can continue the same provider thread without manually constructing `followUpJobId` tool calls.
 - Always include an archive. Do not submit without context files.
-- By default, prefer context-rich archives up to the provider ceiling because more relevant context is usually better than less. The ceiling is 250 MB for ChatGPT and 200 MiB for Grok. For broad or unclear follow-up requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
+- By default, prefer context-rich archives up to the provider ceiling because more relevant context is usually better than less. The ceiling is 250 MiB for ChatGPT and 200 MiB for Grok. For broad or unclear follow-up requests, include the whole repository by passing `.`. Default archive exclusions apply automatically, including common bulky outputs and obvious credentials/private data like `.env` files, key material, credential dotfiles, local database files, and nested `secrets/` directories anywhere in the repo.
 - Only limit file selection if the user explicitly requests a tight archive, if privacy/sensitivity requires it, or if the archive would otherwise exceed the size limit after exclusions/pruning.
 - For targeted follow-ups, still include directly related surrounding files, tests, docs, configs, and adjacent modules when they may improve answer quality. Do not default to a one-file archive just because the user mentioned one file, one function, or one stack trace.
 - Do not keep exploring once you already have enough context to submit well.

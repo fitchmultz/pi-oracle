@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildOracleStatusText, buildOracleWakeupNotificationContent, type OracleReadinessStatus } from "../shared/job-observability-helpers.mjs";
 import { isProcessAlive, readProcessStartedAt } from "../shared/process-helpers.mjs";
+import { parseTimestamp } from "../shared/time-helpers.mjs";
 import { isLockTimeoutError, listLeaseMetadata, releaseLease, withGlobalReconcileLock, writeLeaseMetadata } from "./locks.js";
 import {
   getJobDir,
@@ -88,12 +89,6 @@ function jobMatchesContext(job: { projectId: string; sessionId: string }, sessio
   const projectId = getProjectId(cwd);
   const sessionId = getSessionId(sessionFile, projectId);
   return job.projectId === projectId && job.sessionId === sessionId;
-}
-
-function parseTimestamp(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function getWakeupTargetLeaseKey(sessionKey: string, processPid = process.pid, processStartedAt = readProcessStartedAt(process.pid) || "unknown"): string {

@@ -22,6 +22,21 @@ import { getProjectId } from "./runtime.js";
 export const ORACLE_PROVIDERS = ["chatgpt", "grok"] as const;
 export type OracleProvider = (typeof ORACLE_PROVIDERS)[number];
 
+export function normalizeOracleProviderAlias(value: string): OracleProvider | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "chatgpt" || normalized === "chat-gpt" || normalized === "openai") return "chatgpt";
+  if (normalized === "grok" || normalized === "xai" || normalized === "x.ai") return "grok";
+  return undefined;
+}
+
+export function normalizeOracleProvider(value: unknown, fallback: OracleProvider, toolName = "oracle_submit"): OracleProvider {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") throw new Error(`${toolName} provider must be a string`);
+  const provider = normalizeOracleProviderAlias(value);
+  if (provider) return provider;
+  throw new Error(`Unknown ${toolName} provider: ${value}. Use chatgpt or grok.`);
+}
+
 export { resolveOracleArchiveFormat, resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 export type { OracleArchiveFormat, OracleProviderArchivePlan } from "./provider-capabilities.js";
 

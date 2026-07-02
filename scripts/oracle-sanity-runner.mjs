@@ -33,8 +33,40 @@ async function removeDirRobust(path, options = {}) {
   }
 }
 
-const modeArgIndex = process.argv.indexOf("--mode");
-const sanityMode = modeArgIndex >= 0 ? process.argv[modeArgIndex + 1] : undefined;
+function usage() {
+  console.error("Usage: node scripts/oracle-sanity-runner.mjs [--mode platform]");
+}
+
+function parseArgs(argv) {
+  let sanityMode;
+  for (let i = 2; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--mode") {
+      if (!argv[i + 1]) throw new Error("--mode requires a value");
+      sanityMode = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--help" || arg === "-h") return { help: true };
+    throw new Error(`unknown argument: ${arg}`);
+  }
+  if (sanityMode !== undefined && sanityMode !== "platform") throw new Error(`unknown --mode: ${sanityMode}`);
+  return { sanityMode };
+}
+
+let sanityMode;
+try {
+  const args = parseArgs(process.argv);
+  if (args.help) {
+    usage();
+    process.exit(0);
+  }
+  sanityMode = args.sanityMode;
+} catch (error) {
+  usage();
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 
 const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {
   stdio: "inherit",

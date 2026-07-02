@@ -14,7 +14,7 @@ import {
 import { transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { loadOracleConfig } from "./config.js";
 import { withLock } from "./locks.js";
-import { appendCleanupWarnings, createJob, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, type OracleJob } from "./jobs.js";
+import { appendCleanupWarnings, isTerminalOracleJob, listOracleJobDirs, readJob, spawnWorker, terminateWorkerPid, updateJob, type OracleJob } from "./jobs.js";
 import { cleanupRuntimeArtifacts, releaseRuntimeLease, tryAcquireConversationLease, tryAcquireRuntimeLease } from "./runtime.js";
 
 export interface OracleQueuePosition {
@@ -143,15 +143,4 @@ export async function promoteQueuedJobs(options: PromoteQueuedJobsOptions): Prom
   return withLock("admission", "global", { processPid: process.pid, source: options.source }, async () => {
     return promoteQueuedJobsWithinAdmissionLock(options);
   }, { timeoutMs: options.lockTimeoutMs });
-}
-
-export async function createQueuedJob(
-  id: string,
-  input: Parameters<typeof createJob>[1],
-  cwd: string,
-  originSessionFile: string | undefined,
-  config: Parameters<typeof createJob>[4],
-  runtime: Parameters<typeof createJob>[5],
-): Promise<OracleJob> {
-  return createJob(id, input, cwd, originSessionFile, config, runtime, { initialState: "queued" });
 }

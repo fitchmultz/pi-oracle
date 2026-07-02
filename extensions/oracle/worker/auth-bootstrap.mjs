@@ -16,7 +16,9 @@ import {
 } from "../shared/browser-profile-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "./chromium-cookie-source.mjs";
+import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 import { buildAllowedChatGptOrigins } from "./chatgpt-ui-helpers.mjs";
+import { stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
 import { buildAccountChooserCandidateLabels, classifyChatAuthPage, normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 
 const rawConfig = process.argv[2];
@@ -429,27 +431,6 @@ async function pageText() {
   return stdout || "";
 }
 
-function parseSnapshotEntries(snapshot) {
-  return snapshot
-    .split("\n")
-    .map((line) => {
-      const refMatch = line.match(/\bref=(e\d+)\b/);
-      if (!refMatch) return undefined;
-      const kindMatch = line.match(/^\s*-\s*([^\s]+)/);
-      const quotedMatch = line.match(/"([^"]*)"/);
-      const valueMatch = line.match(/:\s*(.+)$/);
-      return {
-        line,
-        ref: `@${refMatch[1]}`,
-        kind: kindMatch ? kindMatch[1] : undefined,
-        label: quotedMatch ? quotedMatch[1] : undefined,
-        value: valueMatch ? valueMatch[1].trim() : undefined,
-        disabled: /\bdisabled\b/.test(line),
-      };
-    })
-    .filter(Boolean);
-}
-
 function findEntry(snapshot, predicate) {
   return parseSnapshotEntries(snapshot).find(predicate);
 }
@@ -466,17 +447,6 @@ async function clickRef(ref, logLabel = `click ${ref}`) {
   await targetCommand("click", ref, { logLabel });
 }
 
-function stripQuery(url) {
-  try {
-    const parsed = new URL(url);
-    parsed.hash = "";
-    parsed.search = "";
-    return parsed.toString();
-  } catch {
-    return url;
-  }
-}
-
 function preferredProvider() {
   return config?.defaults?.provider === "grok" ? "grok" : "chatgpt";
 }
@@ -491,7 +461,7 @@ function providerName() {
 
 function cookieOrigins() {
   const providerOrigins = preferredProvider() === "grok" ? GROK_COOKIE_ORIGINS : CHATGPT_COOKIE_ORIGINS;
-  return Array.from(new Set([stripQuery(providerChatUrl()), ...providerOrigins]));
+  return Array.from(new Set([stripUrlQueryAndHash(providerChatUrl()), ...providerOrigins]));
 }
 
 function cookieSource() {

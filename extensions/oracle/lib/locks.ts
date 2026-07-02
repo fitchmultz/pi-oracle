@@ -100,14 +100,6 @@ export async function withGlobalReconcileLock<T>(
   return withLock("reconcile", "global", metadata, fn, { timeoutMs: options?.timeoutMs ?? 30_000 });
 }
 
-export async function withGlobalScanLock<T>(
-  metadata: unknown,
-  fn: () => Promise<T>,
-  options?: { timeoutMs?: number },
-): Promise<T> {
-  return withLock("scan", "global", metadata, fn, { timeoutMs: options?.timeoutMs ?? 5_000 });
-}
-
 export async function withJobLock<T>(jobId: string, metadata: unknown, fn: () => Promise<T>): Promise<T> {
   return withLock("job", jobId, metadata, fn, { timeoutMs: 10_000 });
 }

@@ -115,7 +115,7 @@ It instructs the agent to:
 2. stop right away if preflight reports the session or local oracle setup is not ready
 3. understand whether the request is explicitly narrow or genuinely broad
 4. if auth is missing, stale, or the worker explicitly said to rerun `/oracle-auth`, stop and tell the user to run `/oracle-auth` rather than launching auth automatically
-5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the provider ceiling: 250 MB for ChatGPT and 200 MiB for Grok
+5. gather enough repo context to submit well and bias toward context-rich archives when they fit within the provider ceiling: 250 MiB for ChatGPT and 200 MiB for Grok
 6. if the request is narrow, start from the directly relevant area but still include nearby tests, docs, config, and adjacent modules when they may improve answer quality
 7. if the request is broad/repo-wide, gather broader context and usually archive `.`
 8. if `oracle_submit` fails before dispatch with an `archive_too_large` / upload-limit error, treat that as retryable: use the reported size summary plus any auto-pruned paths to cut scope and retry automatically with a smaller archive

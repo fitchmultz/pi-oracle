@@ -30,6 +30,8 @@ import type { OracleJobLifecycleEvent as SharedOracleJobLifecycleEvent, OracleJo
 import { hasDurableWorkerHandoff as sharedHasDurableWorkerHandoff } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive, readProcessStartedAt, spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
 import type { OracleConfig, OracleResolvedSelection } from "./config.js";
+import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
+import { parseTimestamp } from "../shared/time-helpers.mjs";
 import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { withJobLock, withLock } from "./locks.js";
 import { cleanupRuntimeArtifacts, getProjectId, getSessionId, parseConversationId, requirePersistedSessionFile, type OracleCleanupReport } from "./runtime.js";
@@ -50,9 +52,8 @@ const ORACLE_JOB_DIR_RM_MAX_RETRIES = 5;
 const ORACLE_JOB_DIR_RM_RETRY_DELAY_MS = 50;
 const ORACLE_COMPLETE_JOB_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const ORACLE_FAILED_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-export const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
-export const ORACLE_JOBS_DIR_ENV = "PI_ORACLE_JOBS_DIR";
-const ORACLE_JOBS_DIR = process.env[ORACLE_JOBS_DIR_ENV]?.trim() || DEFAULT_ORACLE_JOBS_DIR;
+export { DEFAULT_ORACLE_JOBS_DIR, ORACLE_JOBS_DIR_ENV, getOracleJobsDir } from "../shared/state-path-helpers.mjs";
+const ORACLE_JOBS_DIR = getOracleJobsDir();
 
 export function isActiveOracleJob(job: Pick<OracleJob, "status">): boolean {
   return ACTIVE_ORACLE_JOB_STATUSES.includes(job.status);
@@ -217,10 +218,6 @@ export function getSessionFile(ctx: ExtensionContext): string | undefined {
   return hasSessionFileAccessor(ctx.sessionManager) ? ctx.sessionManager.getSessionFile() : undefined;
 }
 
-export function getOracleJobsDir(): string {
-  return ORACLE_JOBS_DIR;
-}
-
 export function getJobDir(id: string): string {
   return join(ORACLE_JOBS_DIR, `oracle-${id}`);
 }
@@ -295,12 +292,6 @@ export async function clearCleanupPending(jobId: string, at = new Date().toISOSt
   } catch {
     return readJob(jobId);
   }
-}
-
-function parseTimestamp(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function notificationClaimIsOwnedBy(job: Pick<OracleJob, "notifyClaimedAt" | "notifyClaimedBy">, claimedBy: string, now = Date.now()): boolean {

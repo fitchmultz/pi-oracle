@@ -3639,6 +3639,16 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(followUpPromptSource.includes("details.error.code === \"archive_too_large\""), "/oracle-followup prompt should explicitly recognize retryable archive_too_large submit failures");
   assert(followUpPromptSource.includes("after at most two total `oracle_submit` attempts"), "/oracle-followup prompt should cap automatic archive-too-large retries");
   assert(followUpPromptSource.includes("nearby files, tests, docs, configs, and adjacent modules"), "/oracle-followup prompt should preserve relevant surrounding context for narrow follow-up requests");
+  for (const sharedPromptContract of [
+    "Do not plan instead of submitting",
+    "Do not claim preflight, auth, archive prep, or submission happened unless the matching tool call actually happened",
+    "If a required tool call is unavailable or fails, stop and report that exact blocker instead of fabricating progress",
+    "After a successful or queued `oracle_submit`, your final answer must be only a terse dispatch summary",
+    "Do not ask questions, offer to watch/poll/read, list next steps, or continue working",
+  ]) {
+    assert(promptSource.includes(sharedPromptContract), `/oracle prompt should include shared hard dispatch contract: ${sharedPromptContract}`);
+    assert(followUpPromptSource.includes(sharedPromptContract), `/oracle-followup prompt should include shared hard dispatch contract: ${sharedPromptContract}`);
+  }
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, prepare archive inputs, or call `oracle_auth` automatically"), "/oracle prompt should forbid expensive prep and automatic auth before preflight passes");
   assert(promptSource.includes("Do not plan instead of submitting"), "/oracle prompt should explicitly forbid planning instead of dispatching");
@@ -3749,6 +3759,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("Retry after ..."), "README troubleshooting should mention the oracle-clean retry-after hint");
   assert(readmeSource.includes("## Available providers and presets"), "README should document available oracle preset ids");
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
+  assert(readmeSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "README/design/prompts should use MiB wording for ChatGPT upload ceiling");
+  assert(readmeSource.includes("Node.js 22.19.0 or newer") && readmeSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should distinguish package Node floor from Node 24 platform validation");
+  assert(readmeSource.includes("npm run check:platform-smoke") && readmeSource.includes("npm run sanity:oracle:platform"), "README verification table should include the cheap platform-focused validation commands");
   assert(readmeSource.includes("Grok uploads now use `.tar.gz` archives"), "README should document Grok's gzip archive format because Grok lacks zstd extraction tools");
   assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
   assert(readmeSource.includes("human-readable preset label"), "README should mention preset label normalization");
@@ -3812,11 +3825,11 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(runtimeSource.includes("Configured oracle browser executable does not exist"), "runtime submit preflight should surface missing configured browser executables clearly");
   assert(runtimeSource.includes("Oracle prerequisite not found on PATH"), "runtime submit preflight should surface missing local dependencies clearly");
   assert(runtimeSource.includes('await assertWritableDirectory(config.browser.runtimeProfilesDir, "runtime profiles")'), "runtime submit preflight should validate runtime profile directory writability before submit");
-  assert(runtimeSource.includes('await assertWritableDirectory(ORACLE_JOBS_DIR, "jobs")'), "runtime submit preflight should validate jobs directory writability before submit");
+  assert(runtimeSource.includes('await assertWritableDirectory(getOracleJobsDir(), "jobs")'), "runtime submit preflight should validate the canonical jobs directory helper before submit");
   assert(runtimeSource.includes("assertOracleSubmitPrerequisites"), "runtime should expose a submit-side preflight helper for locally knowable blockers");
   assert(runtimeSource.includes("Oracle auth seed profile is not readable"), "runtime submit preflight should surface unreadable auth seed profiles clearly");
   assert(toolsSource.includes("const projectCwd = getProjectId(ctx.cwd);"), "oracle submit should derive a stable workspace-root cwd before loading config or resolving archives");
-  assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
+  assert(toolsSource.includes("loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isOracleProjectTrusted(ctx) })"), "oracle submit should load config from the stable workspace-root cwd while checking trust against the session cwd");
   assert(toolsSource.includes("resolveArchiveInputs(projectCwd, params.files)"), "oracle submit should resolve archive inputs from the stable workspace-root cwd");
   assert(toolsSource.includes("createArchive(projectCwd, params.files, tempArchivePath"), "oracle submit should build archives from the stable workspace-root cwd");
   assert(toolsSource.includes("resolveOracleProviderArchivePlan(selection.provider)"), "oracle submit should select archive format, extension, and size limit from the resolved provider archive plan");
@@ -3953,6 +3966,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/targets.mjs"), "package.json should syntax-check the Crabbox platform smoke runner");
+  assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/invariants.mjs"), "package.json should run platform-smoke invariants during syntax checks");
+  assert(String(pkg.scripts?.["check:oracle-real-smoke"] || "").includes("scripts/oracle-sanity-runner.mjs"), "package.json should syntax-check the oracle sanity runner wrapper");
   assert(pkg.scripts?.["smoke:platform:doctor"] === "node scripts/platform-smoke.mjs doctor", "package.json should expose the Crabbox platform-smoke doctor");
   assert(pkg.scripts?.["smoke:platform:macos"] === "node scripts/platform-smoke.mjs run --target macos", "package.json should expose the macOS Crabbox platform smoke gate");
   assert(pkg.scripts?.["smoke:platform:ubuntu"] === "node scripts/platform-smoke.mjs run --target ubuntu", "package.json should expose the Ubuntu Crabbox platform smoke gate");
@@ -4048,7 +4063,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("public Log in/Sign up controls"), "worker readiness should not accept ChatGPT's public logged-out composer shell as authenticated");
   assert(workerSource.includes("hasGrokLoginCta"), "worker should reject Grok login shells before accepting composer-like controls as authenticated");
   assert(authBootstrapSource.includes("hasGrokLoginCta"), "auth bootstrap should reject Grok login shells before accepting composer-like controls as authenticated");
-  assert(workerSource.includes('parsed.pathname.match(/\\/(?:c|chat)\\/([^/?#]+)/i)'), "worker should parse both ChatGPT and Grok conversation URL ids");
+  assert(conversationIdFromUrl("https://chatgpt.com/c/chatgpt-abc") === "chatgpt-abc" && conversationIdFromUrl("https://grok.com/chat/grok-abc") === "grok-abc", "conversation helpers should parse both ChatGPT and Grok conversation URL ids");
   assert(workerSource.includes("Grok response completed but the conversation URL did not stabilize"), "Grok jobs should fail clearly rather than persist the Grok home page as a follow-up URL");
   assert(workerSource.includes("hasTargetCopyResponse: hasTargetCopyResponse || isGrokJob(job)"), "Grok completion should not require exact Copy-button evidence once response text is stable");
   assert(workerSource.includes("const errorText = detectUploadErrorText(`${snapshot}\\n${body}`);"), "Grok upload confirmation should preserve visible upload error detection");
@@ -5734,6 +5749,20 @@ function testChatGptFlowHelpers(): void {
   assert(firstStableState.stableCount === 1 && secondStableState.stableCount === 2 && resetStableState.stableCount === 1, "stable-value helpers should increment matching observations and reset on change");
 }
 
+async function testRunnerAndSmokeFailureContracts(): Promise<void> {
+  const badMode = await runProcess(process.execPath, ["scripts/oracle-sanity-runner.mjs", "--mode", "nope"], { timeoutMs: 10_000 });
+  assert(badMode.code !== 0, "sanity runner should reject unknown --mode values");
+  assert(badMode.stderr.includes("unknown --mode"), "sanity runner should explain unknown --mode failures");
+
+  const badTimeout = await runProcess(process.execPath, ["scripts/oracle-real-smoke.mjs", "run", "--mode", "source"], {
+    env: { ...process.env, PI_ORACLE_REAL_TEST_TIMEOUT_MS: "nope" },
+    timeoutMs: 10_000,
+  });
+  assert(badTimeout.code !== 0, "real smoke runner should reject invalid timeout env before setup");
+  assert(badTimeout.stderr.includes("finite positive millisecond value"), "real smoke runner should explain invalid timeout env");
+  assert(!badTimeout.stdout.includes("Oracle real smoke mode="), "real smoke runner should fail timeout validation before expensive smoke setup");
+}
+
 async function testSanityRunnerIsolation(): Promise<void> {
   const runnerSource = await readFile(new URL("./oracle-sanity-runner.mjs", import.meta.url), "utf8");
   assert(runnerSource.includes("/tmp/pi-oracle-sanity-state-"), "sanity runner should force an isolated oracle state dir");
@@ -6015,6 +6044,7 @@ async function runSanityPreamble(): Promise<OracleConfig> {
   assert(DEFAULT_CONFIG.browser.maxConcurrentJobs === 2, "default oracle concurrency should be 2");
   assert(DEFAULT_CONFIG.browser.cloneStrategy === defaultCloneStrategyForPlatform(process.platform), "default oracle clone strategy should use APFS clones only on macOS");
   assert("chromiumKeychain" in DEFAULT_CONFIG.auth, "default auth config should expose optional Chromium keychain support for non-Chrome Chromium-family browsers");
+  await testRunnerAndSmokeFailureContracts();
   await testBrowserProfileHelpers();
   return createSanityConfig();
 }

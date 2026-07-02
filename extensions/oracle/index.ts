@@ -11,6 +11,7 @@ import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
 import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./lib/locks.js";
+import { isOracleProjectTrusted } from "./lib/trust.js";
 import { refreshOracleStatus, setOracleReadiness, startPoller, stopPoller } from "./lib/poller.js";
 import { promoteQueuedJobs } from "./lib/queue.js";
 import { assertOracleSubmitPrerequisites, hasPersistedSessionFile } from "./lib/runtime.js";
@@ -27,10 +28,6 @@ function readPromptTemplate(path: string): string | undefined {
 function oracleReadinessFromError(error: unknown): "auth_needed" | "config_error" {
   const message = error instanceof Error ? error.message : String(error);
   return /auth seed profile/i.test(message) ? "auth_needed" : "config_error";
-}
-
-function isProjectTrusted(ctx: ExtensionContext): boolean {
-  return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
 }
 
 function expandOraclePromptTemplate(source: string, args: string): string {
@@ -94,7 +91,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const config = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isProjectTrusted(ctx) });
+      const config = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
       setOracleReadiness(ctx, "loaded");
       void assertOracleSubmitPrerequisites(config)
         .then(() => setOracleReadiness(ctx, "ready"))

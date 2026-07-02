@@ -17,6 +17,7 @@ import { isLockTimeoutError, withGlobalReconcileLock, withLock } from "./locks.j
 import {
   coerceOracleSubmitPresetId,
   loadOracleConfig,
+  normalizeOracleProvider,
   GROK_MODES,
   ORACLE_PROVIDERS,
   ORACLE_SUBMIT_PRESET_IDS,
@@ -49,6 +50,7 @@ import {
   updateJob,
   type OracleJob,
 } from "./jobs.js";
+import { isOracleProjectTrusted } from "./trust.js";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "./queue.js";
 import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 import { refreshOracleStatus } from "./poller.js";
@@ -126,15 +128,6 @@ const ORACLE_CANCEL_PARAMS = Type.Object({
 
 const MAX_QUEUED_JOBS_PER_ACTIVE_RUNTIME = 1;
 const MAX_QUEUED_ARCHIVE_BYTES_PER_ACTIVE_RUNTIME = resolveOracleProviderArchivePlan("chatgpt").maxArchiveBytes;
-function normalizeOracleProvider(value: unknown, fallback: OracleProvider, toolName = "oracle_submit"): OracleProvider {
-  if (value === undefined) return fallback;
-  if (typeof value !== "string") throw new Error(`${toolName} provider must be a string`);
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "chatgpt" || normalized === "chat-gpt" || normalized === "openai") return "chatgpt";
-  if (normalized === "grok" || normalized === "xai" || normalized === "x.ai") return "grok";
-  throw new Error(`Unknown ${toolName} provider: ${value}. Use chatgpt or grok.`);
-}
-
 function prepareOracleProviderAliases<T>(args: unknown, toolName: string): T {
   const record = asRecord(args);
   if (!record) return args as T;
@@ -712,10 +705,6 @@ function formatOraclePreflightResponse(details: OraclePreflightDetails): string 
   ].filter(Boolean).join("\n");
 }
 
-function isProjectTrusted(ctx: ExtensionContext): boolean {
-  return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
-}
-
 async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: unknown; followUpJobId?: unknown; chatGptConversationId?: unknown } = {}): Promise<OraclePreflightDetails> {
   const sessionFile = getSessionFile(ctx);
   if (!hasPersistedSessionFile(sessionFile)) {
@@ -743,7 +732,7 @@ async function runOraclePreflight(ctx: ExtensionContext, params: { provider?: un
     if (chatGptConversationId !== undefined && typeof chatGptConversationId !== "string") {
       throw new Error("oracle_preflight chatGptConversationId must be a string");
     }
-    const baseConfig = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isProjectTrusted(ctx) });
+    const baseConfig = loadOracleConfig(ctx.cwd, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
     const target = resolveConversationTarget({ followUpJobId, chatGptConversationId, cwd: ctx.cwd, config: baseConfig });
     provider = normalizeOracleProvider(params.provider, target.provider ?? baseConfig.defaults.provider, "oracle_preflight");
     if (target.provider && provider !== target.provider) {
@@ -835,9 +824,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) });
+        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isOracleProjectTrusted(ctx) });
         const provider = normalizeOracleProvider(params.provider, baseConfig.defaults.provider, "oracle_auth");
-        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd, provider, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) });
+        const message = await runOracleAuthBootstrap(authWorkerPath, projectCwd, provider, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isOracleProjectTrusted(ctx) });
         return {
           content: [{ type: "text" as const, text: message }],
           details: {
@@ -874,7 +863,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
         const projectCwd = getProjectId(ctx.cwd);
-        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isProjectTrusted(ctx) });
+        const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isOracleProjectTrusted(ctx) });
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
         const projectId = getProjectId(projectCwd);
         const sessionId = getSessionId(originSessionFile, projectId);

@@ -8,7 +8,8 @@ import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
-import type { OracleProvider } from "./config.js";
+import { normalizeOracleProviderAlias, type OracleProvider } from "./config.js";
+import { isOracleProjectTrusted } from "./trust.js";
 import {
   cancelOracleJob,
   getJobDir,
@@ -26,11 +27,6 @@ import { getQueuePosition, promoteQueuedJobs } from "./queue.js";
 import { refreshOracleStatus } from "./poller.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./locks.js";
 import { getProjectId } from "./runtime.js";
-
-export interface OracleCommandPromptTemplates {
-  oracle?: string;
-  oracleFollowup?: string;
-}
 
 async function summarizeJob(jobId: string, options?: { responsePreview?: boolean }): Promise<string> {
   const job = readJob(jobId);
@@ -72,15 +68,11 @@ function readScopedJob(jobId: string, cwd: string) {
 }
 
 function parseOracleAuthProvider(args: string): OracleProvider | undefined {
-  const value = args.trim().toLowerCase();
+  const value = args.trim();
   if (!value) return undefined;
-  if (value === "chatgpt" || value === "chat-gpt" || value === "openai") return "chatgpt";
-  if (value === "grok" || value === "xai" || value === "x.ai") return "grok";
+  const provider = normalizeOracleProviderAlias(value);
+  if (provider) return provider;
   throw new Error("Usage: /oracle-auth [chatgpt|grok]");
-}
-
-function isProjectTrusted(ctx: ExtensionCommandContext): boolean {
-  return (ctx as { isProjectTrusted?: () => boolean }).isProjectTrusted?.() ?? true;
 }
 
 function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
@@ -100,7 +92,7 @@ function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, messa
   });
 }
 
-export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string, _promptTemplates: OracleCommandPromptTemplates = {}): void {
+export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT or Grok cookies from the configured local browser profile into the provider auth seed profile",
     handler: async (args, ctx) => {
@@ -108,7 +100,7 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
         const provider = parseOracleAuthProvider(args);
         const providerLabel = provider === "grok" ? "Grok" : provider === "chatgpt" ? "ChatGPT" : "configured provider";
         emitCommandOutput(pi, ctx, `Syncing ${providerLabel} cookies from the configured local browser profile into the oracle auth seed profile…`, "info");
-        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider, { projectConfigTrusted: isProjectTrusted(ctx) });
+        const result = await runOracleAuthBootstrap(authWorkerPath, ctx.cwd, provider, { projectConfigTrusted: isOracleProjectTrusted(ctx) });
         emitCommandOutput(pi, ctx, result, "info");
       } catch (error) {
         emitCommandOutput(pi, ctx, error instanceof Error ? error.message : String(error), "warning");

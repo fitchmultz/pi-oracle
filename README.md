@@ -78,7 +78,7 @@ To update the package later, use `pi update --extensions`, `pi update --all`, or
 You need:
 
 - macOS, Linux, or Windows native
-- Node.js 22 or newer
+- Node.js 22.19.0 or newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
 - Suggested tested floor: `pi` 0.80.2 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
@@ -391,7 +391,8 @@ Use the narrowest validation workflow that proves the change:
 | Situation | Command(s) |
 | --- | --- |
 | Everyday local iteration | `npm run verify:oracle` |
-| Platform-sensitive changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
+| Platform-focused syntax/invariant sanity | `npm run check:platform-smoke`, `npm run sanity:oracle:platform` |
+| Platform-sensitive runtime changes | `npm run smoke:platform:doctor`, then a focused `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` |
 | Platform matrix proof | `npm run smoke:platform:all` |
 | ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` |
 | Publish/release gate | `npm run release:check` |

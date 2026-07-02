@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.17 - 2026-07-01
+
+### Changed
+- clarified oracle prompt/docs validation around provider upload ceilings, Node release-gate requirements, and follow-up dispatch rules
+- centralized provider normalization, project-trust probing, oracle jobs-dir defaults, and timestamp parsing in narrow source-of-truth modules
+
+### Fixed
+- made sanity-runner mode and real-smoke timeout validation fail through tested behavior paths instead of brittle source-string contracts
+- removed duplicate worker/auth helper logic for snapshot parsing, URL normalization, conversation ids, and login-probe normalization
+
+### Validation
+- ran the full `npm run verify:oracle` local gate before release
+
 ## 0.7.16 - 2026-06-24
 
 ### Changed

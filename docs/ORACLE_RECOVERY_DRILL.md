@@ -43,7 +43,7 @@ mkdir -p "$SEED"
 chmod 700 "$SEED"
 ```
 
-This simulates a seed profile with no usable ChatGPT session.
+This simulates a seed profile with no usable provider session.
 
 ## Validation steps
 
@@ -72,7 +72,7 @@ Run:
 ```
 
 Expected result:
-- ChatGPT cookies are re-synced into the seed profile
+- provider cookies are re-synced into the seed profile
 - no real Chrome profile is mutated
 - command reports success
 

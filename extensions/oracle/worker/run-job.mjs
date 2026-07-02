@@ -19,6 +19,7 @@ import {
 } from "../shared/job-coordination-helpers.mjs";
 import { applyOracleJobCleanupWarnings, clearOracleJobCleanupState, transitionOracleJobPhase } from "../shared/job-lifecycle-helpers.mjs";
 import { spawnDetachedNodeProcess, terminateTrackedProcess } from "../shared/process-helpers.mjs";
+import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
@@ -39,7 +40,8 @@ import {
   autoSwitchToThinkingSelectionVisible,
   stripChatGptResponseChrome,
 } from "./chatgpt-ui-helpers.mjs";
-import { assistantSnapshotSlice, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { assistantSnapshotSlice, conversationIdFromUrl, nextStableValueState, providerSendAccepted, resolveStableConversationUrlCandidate, stripUrlQueryAndHash } from "./chatgpt-flow-helpers.mjs";
+import { normalizeLoginProbeResult } from "./auth-flow-helpers.mjs";
 import { assertNotKnownBrowserUserDataPath, scrubSweetCookieSafeStoragePasswordEnv, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withLock } from "./state-locks.mjs";
 
@@ -49,9 +51,7 @@ if (!jobId) {
   process.exit(1);
 }
 
-const DEFAULT_ORACLE_JOBS_DIR = "/tmp";
-const ORACLE_JOBS_DIR = process.env.PI_ORACLE_JOBS_DIR?.trim() || DEFAULT_ORACLE_JOBS_DIR;
-const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
+const jobDir = join(getOracleJobsDir(), `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
@@ -292,17 +292,6 @@ async function cpSupportsApfsClone() {
   const probe = await spawnCommand(CP_BIN, ["-c"], { allowFailure: true, timeoutMs: 5_000 });
   cpSupportsApfsCloneFlag = !/invalid option\s+--\s+['"]?c/i.test(`${probe.stderr}\n${probe.stdout}`);
   return cpSupportsApfsCloneFlag;
-}
-
-function parseConversationId(chatUrl) {
-  if (!chatUrl) return undefined;
-  try {
-    const parsed = new URL(chatUrl);
-    const match = parsed.pathname.match(/\/(?:c|chat)\/([^/?#]+)/i);
-    return match?.[1];
-  } catch {
-    return undefined;
-  }
 }
 
 async function removeChromiumProcessSingletonArtifacts(profileDir) {
@@ -763,30 +752,12 @@ async function evalPage(job, script) {
 }
 
 async function loginProbe(job) {
-  const result = await evalPage(job, buildLoginProbeScript(5_000));
-  if (!result || typeof result !== "object") {
-    return { ok: false, status: 0, error: "invalid-probe-result" };
-  }
-  return {
-    ok: result.ok === true,
-    status: typeof result.status === "number" ? result.status : 0,
-    pageUrl: typeof result.pageUrl === "string" ? result.pageUrl : undefined,
-    domLoginCta: result.domLoginCta === true,
-    onAuthPage: result.onAuthPage === true,
-    error: typeof result.error === "string" ? result.error : undefined,
-    bodyKeys: Array.isArray(result.bodyKeys) ? result.bodyKeys : [],
-    bodyHasId: result.bodyHasId === true,
-    bodyHasEmail: result.bodyHasEmail === true,
-  };
+  return normalizeLoginProbeResult(await evalPage(job, buildLoginProbeScript(5_000)));
 }
 
 async function currentUrl(job) {
   const { stdout } = await agentBrowser(job, "get", "url");
   return stdout;
-}
-
-function stripQuery(url) {
-  return stripUrlQueryAndHash(url);
 }
 
 async function snapshotText(job) {
@@ -1829,7 +1800,7 @@ async function waitForStableChatUrl(job, previousChatUrl) {
     await sleep(1000);
   }
 
-  return previousChatUrl || stripQuery(await currentUrl(job));
+  return previousChatUrl || stripUrlQueryAndHash(await currentUrl(job));
 }
 
 async function waitForChatCompletion(job, baselineAssistantCount) {
@@ -2198,7 +2169,7 @@ async function waitForStableArtifactCandidates(job, responseIndex, responseText 
 }
 
 async function reopenConversationForArtifacts(job, responseIndex, responseText, reason) {
-  const targetUrl = job.chatUrl || stripQuery(await currentUrl(job));
+  const targetUrl = job.chatUrl || stripUrlQueryAndHash(await currentUrl(job));
   await log(`Reopening conversation before artifact capture (${reason}): ${targetUrl}`);
   await agentBrowser(job, "open", targetUrl);
   await agentBrowser(job, "wait", "1500");
@@ -2397,9 +2368,9 @@ async function run() {
     await sleep(POST_SEND_SETTLE_MS);
 
     const observedChatUrl = isGrokJob(currentJob)
-      ? stripQuery(await currentUrl(currentJob))
+      ? stripUrlQueryAndHash(await currentUrl(currentJob))
       : await waitForStableChatUrl(currentJob, currentJob.chatUrl);
-    const observedConversationId = parseConversationId(observedChatUrl) || currentJob.conversationId;
+    const observedConversationId = conversationIdFromUrl(observedChatUrl) || currentJob.conversationId;
     const awaitingResponsePatch = {
       heartbeatAt: new Date().toISOString(),
       ...(observedConversationId ? { chatUrl: observedChatUrl, conversationId: observedConversationId } : {}),
@@ -2414,7 +2385,7 @@ async function run() {
     const completion = await waitForChatCompletion(currentJob, baselineAssistantCount);
     if (isGrokJob(currentJob) && !currentJob.conversationId) {
       const stableGrokChatUrl = await waitForStableChatUrl(currentJob, undefined);
-      const stableGrokConversationId = parseConversationId(stableGrokChatUrl);
+      const stableGrokConversationId = conversationIdFromUrl(stableGrokChatUrl);
       if (!stableGrokConversationId) {
         throw new Error(`Grok response completed but the conversation URL did not stabilize; current URL: ${stableGrokChatUrl || "(unknown)"}`);
       }
