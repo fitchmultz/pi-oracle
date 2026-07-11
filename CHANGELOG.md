@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+- updated the local Pi and pi-ai development baseline to 0.80.6
+- switched provider and mode tool schemas to Pi's Google-compatible `StringEnum` helper
+
 ## 0.7.17 - 2026-07-01
 
 ### Changed

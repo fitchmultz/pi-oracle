@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createArchive, type ArchiveCreationResult, type ArchiveSizeBreakdownRow } from "./archive.js";
 import { runOracleAuthBootstrap } from "./auth.js";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { formatOracleCancelOutcome, formatOracleJobSummary, formatOracleSubmitResponse } from "../shared/job-observability-helpers.mjs";
@@ -68,13 +69,11 @@ import {
 } from "./runtime.js";
 
 const ORACLE_PROVIDER_PARAM_DESCRIPTION = `Oracle web provider. Omit to use the configured default provider. Supported providers: ${ORACLE_PROVIDERS.join(", ")}.`;
-const ORACLE_PROVIDER_PARAM = Type.Optional(Type.String({
+const ORACLE_PROVIDER_PARAM = Type.Optional(StringEnum(ORACLE_PROVIDERS, {
   description: ORACLE_PROVIDER_PARAM_DESCRIPTION,
-  enum: [...ORACLE_PROVIDERS],
 }));
-const ORACLE_GROK_MODE_PARAM = Type.Optional(Type.String({
+const ORACLE_GROK_MODE_PARAM = Type.Optional(StringEnum(GROK_MODES, {
   description: "Provider mode. For Grok, only heavy is currently supported. Omit to use the configured default mode.",
-  enum: [...GROK_MODES],
 }));
 
 const ORACLE_SUBMIT_PARAMS = Type.Object({

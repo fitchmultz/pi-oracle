@@ -147,7 +147,7 @@ import { getQueueAdmissionFailure, getQueuedArchivePressure, registerOracleTools
 import { registerOracleCommands } from "../extensions/oracle/lib/commands.ts";
 import oracleExtension from "../extensions/oracle/index.ts";
 import { runPollerSanitySuite } from "./oracle-sanity-poller-suite.ts";
-import { createCommandCtx, createExtensionCtx, createPiHarness, resetOracleStateDir } from "./oracle-sanity-support.ts";
+import { createCommandCtx, createExtensionCtx, createPiHarness, removeDirRobust, resetOracleStateDir } from "./oracle-sanity-support.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -467,7 +467,7 @@ async function writeActiveJob(id: string): Promise<void> {
 }
 
 async function cleanupJob(id: string): Promise<void> {
-  await rm(getJobDir(id), { recursive: true, force: true });
+  await removeDirRobust(getJobDir(id));
 }
 
 async function testRuntimeConversationLeases(config: OracleConfig): Promise<void> {
@@ -3598,6 +3598,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     overrides?: { "basic-ftp"?: string; protobufjs?: string };
     devDependencies?: Record<string, string | undefined>;
     peerDependencies?: Record<string, string | undefined>;
+    peerDependenciesMeta?: Record<string, { optional?: boolean } | undefined>;
   };
   const pi = createPiHarness();
   registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, "/tmp/fake-oracle-worker.mjs");
@@ -3774,6 +3775,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const submitSchema = submitTool.parameters as import("typebox").TSchema;
   assert(Check(preflightSchema, {}), "oracle_preflight should accept an empty object");
   assert(Check(preflightSchema, { provider: "grok" }), "oracle_preflight should accept optional provider selection");
+  assert(!Check(preflightSchema, { provider: "unsupported" }), "oracle_preflight should reject providers outside the Google-compatible StringEnum schema");
   assert(Check(preflightSchema, { followUpJobId: "sanity-job" }), "oracle_preflight should accept optional follow-up job id selection");
   assert(Check(preflightSchema, { provider: "chatgpt", chatGptConversationId: "6a28ab5c-e4d4-83e8-b8be-dd39f38a26d6" }), "oracle_preflight should accept optional existing ChatGPT conversation id selection");
   assert(Check(authSchema, {}), "oracle_auth should accept an empty object");
@@ -3810,6 +3812,10 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(
     !Check(submitSchema, { prompt: "sanity", files: ["README.md"], preset: 123 }),
     "oracle_submit tool-call validation should reject non-string preset values",
+  );
+  assert(
+    !Check(submitSchema, { prompt: "sanity", files: ["README.md"], provider: "grok", mode: "unsupported" }),
+    "oracle_submit tool-call validation should reject modes outside the Google-compatible StringEnum schema",
   );
   assert(
     !Check(submitSchema, { prompt: "sanity", files: ["   "] }),
@@ -3983,12 +3989,16 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.2", "package.json should use the current Pi 0.80.2 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.2", "package.json should use the current pi-ai 0.80.2 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.6", "package.json should use the current Pi 0.80.6 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.6", "package.json should use the current pi-ai 0.80.6 local development baseline");
+  assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
+  for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
+    assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
+  }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(readmeSource.includes("Pi `0.80.2+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.2 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.80.2+") || designSource.includes("`pi` 0.80.2+"), "design doc should name the current suggested Pi 0.80.2 compatibility floor");
+  assert(readmeSource.includes("Pi `0.80.6+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.6 floor without making it a hard peer requirement");
+  assert(designSource.includes("pi` 0.80.6+") || designSource.includes("`pi` 0.80.6+"), "design doc should name the current suggested Pi 0.80.6 compatibility floor");
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
@@ -4548,6 +4558,7 @@ PY
       join(binDir, "zstd"),
       `#!/bin/sh
 printf '%s\\n' "$$" > ${shellQuote(zstdPidPath)}
+sleep 0.1
 echo 'fake zstd failure' >&2
 exit 1
 `,
@@ -5753,6 +5764,10 @@ async function testRunnerAndSmokeFailureContracts(): Promise<void> {
   const badMode = await runProcess(process.execPath, ["scripts/oracle-sanity-runner.mjs", "--mode", "nope"], { timeoutMs: 10_000 });
   assert(badMode.code !== 0, "sanity runner should reject unknown --mode values");
   assert(badMode.stderr.includes("unknown --mode"), "sanity runner should explain unknown --mode failures");
+
+  const badSmokeMode = await runProcess(process.execPath, ["scripts/oracle-real-smoke.mjs", "run", "--mode", "nope"], { timeoutMs: 10_000 });
+  assert(badSmokeMode.code !== 0, "real smoke runner should reject unknown --mode values");
+  assert(badSmokeMode.stderr.includes("unknown mode"), "real smoke runner should explain unknown --mode failures");
 
   const badTimeout = await runProcess(process.execPath, ["scripts/oracle-real-smoke.mjs", "run", "--mode", "source"], {
     env: { ...process.env, PI_ORACLE_REAL_TEST_TIMEOUT_MS: "nope" },

@@ -101,7 +101,8 @@ function testCanonicalWorkflowConfig() {
 
 function testRealSmokeExpensiveAgentPathsAreOptIn() {
   const source = readFileSync(new URL("../oracle-real-smoke.mjs", import.meta.url), "utf8");
-  assert.match(source, /runDirectOracleSubmit/, "default real smoke should use deterministic installed-tool execution");
+  assert.match(source, /runPiLoaderStatus/, "default real smoke should execute a deterministic command through Pi's extension loader");
+  assert.doesNotMatch(source, /tsx\/cli|runDirectOracleSubmit/, "default real smoke must not bypass Pi's loader through checkout tsx");
   assert.match(source, /PI_ORACLE_REAL_TEST_MODEL_AGENT/, "real smoke should expose the optional model-agent toggle");
   const targetsSource = readFileSync(new URL("./targets.mjs", import.meta.url), "utf8");
   assert.match(targetsSource, /PI_ORACLE_REAL_TEST_MODEL_AGENT/, "platform real-extension command should forward the optional model-agent toggle");

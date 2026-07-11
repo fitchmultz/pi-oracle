@@ -48,7 +48,7 @@
     ]
   },
   "scripts": {
-    "check:oracle-extension": "node --check extensions/oracle/shared/browser-profile-helpers.mjs && node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-path-helpers.mjs && node --check extensions/oracle/shared/time-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/chromium-cookie-source.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-coding-agent --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "check:oracle-extension": "node --check extensions/oracle/shared/browser-profile-helpers.mjs && node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-path-helpers.mjs && node --check extensions/oracle/shared/time-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/chromium-cookie-source.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
     "sanity:oracle": "node scripts/oracle-sanity-runner.mjs",
@@ -78,6 +78,7 @@
     "@steipete/sweet-cookie": "^0.3.0"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
@@ -86,8 +87,8 @@
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.80.2",
-    "@earendil-works/pi-coding-agent": "^0.80.2",
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
     "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",
@@ -104,6 +105,9 @@
   ],
   "packageManager": "npm@11.16.0",
   "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     },

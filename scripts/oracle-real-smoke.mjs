@@ -5,17 +5,13 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
-const require = createRequire(import.meta.url);
-const tsxCli = require.resolve("tsx/cli");
 
 const DEFAULT_PROVIDER = "zai";
 const DEFAULT_MODEL = "glm-5.2";
 const DEFAULT_TIMEOUT_MS = 180_000;
+const EXPECTED_PI_VERSION = "0.80.6";
 const PACKAGE_NAME = "pi-oracle";
 
 function usage() {
@@ -31,7 +27,7 @@ Environment:
   PI_ORACLE_REAL_TEST_TIMEOUT_MS per-agent timeout in ms (default: ${DEFAULT_TIMEOUT_MS})
   PI_ORACLE_REAL_TEST_ARTIFACT_ROOT artifact root (default: .artifacts/real-smoke)
   PI_ORACLE_REAL_TEST_KEEP_TMP   keep temporary fixture directory when set to 1/true/yes
-  PI_ORACLE_REAL_TEST_MODEL_AGENT run oracle_submit through a model-agent turn instead of direct installed-tool execution (off by default)
+  PI_ORACLE_REAL_TEST_MODEL_AGENT run oracle_submit through a credentialed model-agent turn instead of the safe loader command (off by default)
   PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK run optional second-agent symlink rejection check (off by default; covered by sanity:oracle)
 `);
 }
@@ -299,39 +295,14 @@ function hasCreatedJobArchive(jobsDir) {
   return Boolean(jobDir && archivePath && existsSync(archivePath));
 }
 
-async function runDirectOracleSubmit({ prepared, agentDir, sessionDir, jobsDir, outDir, timeoutMs }) {
+async function runPiLoaderStatus({ prepared, agentDir, sessionDir, jobsDir, outDir, timeoutMs }) {
   mkdirSync(outDir, { recursive: true });
-  const sessionFile = join(sessionDir, "real-smoke-session.jsonl");
-  const fakeWorkerPath = join(outDir, "fake-worker.mjs");
-  const scriptPath = join(outDir, "direct-submit.mjs");
-  const packageRoot = prepared.mode === "packed" ? join(prepared.cwd, "node_modules", PACKAGE_NAME) : process.cwd();
-  const toolsUrl = pathToFileURL(join(packageRoot, "extensions", "oracle", "lib", "tools.ts")).href;
   mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(sessionFile, "");
-  writeFileSync(fakeWorkerPath, "process.exit(0);\n");
-  writeFileSync(scriptPath, `
-import { registerOracleTools } from ${JSON.stringify(toolsUrl)};
-const tools = new Map();
-const pi = {
-  on() { return undefined; },
-  registerTool(tool) { tools.set(tool.name, tool); },
-};
-registerOracleTools(pi, ${JSON.stringify(fakeWorkerPath)});
-const submit = tools.get("oracle_submit");
-if (!submit) throw new Error("oracle_submit was not registered by the installed package");
-const ctx = {
-  cwd: process.cwd(),
-  sessionManager: { getSessionFile() { return ${JSON.stringify(sessionFile)}; } },
-};
-const result = await submit.execute("real-smoke", {
-  prompt: "Real smoke archive test. Reply OK if this reaches the provider.",
-  files: ["."],
-  preset: "instant",
-}, new AbortController().signal, () => undefined, ctx);
-console.log(JSON.stringify(result, null, 2));
-`);
-  writeFileSync(join(outDir, "command.json"), `${JSON.stringify({ command: process.execPath, args: [tsxCli, scriptPath], cwd: prepared.cwd, mode: prepared.mode, extensionPath: prepared.extensionPath }, null, 2)}\n`);
-  const result = await runCommand(process.execPath, [tsxCli, scriptPath], {
+  const args = ["--mode", "json", "--no-session", prepared.mode === "packed" ? "--approve" : "--no-approve", "--session-dir", sessionDir];
+  if (prepared.mode === "source") args.push("--no-extensions", "-e", prepared.extensionPath);
+  args.push("/oracle-status");
+  writeFileSync(join(outDir, "command.json"), `${JSON.stringify({ command: piCommand(), args, cwd: prepared.cwd, mode: prepared.mode, extensionPath: prepared.extensionPath }, null, 2)}\n`);
+  const result = await runCommand(piCommand(), args, {
     cwd: prepared.cwd,
     env: {
       ...process.env,
@@ -341,9 +312,9 @@ console.log(JSON.stringify(result, null, 2));
     },
     timeoutMs,
   });
-  writeRunResult(outDir, "direct-submit", result);
-  if (result.timedOut) throw new Error(`direct oracle_submit timed out after ${timeoutMs}ms`);
-  if (result.code !== 0) throw new Error(`direct oracle_submit exited ${result.code}; see ${join(outDir, "direct-submit.stderr.txt")}`);
+  writeRunResult(outDir, "pi-loader", result);
+  if (result.timedOut) throw new Error(`Pi loader smoke timed out after ${timeoutMs}ms`);
+  if (result.code !== 0) throw new Error(`Pi loader smoke exited ${result.code}; see ${join(outDir, "pi-loader.stderr.txt")}`);
   return result;
 }
 
@@ -385,10 +356,12 @@ async function run(mode = "packed") {
   const artifactRoot = resolve(env("PI_ORACLE_REAL_TEST_ARTIFACT_ROOT") ?? ".artifacts/real-smoke");
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const runDir = join(artifactRoot, runId);
-  const tmpRoot = mkdtempSync(join(tmpdir(), "pi-oracle-real-smoke-"));
   const assertions = [];
 
   mkdirSync(runDir, { recursive: true });
+  const piVersion = await mustRun(runDir, "pi-version", piCommand(), ["--version"], { cwd: process.cwd(), env: process.env, timeoutMs: 30_000 });
+  if (piVersion.stdout.trim() !== EXPECTED_PI_VERSION) throw new Error(`real smoke requires Pi ${EXPECTED_PI_VERSION}; found ${piVersion.stdout.trim() || "unknown"}`);
+  const tmpRoot = mkdtempSync(join(tmpdir(), "pi-oracle-real-smoke-"));
   const prepared = mode === "packed"
     ? await preparePackedProject({ runDir, provider, model, timeoutMs })
     : prepareSourceProject({ provider, model });
@@ -411,7 +384,8 @@ async function run(mode = "packed") {
     mkdirSync(sessions1, { recursive: true });
     mkdirSync(jobs1, { recursive: true });
 
-    const submitResult = truthy(env("PI_ORACLE_REAL_TEST_MODEL_AGENT"))
+    const modelAgent = truthy(env("PI_ORACLE_REAL_TEST_MODEL_AGENT"));
+    const submitResult = modelAgent
       ? await runPiAgent({
         prepared,
         agentDir: agent1,
@@ -423,7 +397,7 @@ async function run(mode = "packed") {
         stopAfterJobArchive: true,
         prompt: 'Call oracle_submit directly with prompt "Real smoke archive test. Reply OK if this reaches the provider." files ["."] and preset "instant". Do not use bash, read, edit, write, or any tool except oracle_submit.',
       })
-      : await runDirectOracleSubmit({
+      : await runPiLoaderStatus({
         prepared,
         agentDir: agent1,
         sessionDir: sessions1,
@@ -433,16 +407,21 @@ async function run(mode = "packed") {
       });
 
     const jobDir1 = latestJobDir(jobs1);
-    const archivePath = parseJobArchivePath(jobDir1);
-    writeFileSync(join(test1, "job-dir.txt"), `${jobDir1 ?? ""}\n`);
-    writeFileSync(join(test1, "archive-path.txt"), `${archivePath ?? ""}\n`);
-    assert("whole-repo-job-created", Boolean(jobDir1), `whole-repo submit did not create an oracle job; stdout=${submitResult.stdout.slice(-1000)} stderr=${submitResult.stderr.slice(-1000)}`);
-    assert("whole-repo-archive-created", Boolean(archivePath && existsSync(archivePath)), `whole-repo submit did not create a readable archive; jobDir=${jobDir1 ?? "<none>"} stdout=${submitResult.stdout.slice(-1000)} stderr=${submitResult.stderr.slice(-1000)}`);
-    const entries = await tarList(archivePath);
-    writeFileSync(join(test1, "archive-list.txt"), `${entries.join("\n")}\n`);
-    assert("archive-includes-readme", entryExists(entries, "README.md"), "archive should include README.md");
-    for (const excluded of [".pi", ".oracle-context", ".scratchpad.md", ".artifacts", ".crabbox", ".debug"]) {
-      assert(`archive-excludes-${excluded.replace(/[^a-z0-9]+/gi, "-")}`, !entryExists(entries, excluded), `archive should exclude ${excluded}`);
+    if (modelAgent) {
+      const archivePath = parseJobArchivePath(jobDir1);
+      writeFileSync(join(test1, "job-dir.txt"), `${jobDir1 ?? ""}\n`);
+      writeFileSync(join(test1, "archive-path.txt"), `${archivePath ?? ""}\n`);
+      assert("whole-repo-job-created", Boolean(jobDir1), `whole-repo submit did not create an oracle job; stdout=${submitResult.stdout.slice(-1000)} stderr=${submitResult.stderr.slice(-1000)}`);
+      assert("whole-repo-archive-created", Boolean(archivePath && existsSync(archivePath)), `whole-repo submit did not create a readable archive; jobDir=${jobDir1 ?? "<none>"} stdout=${submitResult.stdout.slice(-1000)} stderr=${submitResult.stderr.slice(-1000)}`);
+      const entries = await tarList(archivePath);
+      writeFileSync(join(test1, "archive-list.txt"), `${entries.join("\n")}\n`);
+      assert("archive-includes-readme", entryExists(entries, "README.md"), "archive should include README.md");
+      for (const excluded of [".pi", ".oracle-context", ".scratchpad.md", ".artifacts", ".crabbox", ".debug"]) {
+        assert(`archive-excludes-${excluded.replace(/[^a-z0-9]+/gi, "-")}`, !entryExists(entries, excluded), `archive should exclude ${excluded}`);
+      }
+    } else {
+      assert("pi-loader-command-output", submitResult.stdout.includes('"customType":"oracle-command-output"'), "Pi loader smoke should execute the oracle command through the loaded extension");
+      assert("pi-loader-no-external-job", !jobDir1, "safe Pi loader smoke should not create an oracle job");
     }
     if (prepared.mode === "packed") {
       assert("packed-mode-no-source-extension", !readFileSync(join(test1, "command.json"), "utf8").includes("extensions/oracle/index.ts"), "packed real smoke must not use source extension path");
