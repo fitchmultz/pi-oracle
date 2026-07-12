@@ -5,13 +5,17 @@
 // Invariants/Assumptions: Each run gets fresh temp state/jobs directories, and cleanup should happen on both normal exit and runner errors.
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const tsxCli = require.resolve("tsx/cli");
 const stateDir = `/tmp/pi-oracle-sanity-state-${randomUUID()}`;
 const jobsDir = `/tmp/pi-oracle-sanity-jobs-${randomUUID()}`;
+const fakeBinDir = `/tmp/pi-oracle-sanity-bin-${randomUUID()}`;
+const agentBrowserPath = join(fakeBinDir, process.platform === "win32" ? "agent-browser.cmd" : "agent-browser");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,6 +72,10 @@ try {
   process.exit(1);
 }
 
+mkdirSync(fakeBinDir, { recursive: true, mode: 0o700 });
+writeFileSync(agentBrowserPath, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+if (process.platform !== "win32") chmodSync(agentBrowserPath, 0o700);
+
 const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {
   stdio: "inherit",
   env: {
@@ -75,6 +83,7 @@ const child = spawn(process.execPath, [tsxCli, "scripts/oracle-sanity.ts"], {
     ...(sanityMode ? { PI_ORACLE_SANITY_MODE: sanityMode } : {}),
     PI_ORACLE_STATE_DIR: stateDir,
     PI_ORACLE_JOBS_DIR: jobsDir,
+    AGENT_BROWSER_PATH: agentBrowserPath,
   },
 });
 
@@ -82,6 +91,7 @@ async function cleanup() {
   await Promise.all([
     removeDirRobust(stateDir).catch(() => undefined),
     removeDirRobust(jobsDir).catch(() => undefined),
+    removeDirRobust(fakeBinDir).catch(() => undefined),
   ]);
 }
 

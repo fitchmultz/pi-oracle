@@ -6,7 +6,7 @@
 // Invariants/Assumptions: Tests run from the repository root with local development dependencies installed.
 import { createCipheriv, createHash, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { basename, delimiter, dirname, join } from "node:path";
@@ -1004,7 +1004,7 @@ async function testConfigRejectsPartialChromiumKeychain(): Promise<void> {
 
     await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
       auth: {
-        chromeCookiePath: join(fixtureDir, "Cookies"),
+        chromeCookiePath: join(fixtureDir, "Chromium", "Default", "Cookies"),
         chromiumKeychain: {
           account: "Helium",
           services: [],
@@ -1031,7 +1031,7 @@ async function testConfigRejectsChromiumKeychainOffMac(): Promise<void> {
     process.env.PI_CODING_AGENT_DIR = join(fixtureDir, "agent");
     await writeFile(join(agentExtensionsDir, "oracle.json"), `${JSON.stringify({
       auth: {
-        chromeCookiePath: join(fixtureDir, "Cookies"),
+        chromeCookiePath: join(fixtureDir, "Chromium", "Default", "Cookies"),
         chromiumKeychain: {
           account: "Helium",
           services: ["Helium Storage Key"],
@@ -1360,7 +1360,7 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     const readyGrokResult = await preflightTool.execute!("oracle-preflight-grok-ready", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
     const readyGrokDetails = asRecord(readyGrokResult.details);
     const readyGrokAuth = asRecord(readyGrokDetails?.auth);
-    assert(readyGrokDetails?.ready === true && readyGrokDetails?.provider === "grok", "oracle preflight should pass when the selected Grok auth seed is ready");
+    assert(readyGrokDetails?.ready === true && readyGrokDetails?.provider === "grok", `oracle preflight should pass when the selected Grok auth seed is ready: ${JSON.stringify(readyGrokDetails)}`);
     assert(readyGrokAuth?.seedProfileDir === grokSeedDir, "oracle preflight ready details should report the selected Grok auth seed path");
 
     const originalNoZstdPath = process.env.PATH;
@@ -5761,9 +5761,13 @@ function testChatGptFlowHelpers(): void {
 }
 
 async function testRunnerAndSmokeFailureContracts(): Promise<void> {
+  const fakeBinPrefix = "pi-oracle-sanity-bin-";
+  const fakeBinsBefore = new Set((await readdir("/tmp")).filter((name) => name.startsWith(fakeBinPrefix)));
   const badMode = await runProcess(process.execPath, ["scripts/oracle-sanity-runner.mjs", "--mode", "nope"], { timeoutMs: 10_000 });
   assert(badMode.code !== 0, "sanity runner should reject unknown --mode values");
   assert(badMode.stderr.includes("unknown --mode"), "sanity runner should explain unknown --mode failures");
+  const leakedFakeBins = (await readdir("/tmp")).filter((name) => name.startsWith(fakeBinPrefix) && !fakeBinsBefore.has(name));
+  assert(leakedFakeBins.length === 0, `invalid sanity runner arguments should not leak fake binary directories: ${leakedFakeBins.join(", ")}`);
 
   const badSmokeMode = await runProcess(process.execPath, ["scripts/oracle-real-smoke.mjs", "run", "--mode", "nope"], { timeoutMs: 10_000 });
   assert(badSmokeMode.code !== 0, "real smoke runner should reject unknown --mode values");
