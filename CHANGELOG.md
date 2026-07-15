@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- refreshed the local Pi/pi-ai development lock, sanity contracts, safe-loader version check, and compatibility guidance for Pi 0.80.7
+
 ## 0.7.18 - 2026-07-11
 
 ### Changed

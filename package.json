@@ -87,8 +87,8 @@
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.80.6",
-    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-ai": "^0.80.7",
+    "@earendil-works/pi-coding-agent": "^0.80.7",
     "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",
