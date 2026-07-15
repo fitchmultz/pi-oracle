@@ -2,12 +2,10 @@
 
 ## Unreleased
 
+## 0.7.18 - 2026-07-14
+
 ### Changed
 - refreshed the local Pi/pi-ai development lock, sanity contracts, safe-loader version check, and compatibility guidance for Pi 0.80.7
-
-## 0.7.18 - 2026-07-11
-
-### Changed
 - updated the local Pi and pi-ai development baseline to 0.80.6
 - switched provider and mode tool schemas to Pi's Google-compatible `StringEnum` helper
 
