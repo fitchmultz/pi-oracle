@@ -11,7 +11,7 @@ import { basename, dirname, join, resolve } from "node:path";
 const DEFAULT_PROVIDER = "zai";
 const DEFAULT_MODEL = "glm-5.2";
 const DEFAULT_TIMEOUT_MS = 180_000;
-const EXPECTED_PI_VERSION = "0.80.7";
+const EXPECTED_PI_VERSION = "0.80.8";
 const PACKAGE_NAME = "pi-oracle";
 
 function usage() {

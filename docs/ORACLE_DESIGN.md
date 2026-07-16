@@ -7,7 +7,7 @@ Companion doc:
 - `docs/ORACLE_RECOVERY_DRILL.md` — safe expired-auth recovery validation drill
 
 Compatibility target:
-- `pi` 0.80.7+ is the suggested tested floor for current project-trust-aware package/runtime validation
+- `pi` 0.80.8+ is the suggested tested floor for current project-trust-aware package/runtime validation
 - package metadata keeps pi runtime packages as optional wildcard peers, so this suggested floor is not enforced as a hard npm install requirement
 - current extension lifecycle only; no backward-compatibility shims for removed `session_switch` / `session_fork` events
 
@@ -662,6 +662,6 @@ Recent proof points:
 - expired-auth drill post-repair success: `fa26a2a7-0057-4a21-b3e0-71c1d020facf`
 - successful multi-artifact completion: `b6b3599c-6b91-4315-adfa-8a83aa5eda9b`
 - repo-owned sanity harness: `npm run sanity:oracle`
-- real installed-extension smoke source of truth: `scripts/oracle-real-smoke.mjs`; required release proof runs packed-install mode (`npm run smoke:real:packed`), asserts Pi 0.80.7, and executes `/oracle-status` through Pi's installed-package loader without provider credentials or an external oracle job; optional slower model-agent submission debugging remains behind `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`; source mode (`npm run smoke:real:source`) is inner-loop/debug only
+- real installed-extension smoke source of truth: `scripts/oracle-real-smoke.mjs`; required release proof runs packed-install mode (`npm run smoke:real:packed`), asserts Pi 0.80.8, and executes `/oracle-status` through Pi's installed-package loader without provider credentials or an external oracle job; optional slower model-agent submission debugging remains behind `PI_ORACLE_REAL_TEST_MODEL_AGENT=1`; source mode (`npm run smoke:real:source`) is inner-loop/debug only
 - macOS, Ubuntu, and Windows native package/build/runtime smoke source of truth: `docs/platform-smoke.md`; use `npm run verify:oracle` for everyday local iteration, `npm run smoke:platform:doctor` plus a focused target/suite run for platform-sensitive changes, `npm run smoke:platform:all` for doctor-first platform matrix evidence, and `npm run release:check` for the full local-plus-platform release gate
 - release gate: `npm run release:check`, also used by `prepublishOnly`, combines static verification, fresh loaded-extension ChatGPT preset proof via `npm run release:proof:chatgpt-presets`, and all required Crabbox platform smokes

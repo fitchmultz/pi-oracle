@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Current local validation baseline is pi `0.80.7`; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.7+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Current local validation baseline is pi `0.80.8`; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.8+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -79,7 +79,7 @@ You need:
 
 - macOS, Linux, or Windows native
 - Node.js 22.19.0 or newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
-- Suggested tested floor: `pi` 0.80.7 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
+- Suggested tested floor: `pi` 0.80.8 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
 - `agent-browser` and `tar` available on the machine; `zstd` is also required when submitting ChatGPT `.tar.zst` archives

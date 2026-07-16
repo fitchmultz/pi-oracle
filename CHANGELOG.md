@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.7.19 - 2026-07-16
+
+### Changed
+- refreshed the local Pi/pi-ai development lock, sanity contracts, safe-loader version check, and compatibility guidance for Pi 0.80.8; Oracle does not use the removed SDK auth/session options
 
 ## 0.7.18 - 2026-07-14
 
