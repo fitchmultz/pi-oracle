@@ -3989,16 +3989,16 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
   assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
-  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.8", "package.json should use the current Pi 0.80.8 local development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.8", "package.json should use the current pi-ai 0.80.8 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-coding-agent"] === "^0.80.9", "package.json should use the current Pi 0.80.9 local development baseline");
+  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === "^0.80.9", "package.json should use the current pi-ai 0.80.9 local development baseline");
   assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
   for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(readmeSource.includes("Pi `0.80.8+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.8 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.80.8+") || designSource.includes("`pi` 0.80.8+"), "design doc should name the current suggested Pi 0.80.8 compatibility floor");
+  assert(readmeSource.includes("Pi `0.80.9+` is the suggested tested floor") && readmeSource.includes("optional wildcard peers"), "README should document the suggested Pi 0.80.9 floor without making it a hard peer requirement");
+  assert(designSource.includes("pi` 0.80.9+") || designSource.includes("`pi` 0.80.9+"), "design doc should name the current suggested Pi 0.80.9 compatibility floor");
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(pkg.overrides?.["basic-ftp"] === "6.0.1", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.1", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
