@@ -3615,7 +3615,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(preflightProperties !== undefined, "oracle preflight tool should expose an object schema");
   assert(authProperties !== undefined, "oracle auth tool should expose an object schema");
   assert(submitProperties, "oracle submit tool should expose an object schema");
-  assert(submitFilesItems?.pattern === "^.*\\S.*$", "oracle submit files schema pattern should be anchored for OpenAI-compatible parser compatibility");
+  assert(submitFilesItems?.pattern === "^.*[^ \\t\\r\\n].*$", "oracle submit files schema pattern should be anchored and avoid \\S, which llama.cpp's JSON-schema-to-GBNF converter cannot parse");
   const representativePresetAliases: [string, OracleSubmitPresetId][] = [
     ["Pro-standard", "pro_standard"],
     ["Pro-extended", "pro_extended"],
