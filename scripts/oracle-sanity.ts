@@ -3621,7 +3621,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(submitFilesItems?.pattern === gbnfSafeNonBlank, "oracle submit files schema pattern should be anchored and avoid \\S (llama.cpp GBNF converter)");
   assert(submitConversationId?.pattern === gbnfSafeNonBlank, "oracle submit chatGptConversationId schema pattern should match the GBNF-safe non-blank guard");
   assert(preflightConversationId?.pattern === gbnfSafeNonBlank, "oracle preflight chatGptConversationId schema pattern should match the GBNF-safe non-blank guard");
-  const schemaJson = JSON.stringify([preflightTool.parameters, authTool.parameters, submitTool.parameters]);
+  const schemaJson = JSON.stringify([...pi.tools.values()].map((tool) => tool.parameters));
+  assert(pi.tools.size >= 5, "oracle should register preflight/auth/submit/read/cancel tools");
   assert(!schemaJson.includes("\\S"), "registered oracle tool schemas must not contain \\S (llama.cpp GBNF converter rejects it)");
   const representativePresetAliases: [string, OracleSubmitPresetId][] = [
     ["Pro-standard", "pro_standard"],
