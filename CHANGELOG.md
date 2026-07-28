@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.20 - 2026-07-28
+
+### Fixed
+- replaced `\S` tool-schema non-blank patterns with a GBNF-safe character class so llama.cpp-backed OpenAI-compatible servers can compile oracle tool schemas
+
+### Validation
+- ran the full `npm run release:check` local gate before release
+
 ## 0.7.19 - 2026-07-16
 
 ### Changed
