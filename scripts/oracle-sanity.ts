@@ -3612,10 +3612,17 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   const authProperties = asRecord(asRecord(authTool.parameters)?.properties);
   const submitProperties = asRecord(asRecord(submitTool.parameters)?.properties);
   const submitFilesItems = asRecord(asRecord(submitProperties?.files)?.items);
+  const submitConversationId = asRecord(submitProperties?.chatGptConversationId);
+  const preflightConversationId = asRecord(preflightProperties?.chatGptConversationId);
+  const gbnfSafeNonBlank = "^.*[^ \\t\\r\\n].*$";
   assert(preflightProperties !== undefined, "oracle preflight tool should expose an object schema");
   assert(authProperties !== undefined, "oracle auth tool should expose an object schema");
   assert(submitProperties, "oracle submit tool should expose an object schema");
-  assert(submitFilesItems?.pattern === "^.*\\S.*$", "oracle submit files schema pattern should be anchored for OpenAI-compatible parser compatibility");
+  assert(submitFilesItems?.pattern === gbnfSafeNonBlank, "oracle submit files schema pattern should be anchored and avoid \\S (llama.cpp GBNF converter)");
+  assert(submitConversationId?.pattern === gbnfSafeNonBlank, "oracle submit chatGptConversationId schema pattern should match the GBNF-safe non-blank guard");
+  assert(preflightConversationId?.pattern === gbnfSafeNonBlank, "oracle preflight chatGptConversationId schema pattern should match the GBNF-safe non-blank guard");
+  const schemaJson = JSON.stringify([preflightTool.parameters, authTool.parameters, submitTool.parameters]);
+  assert(!schemaJson.includes("\\S"), "registered oracle tool schemas must not contain \\S (llama.cpp GBNF converter rejects it)");
   const representativePresetAliases: [string, OracleSubmitPresetId][] = [
     ["Pro-standard", "pro_standard"],
     ["Pro-extended", "pro_extended"],

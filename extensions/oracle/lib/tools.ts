@@ -81,7 +81,7 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
   files: Type.Array(Type.String({
     description: "Project-relative file or directory path to include in the archive.",
     minLength: 1,
-    pattern: "^.*\\S.*$",
+    pattern: "^.*[^ \\t\\r\\n].*$",
   }), {
     description: "Exact project-relative files/directories to include in the oracle archive.",
     minItems: 1,
@@ -99,7 +99,7 @@ const ORACLE_SUBMIT_PARAMS = Type.Object({
   chatGptConversationId: Type.Optional(Type.String({
     description: "Existing ChatGPT conversation id, or full https://chatgpt.com/c/... URL, to continue. Omit for default behavior: starting a fresh oracle thread. Do not combine with followUpJobId.",
     minLength: 1,
-    pattern: "^.*\\S.*$",
+    pattern: "^.*[^ \\t\\r\\n].*$",
   })),
 }, { additionalProperties: false });
 
@@ -109,7 +109,7 @@ const ORACLE_PREFLIGHT_PARAMS = Type.Object({
   chatGptConversationId: Type.Optional(Type.String({
     description: "Existing ChatGPT conversation id, or full https://chatgpt.com/c/... URL, whose provider/thread readiness should be checked. Do not combine with followUpJobId.",
     minLength: 1,
-    pattern: "^.*\\S.*$",
+    pattern: "^.*[^ \\t\\r\\n].*$",
   })),
 }, { additionalProperties: false });
 
