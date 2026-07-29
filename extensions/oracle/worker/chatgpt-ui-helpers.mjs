@@ -29,9 +29,10 @@ const AUTO_SWITCH_LABEL = "Auto-switch to Thinking";
 const THINKING_EFFORT_COMBOBOX_LABEL = "Thinking effort";
 const PRO_THINKING_EFFORT_COMBOBOX_LABEL = "Pro thinking effort";
 const EFFORT_LABELS = new Set(["Light", "Standard", "Extended", "Heavy"]);
-const COMPACT_INTELLIGENCE_MENU_PATTERN = /(?:Intelligence.*Instant.*Medium.*High.*Pro|^(?:Instant|Medium|High|Extra High|Pro Standard|Pro Extended)$)/i;
-const COMPACT_INTELLIGENCE_CONTROL_PATTERN = /^(?:Instant(?:\s+5s)?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Extra High|Pro\s+5\+\s*min|Pro Standard|Pro Extended)$/i;
-const COMPACT_INTELLIGENCE_OPENER_PATTERN = /^(?:Instant|Medium|High|Extra High|Pro|Pro Standard|Pro Extended)$/i;
+const COMPACT_INTELLIGENCE_MENU_PATTERN = /(?:Intelligence.*Instant.*Medium.*High.*Pro|^(?:Instant|Medium|High|Extra High|Pro(?: Standard| Extended)?)$)/i;
+// Bare Instant is the legacy top-level family radio; compact Instant rows are versioned (Instant 5s / Instant 5.5).
+const COMPACT_INTELLIGENCE_CONTROL_PATTERN = /^(?:Instant\s+[\d.]+s?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Extra High|Pro(?:\s+5\+\s*min|\s+Standard|\s+Extended)?)$/i;
+const COMPACT_INTELLIGENCE_OPENER_PATTERN = /^(?:Instant(?:\s+[\d.]+s?)?|Medium|High|Extra High|Pro(?: Standard| Extended)?)$/i;
 const BARE_EFFORT_PATTERN = /^(light|standard|extended|heavy)(?:, click to remove)?$/i;
 const INSTANT_CHIP_PATTERN = /^instant(?:, click to remove)?$/i;
 const THINKING_CHIP_PATTERN = /^(?:(light|standard|extended|heavy)\s+)?thinking(?:, click to remove)?$/i;
@@ -184,7 +185,7 @@ function parseCompactIntelligenceSelection(label) {
   const normalized = normalizeChipLabel(label);
   if (!COMPACT_INTELLIGENCE_CONTROL_PATTERN.test(normalized)) return undefined;
 
-  if (/^Instant(?:\s+5s)?$/i.test(normalized)) {
+  if (/^Instant\s+[\d.]+s?$/i.test(normalized)) {
     return {
       modelFamily: /** @type {OracleUiModelFamily} */ ("instant"),
       compactTier: "instant",
@@ -219,6 +220,8 @@ function parseCompactIntelligenceSelection(label) {
       compactTier: "pro",
     };
   }
+  // "Pro 5+ min" is always the compact Pro tier. Bare "Pro" is ambiguous with the
+// legacy top-level family radio and is handled with sibling context below.
   if (/^Pro\s+5\+\s*min$/i.test(normalized)) {
     return {
       modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
@@ -229,6 +232,24 @@ function parseCompactIntelligenceSelection(label) {
   return undefined;
 }
 
+function parseBareProCompactSelection(label) {
+  if (/click to remove/i.test(String(label || ""))) return undefined;
+  if (!/^Pro$/i.test(normalizeChipLabel(label))) return undefined;
+  return {
+    modelFamily: /** @type {OracleUiModelFamily} */ ("pro"),
+    compactTier: "pro",
+  };
+}
+
+function snapshotHasCompactTierSiblings(entries, exceptLabel) {
+  const except = normalizeChipLabel(exceptLabel).toLowerCase();
+  return entries.some((entry) => {
+    if (entry.disabled || entry.kind !== "menuitemradio") return false;
+    if (normalizeChipLabel(entry.label).toLowerCase() === except) return false;
+    return Boolean(parseCompactIntelligenceSelection(entry.label));
+  });
+}
+
 function hasRemovableComposerModelChip(entries) {
   return entries.some(
     (entry) => entry.kind === "button" && /click to remove/i.test(String(entry.label || "")) && parseComposerChipSelection(entry.label),
@@ -237,7 +258,7 @@ function hasRemovableComposerModelChip(entries) {
 
 function hasCompactIntelligenceMenuContext(entries) {
   return entries.some((entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)))
-    || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && parseCompactIntelligenceSelection(entry.label));
+    || entries.some((entry) => !entry.disabled && entry.kind === "menuitemradio" && checkedState(entry) === true && compactSelectionFromEntry(entry, entries));
 }
 
 function hasLegacyEffortCombobox(entries) {
@@ -248,18 +269,36 @@ function hasLegacyEffortCombobox(entries) {
   });
 }
 
-function compactSelectionFromEntry(entry, _entries, options = {}) {
+function compactSelectionFromEntry(entry, entries = [], options = {}) {
   if (entry.disabled) return undefined;
   const kind = entry.kind || "";
-  if (COMPACT_INTELLIGENCE_CONTROL_KINDS.has(kind)) return parseCompactIntelligenceSelection(entry.label);
+  if (COMPACT_INTELLIGENCE_CONTROL_KINDS.has(kind)) {
+    const parsed = parseCompactIntelligenceSelection(entry.label);
+    if (parsed) return parsed;
+    // Bare "Pro" is compact only when versioned Instant / Medium / High / Extra High siblings exist.
+    if (snapshotHasCompactTierSiblings(entries, entry.label)) {
+      return parseBareProCompactSelection(entry.label);
+    }
+    return undefined;
+  }
   if (options.allowClosedButtons && kind === "button" && !/\bexpanded=true\b/.test(String(entry.line || ""))) {
-    return parseCompactIntelligenceSelection(entry.label);
+    const parsed = parseCompactIntelligenceSelection(entry.label);
+    if (parsed) return parsed;
+    const barePro = parseBareProCompactSelection(entry.label);
+    if (barePro) return barePro;
+    // Closed composer pills keep bare Instant after the compact menu closes.
+    if (/^Instant$/i.test(normalizeChipLabel(entry.label))) {
+      return {
+        modelFamily: /** @type {OracleUiModelFamily} */ ("instant"),
+        compactTier: "instant",
+      };
+    }
   }
   return undefined;
 }
 
 export function matchesCompactIntelligenceControlLabel(label) {
-  return Boolean(parseCompactIntelligenceSelection(label));
+  return Boolean(parseCompactIntelligenceSelection(label) || parseBareProCompactSelection(label));
 }
 
 export function snapshotHasClosedCompactSelection(snapshot, selection) {
@@ -330,7 +369,7 @@ function detectCompactIntelligenceSelection(entries) {
 }
 
 export function matchesRequestedModelControlLabel(label, selection) {
-  const compactSelection = parseCompactIntelligenceSelection(label);
+  const compactSelection = parseCompactIntelligenceSelection(label) || parseBareProCompactSelection(label);
   if (compactSelection) return compactSelectionMatchesRequested(selection, compactSelection);
   return matchesModelFamilyLabel(label, selection.modelFamily);
 }
@@ -455,7 +494,7 @@ export function snapshotHasModelConfigurationUi(snapshot) {
       ),
   );
   const visibleCompactControls = entries.filter(
-    (entry) => !entry.disabled && entry.kind === "menuitemradio" && parseCompactIntelligenceSelection(entry.label),
+    (entry) => !entry.disabled && entry.kind === "menuitemradio" && compactSelectionFromEntry(entry, entries),
   );
   const hasCompactIntelligenceMenu = entries.some(
     (entry) => !entry.disabled && entry.kind === "menu" && COMPACT_INTELLIGENCE_MENU_PATTERN.test(normalizeText(entry.label)),

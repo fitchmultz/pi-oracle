@@ -5304,6 +5304,30 @@ function testChatGptUiHelpers(): void {
     '- menuitemradio "Pro 5+ min" [checked=true, ref=e112]',
     '- menuitem "GPT-5.5" [expanded=false, ref=e113]',
   ].join("\n");
+  const currentUndifferentiatedProMenuSnapshot = [
+    '- button "Pro" [expanded=true, ref=e161]',
+    '- menu "Pro" [ref=e2]',
+    '- menuitemradio "Instant 5.5" [checked=false, ref=e6]',
+    '- menuitemradio "Medium" [checked=false, ref=e7]',
+    '- menuitemradio "High" [checked=false, ref=e8]',
+    '- menuitemradio "Extra High" [checked=false, ref=e9]',
+    '- menuitemradio "Pro" [checked=true, ref=e10]',
+    '- menuitem "GPT-5.6 Sol" [expanded=false, ref=e3]',
+  ].join("\n");
+  assert(
+    snapshotStronglyMatchesRequestedModel(currentUndifferentiatedProMenuSnapshot, { modelFamily: "pro", effort: "extended", autoSwitchToThinking: false }),
+    "current bare Pro menu selection should verify extended Pro presets when Standard/Extended rows are gone",
+  );
+  assert(
+    snapshotStronglyMatchesRequestedModel(currentUndifferentiatedProMenuSnapshot, { modelFamily: "pro", effort: "standard", autoSwitchToThinking: false }),
+    "current bare Pro menu selection should verify standard Pro presets when Standard/Extended rows are gone",
+  );
+  assert(matchesCompactIntelligenceControlLabel("Instant 5.5"), "current Instant 5.5 controls should be recognized as compact Intelligence controls");
+  assert(matchesCompactIntelligenceControlLabel("Pro"), "current bare Pro controls should be recognized as compact Intelligence controls");
+  assert(
+    snapshotStronglyMatchesRequestedModel(currentUndifferentiatedProMenuSnapshot.replace('menuitemradio "Pro" [checked=true', 'menuitemradio "Pro" [checked=false').replace('Instant 5.5" [checked=false', 'Instant 5.5" [checked=true'), { modelFamily: "instant", autoSwitchToThinking: false }),
+    "current Instant 5.5 menu selection should verify plain instant presets",
+  );
   assert(!snapshotHasModelConfigurationUi('- heading "Pro feedback" [level=2, ref=e1]\n- button "Close" [ref=e2]'), "Pro feedback dialogs should not be mistaken for model configuration UI just because they have a Close button");
   assert(snapshotHasModelConfigurationUi(compactProMenuSnapshot), "compact Intelligence menus should be recognized as model configuration UI");
   assert(

@@ -895,8 +895,8 @@ function snapshotHasCompactIntelligenceMenuControls(snapshot) {
   return Boolean(findEntry(snapshot, (candidate) => {
     if (candidate.disabled) return false;
     const label = normalizeSnapshotLabel(candidate.label);
-    return (candidate.kind === "menu" && /(?:Intelligence.*Instant.*Medium.*High.*Pro|^(?:Instant|Medium|High|Extra High|Pro Extended)$)/i.test(label))
-      || (candidate.kind === "menuitemradio" && /^(?:Instant(?:\s+5s)?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Extra High|Pro\s+5\+\s*min|Pro Standard|Pro Extended)$/i.test(label));
+    return (candidate.kind === "menu" && /(?:Intelligence.*Instant.*Medium.*High.*Pro|^(?:Instant|Medium|High|Extra High|Pro(?: Standard| Extended)?)$)/i.test(label))
+      || (candidate.kind === "menuitemradio" && /^(?:Instant\s+[\d.]+s?|Medium(?:\s+5\s*[–-]\s*30s)?|High(?:\s+15\s*[–-]\s*60s)?|Extra High|Pro(?:\s+5\+\s*min|\s+Standard|\s+Extended)?)$/i.test(label));
   }));
 }
 
@@ -904,7 +904,7 @@ function matchesRequestedModelControl(candidate, selection, options = {}) {
   if (!["button", "radio", "menuitemradio"].includes(candidate.kind || "") || typeof candidate.label !== "string" || candidate.disabled) return false;
   if (candidate.kind === "button") {
     if (/\bexpanded=true\b/.test(String(candidate.line || ""))) return false;
-    if (options.ignoreCompactTierButtons && /^(?:Instant|Medium|High|Extra High|Pro|Pro Extended)$/i.test(candidate.label)) return false;
+    if (options.ignoreCompactTierButtons && /^(?:Instant(?:\s+[\d.]+s?)?|Medium|High|Extra High|Pro(?: Standard| Extended)?)$/i.test(candidate.label)) return false;
     if (options.ignoreCompactOnlyButtons && /^(?:Medium|High|Extra High)$/i.test(candidate.label)) return false;
   }
   if (selection.modelFamily === "pro" && /^Pro(?:\s+Extended)?$/i.test(candidate.label)) return true;
@@ -1582,25 +1582,34 @@ async function configureModel(job) {
     if (effortLabel && !effortSelectionVisible(familySnapshot, effortLabel)) {
       const opened = await openEffortDropdown(job);
       if (!opened) {
-        throw new Error(`Could not open effort dropdown for requested effort: ${effortLabel}`);
-      }
-      await agentBrowser(job, "wait", "300");
-      if (job.selection.modelFamily === "pro" && await maybeClickLabeledEntry(job, `Pro ${effortLabel}`, { kind: "menuitemradio" })) {
-        // Current ChatGPT exposes Pro effort choices as nested menu radio items.
+        // Current ChatGPT Pro menus sometimes expose only undifferentiated "Pro" with no Standard/Extended rows.
+        const afterOpenAttempt = await snapshotText(job);
+        if (job.selection.modelFamily === "pro" && snapshotStronglyMatchesRequestedModel(afterOpenAttempt, job.selection)) {
+          await log(`Pro effort dropdown unavailable for ${effortLabel}; accepting undifferentiated Pro selection`);
+          verificationSnapshot = afterOpenAttempt;
+          familySnapshot = afterOpenAttempt;
+        } else {
+          throw new Error(`Could not open effort dropdown for requested effort: ${effortLabel}`);
+        }
       } else {
-        await clickLabeledEntry(job, effortLabel, { kind: "option" });
+        await agentBrowser(job, "wait", "300");
+        if (job.selection.modelFamily === "pro" && await maybeClickLabeledEntry(job, `Pro ${effortLabel}`, { kind: "menuitemradio" })) {
+          // Current ChatGPT exposes Pro effort choices as nested menu radio items.
+        } else {
+          await clickLabeledEntry(job, effortLabel, { kind: "option" });
+        }
+        await agentBrowser(job, "wait", "400");
+        const effortSnapshot = await snapshotText(job);
+        verificationSnapshot = effortSnapshot;
+        const selectedEffort = findEntry(
+          effortSnapshot,
+          (candidate) => candidate.kind === "combobox" && candidate.value === effortLabel && !candidate.disabled,
+        );
+        if (!selectedEffort && !effortSelectionVisible(effortSnapshot, effortLabel)) {
+          throw new Error(`Requested effort did not remain selected: ${effortLabel}`);
+        }
+        familySnapshot = effortSnapshot;
       }
-      await agentBrowser(job, "wait", "400");
-      const effortSnapshot = await snapshotText(job);
-      verificationSnapshot = effortSnapshot;
-      const selectedEffort = findEntry(
-        effortSnapshot,
-        (candidate) => candidate.kind === "combobox" && candidate.value === effortLabel && !candidate.disabled,
-      );
-      if (!selectedEffort && !effortSelectionVisible(effortSnapshot, effortLabel)) {
-        throw new Error(`Requested effort did not remain selected: ${effortLabel}`);
-      }
-      familySnapshot = effortSnapshot;
     }
   }
 
