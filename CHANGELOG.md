@@ -3,6 +3,7 @@
 ## 0.7.20 - 2026-07-28
 
 ### Fixed
+- accepted undifferentiated ChatGPT Pro compact menus (bare Pro / Instant 5.5) so pro presets can configure without Standard/Extended rows
 - replaced `\S` tool-schema non-blank patterns with a GBNF-safe character class so llama.cpp-backed OpenAI-compatible servers can compile oracle tool schemas
 
 ### Validation
