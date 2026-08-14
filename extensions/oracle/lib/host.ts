@@ -9,7 +9,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type LegacyHostMode = "tui" | "rpc" | "print" | "json";
 type LegacyModeContext = ExtensionContext & { mode?: LegacyHostMode };
-type LegacyInputEvent = { streamingBehavior?: "steer" | "followUp" };
 
 type ProjectTrustStoreLike = {
   get(cwd: string): boolean | null;
@@ -35,6 +34,12 @@ function hasPathSuffix(path: string, suffix: string): boolean {
 function getLegacyHostMode(ctx: ExtensionContext): LegacyHostMode | undefined {
   const mode = (ctx as LegacyModeContext).mode;
   return mode && LEGACY_HOST_MODES.has(mode) ? mode : undefined;
+}
+
+function getLegacyStreamingBehavior(event: unknown): "steer" | "followUp" | undefined {
+  if (!event || typeof event !== "object" || !("streamingBehavior" in event)) return undefined;
+  const streamingBehavior = (event as { streamingBehavior?: unknown }).streamingBehavior;
+  return streamingBehavior === "steer" || streamingBehavior === "followUp" ? streamingBehavior : undefined;
 }
 
 export function getOracleAgentDir(): string {
@@ -84,10 +89,11 @@ export function isOraclePrintContext(ctx: ExtensionContext): boolean {
 }
 
 export function getOracleInputDelivery(
-  event: LegacyInputEvent,
+  event: unknown,
   ctx: ExtensionContext,
 ): { deliverAs: "steer" | "followUp" } | undefined {
-  if (event.streamingBehavior) return { deliverAs: event.streamingBehavior };
+  const streamingBehavior = getLegacyStreamingBehavior(event);
+  if (streamingBehavior) return { deliverAs: streamingBehavior };
   return ctx.isIdle() ? undefined : { deliverAs: "followUp" };
 }
 
