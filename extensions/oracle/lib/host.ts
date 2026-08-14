@@ -3,7 +3,7 @@
 // Scope: Coding-agent host compatibility only; oracle job, browser, and persistence behavior stays in sibling modules.
 // Usage: Imported by config, commands, runtime, and the extension entrypoint instead of reaching into host-specific APIs.
 // Invariants/Assumptions: Both hosts export getAgentDir and the shared extension contracts; legacy-only exports are optional.
-import { join, normalize } from "node:path";
+import { join, normalize, sep } from "node:path";
 import * as CodingAgentHost from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -29,7 +29,7 @@ const LEGACY_HOST_MODES = new Set<LegacyHostMode>(["tui", "rpc", "print", "json"
 function hasPathSuffix(path: string, suffix: string): boolean {
   const normalizedPath = normalize(path);
   const normalizedSuffix = normalize(suffix);
-  return normalizedPath === normalizedSuffix || normalizedPath.endsWith(`${join("/")}${normalizedSuffix}`) || normalizedPath.endsWith(normalizedSuffix);
+  return normalizedPath === normalizedSuffix || normalizedPath.endsWith(`${sep}${normalizedSuffix}`);
 }
 
 function getLegacyHostMode(ctx: ExtensionContext): LegacyHostMode | undefined {
