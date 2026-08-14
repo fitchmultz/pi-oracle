@@ -94,6 +94,7 @@ export function getOracleInputDelivery(
 ): { deliverAs: "steer" | "followUp" } | undefined {
   const streamingBehavior = getLegacyStreamingBehavior(event);
   if (streamingBehavior) return { deliverAs: streamingBehavior };
+  if (getLegacyHostMode(ctx) !== undefined) return undefined;
   return ctx.isIdle() ? undefined : { deliverAs: "followUp" };
 }
 
