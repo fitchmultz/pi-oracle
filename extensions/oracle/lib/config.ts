@@ -6,7 +6,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { CONFIG_DIR_NAME, getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { isAbsolute, join, normalize } from "node:path";
 import {
   assertNotKnownBrowserUserDataPath,
@@ -17,6 +16,11 @@ import {
   detectDefaultLinuxChromeExecutablePath,
   sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../shared/browser-profile-helpers.mjs";
+import {
+  getOracleAgentDir,
+  getOracleProjectConfigDirName,
+  resolveOracleSavedProjectTrust,
+} from "./host.js";
 import { getProjectId } from "./runtime.js";
 
 export const ORACLE_PROVIDERS = ["chatgpt", "grok"] as const;
@@ -335,7 +339,7 @@ function detectDefaultChromeUserAgent(executablePath: string | undefined): strin
 const detectedChromeExecutablePath = detectDefaultChromeExecutablePath();
 let detectedChromeUserAgent: string | undefined;
 let detectedChromeUserAgentResolved = false;
-const agentExtensionsDir = join(getAgentDir(), "extensions");
+const agentExtensionsDir = join(getOracleAgentDir(), "extensions");
 
 function getDetectedChromeUserAgent(): string | undefined {
   if (!detectedChromeUserAgentResolved) {
@@ -350,10 +354,10 @@ export interface OracleConfigLoadOptions {
   /**
    * Whether project-local oracle config may be loaded. Omit for the runtime
    * policy that preserves oracle's historical project-config behavior while
-   * respecting explicit --no-approve and saved distrust decisions.
+   * respecting explicit --no-approve and saved distrust decisions when the host exposes them.
    */
   projectConfigTrusted?: boolean;
-  /** Session cwd used for Pi's saved project-trust decision when config lookup is anchored to a derived project root. */
+  /** Session cwd used for a host's saved project-trust decision when config lookup is anchored to a derived project root. */
   projectConfigTrustCwd?: string;
 }
 
@@ -384,24 +388,14 @@ function isProjectConfigTrusted(cwd: string, agentDir: string, projectConfigExis
   const trustCwd = options?.projectConfigTrustCwd ?? cwd;
   const cliOverride = getProjectTrustCliOverride();
   if (cliOverride !== undefined) return cliOverride;
-  if (!projectConfigExists && !hasTrustRequiringProjectResources(trustCwd)) return true;
-  try {
-    const trustStore = new ProjectTrustStore(agentDir);
-    const trustDecision = trustStore.get(trustCwd);
-    const rootDecision = trustCwd !== cwd ? trustStore.get(cwd) : null;
-    if (trustDecision !== null) return trustDecision;
-    if (rootDecision !== null) return rootDecision;
-  } catch {
-    return false;
-  }
-  return true;
+  return resolveOracleSavedProjectTrust({ cwd, trustCwd, agentDir, projectConfigExists });
 }
 
 export function getOracleConfigLoadDetails(cwd: string, options?: OracleConfigLoadOptions): OracleConfigLoadDetails {
-  const agentDir = getAgentDir();
+  const agentDir = getOracleAgentDir();
   const projectRoot = getProjectId(cwd);
   const agentConfigPath = join(agentDir, "extensions", "oracle.json");
-  const projectConfigPath = join(projectRoot, CONFIG_DIR_NAME, "extensions", "oracle.json");
+  const projectConfigPath = join(projectRoot, getOracleProjectConfigDirName(agentDir), "extensions", "oracle.json");
   const projectConfigExists = existsSync(projectConfigPath);
   const projectConfigTrusted = isProjectConfigTrusted(projectRoot, agentDir, projectConfigExists, options);
   const projectConfigLoaded = projectConfigExists && projectConfigTrusted;
