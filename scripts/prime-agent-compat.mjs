@@ -53,7 +53,7 @@ const hostSource = await readFile(hostPath, "utf8");
 assertIncludes(hostSource, "CodingAgentHost.getAgentDir()", "host adapter must use the shared public getAgentDir export");
 assertIncludes(hostSource, "PRIME_AGENT_CODING_AGENT_DIR", "host adapter must recognize Prime Agent's custom agent directory");
 assertIncludes(hostSource, "join(\".prime\", \"agent\")", "host adapter must preserve Prime Agent's project config convention");
-assertIncludes(hostSource, "trigger", "host adapter source unexpectedly incomplete");
+assertIncludes(hostSource, "getOracleInputDelivery", "host adapter must normalize input delivery");
 
 const configSource = await readFile(configPath, "utf8");
 assertIncludes(configSource, "getOracleProjectConfigDirName(agentDir)", "project config must resolve through the host adapter");
