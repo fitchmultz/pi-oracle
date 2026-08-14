@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "scripts/prime-agent-types/coding-agent.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "extensions/oracle/lib/host.ts",
+    "scripts/prime-agent-types/coding-agent.d.ts",
+    "scripts/prime-agent-types/host-call-sites.ts"
+  ]
+}

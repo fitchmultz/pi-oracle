@@ -8,14 +8,14 @@ import { spawn } from "node:child_process";
 import { constants as fsConstants, existsSync, realpathSync, readFileSync } from "node:fs";
 import { access, cp as copyDirectory, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { assertNotKnownBrowserUserDataPath, sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { jobBlocksAdmission } from "../shared/job-coordination-helpers.mjs";
 import { isTrackedProcessAlive } from "../shared/process-helpers.mjs";
-import type { OracleConfig, OracleProvider } from "./config.js";
 import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
-import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
+import type { OracleConfig, OracleProvider } from "./config.js";
+import { getOracleHostDisplayName, getOracleProjectConfigDirName } from "./host.js";
 import { createLease, listLeaseMetadata, readLeaseMetadata, releaseLease, withAuthLock } from "./locks.js";
+import { resolveOracleProviderArchivePlan } from "./provider-capabilities.js";
 
 const SEED_GENERATION_FILE = ".oracle-seed-generation";
 const AGENT_BROWSER_BIN = [process.env.AGENT_BROWSER_PATH, "/opt/homebrew/bin/agent-browser", "/usr/local/bin/agent-browser"].find(
@@ -41,11 +41,14 @@ function killProcess(child: ReturnType<typeof spawn>): void {
   }
   child.kill("SIGKILL");
 }
+
+const ORACLE_PROJECT_CONFIG_DIR = getOracleProjectConfigDirName();
 const WORKSPACE_ROOT_MARKERS = [
-  join(CONFIG_DIR_NAME, "extensions", "oracle.json"),
-  CONFIG_DIR_NAME,
+  join(ORACLE_PROJECT_CONFIG_DIR, "extensions", "oracle.json"),
+  ORACLE_PROJECT_CONFIG_DIR,
   "AGENTS.md",
 ] as const;
+
 function cpCommand(): string {
   return process.env.PI_ORACLE_CP_PATH?.trim() || "cp";
 }
@@ -128,7 +131,7 @@ export function hasPersistedSessionFile(originSessionFile: string | undefined): 
 
 export function requirePersistedSessionFile(originSessionFile: string | undefined, action = "use oracle"): string {
   if (!originSessionFile) {
-    throw new Error(`Oracle requires a persisted pi session to ${action}. Start or save a real session before using oracle.`);
+    throw new Error(`Oracle requires a persisted ${getOracleHostDisplayName()} session to ${action}. Start or save a real session before using oracle.`);
   }
   return originSessionFile;
 }

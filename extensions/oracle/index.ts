@@ -1,7 +1,7 @@
 // Purpose: Register the oracle extension, wire commands/tools/workers, and manage per-session background maintenance.
-// Responsibilities: Bootstrap oracle commands and tools, start or stop polling, and surface startup/config availability in the pi session UI.
+// Responsibilities: Bootstrap oracle commands and tools, start or stop polling, and surface startup/config availability in the host session UI.
 // Scope: Extension entrypoint only; lifecycle mutation lives in lib modules and browser execution lives in worker scripts.
-// Usage: Loaded by pi as the extension module declared in package.json.
+// Usage: Loaded by pi or Prime Agent as the extension module declared in package.json.
 // Invariants/Assumptions: Oracle only runs against persisted sessions, and startup maintenance should be best-effort without breaking session initialization.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,12 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
+import {
+  getOracleInputDelivery,
+  isOracleInteractiveContext,
+  shouldExposeOraclePromptPaths,
+  shouldRunOraclePoller,
+} from "./lib/host.js";
 import { getSessionFile, pruneTerminalOracleJobs, reconcileStaleOracleJobs } from "./lib/jobs.js";
 import { isLockTimeoutError, withGlobalReconcileLock } from "./lib/locks.js";
 import { isOracleProjectTrusted } from "./lib/trust.js";
@@ -81,7 +87,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   function startPollerForContext(ctx: ExtensionContext) {
     try {
       const sessionFile = getSessionFile(ctx);
-      if (ctx.mode === "print" || ctx.mode === "json") {
+      if (!shouldRunOraclePoller(ctx)) {
         stopPoller(ctx);
         return;
       }
@@ -114,7 +120,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   }
 
   pi.on("resources_discover", async (_event, ctx) => {
-    return ["print", "json", "rpc"].includes(ctx.mode) ? { promptPaths: [promptDir] } : undefined;
+    return shouldExposeOraclePromptPaths(ctx) ? { promptPaths: [promptDir] } : undefined;
   });
 
   pi.on("before_agent_start", async (event) => {
@@ -126,7 +132,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   });
 
   pi.on("input", (event, ctx) => {
-    if (ctx.mode !== "tui" || event.source !== "interactive") return { action: "continue" };
+    if (!isOracleInteractiveContext(ctx) || event.source !== "interactive") return { action: "continue" };
     const parsed = parseOracleInput(event.text);
     if (!parsed) return { action: "continue" };
     if (!parsed.args || (parsed.command === "oracle-followup" && !/^\S+\s+\S/.test(parsed.args))) {
@@ -139,8 +145,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
       return { action: "handled" };
     }
     ctx.ui.notify("Preparing oracle job… running preflight", "info");
-    const delivery = event.streamingBehavior ? { deliverAs: event.streamingBehavior } : undefined;
-    pi.sendUserMessage(formatOracleUserCommand(parsed.command, parsed.args), delivery);
+    pi.sendUserMessage(formatOracleUserCommand(parsed.command, parsed.args), getOracleInputDelivery(event, ctx));
     return { action: "handled" };
   });
 

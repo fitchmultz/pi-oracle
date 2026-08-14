@@ -27,6 +27,7 @@ const DEFAULT_ARCHIVE_EXCLUDED_DIR_NAMES_ANYWHERE = new Set([
   ".hg",
   ".svn",
   ".pi",
+  ".prime",
   ".oracle-context",
   ".cursor",
   ".artifacts",
