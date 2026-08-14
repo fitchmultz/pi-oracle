@@ -8,6 +8,12 @@
 prime-agent package install git:github.com/sammyjoyce/pi-oracle@feat/prime-agent
 ```
 
+For a one-off trial without changing package settings:
+
+```sh
+prime-agent -e git:github.com/sammyjoyce/pi-oracle@feat/prime-agent
+```
+
 Prime Agent keeps package configuration under `~/.prime/agent`. The global Oracle configuration file is therefore:
 
 ```text
@@ -37,17 +43,17 @@ The user-facing commands and agent-facing tools are unchanged:
 
 Prime Agent's daemon-backed sessions can detach and reattach while an Oracle job runs. Completion remains durable on disk and the extension also sends one hidden, triggered follow-up message to the matching persisted session when the answer becomes available.
 
-## Environment overrides
+## Runtime overrides
 
-Prime-prefixed names are preferred. The existing `PI_ORACLE_*` names remain accepted as compatibility fallbacks so the extension and detached workers always resolve the same paths.
+Oracle keeps its existing `PI_ORACLE_*` environment names under both hosts. These names are part of the extension's worker protocol rather than the coding-agent host API, so retaining them avoids splitting the extension process and detached workers across different state roots.
 
-| Purpose | Preferred | Compatibility fallback | Default |
-| --- | --- | --- | --- |
-| Job directories | `PRIME_ORACLE_JOBS_DIR` | `PI_ORACLE_JOBS_DIR` | `/tmp` |
-| Shared locks and leases | `PRIME_ORACLE_STATE_DIR` | `PI_ORACLE_STATE_DIR` | `/tmp/pi-oracle-state` |
-| macOS clone command | `PRIME_ORACLE_CP_PATH` | `PI_ORACLE_CP_PATH` | `cp` |
+| Purpose | Environment variable | Default |
+| --- | --- | --- |
+| Job directories | `PI_ORACLE_JOBS_DIR` | `/tmp` |
+| Shared locks and leases | `PI_ORACLE_STATE_DIR` | `/tmp/pi-oracle-state` |
+| macOS clone command | `PI_ORACLE_CP_PATH` | `cp` |
 
-Provider-specific test and diagnostic variables keep their existing `PI_ORACLE_*` names; the aliases above cover persistent runtime paths shared across the host process and detached workers.
+Provider-specific test and diagnostic variables also retain their existing `PI_ORACLE_*` names.
 
 ## Trust and archives
 
