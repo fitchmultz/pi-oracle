@@ -1,7 +1,7 @@
 // Purpose: Register slash commands for oracle auth/bootstrap, status inspection, cancellation, and cleanup.
 // Responsibilities: Bridge command handlers to shared oracle lifecycle helpers, surface consistent summaries, and coordinate follow-up queue advancement.
 // Scope: Command-facing orchestration only; durable lifecycle mutations live in jobs/runtime/tools modules and browser execution stays in worker scripts.
-// Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi.
+// Usage: Imported by the oracle extension entrypoint to register /oracle-* commands with pi and Prime Agent.
 // Invariants/Assumptions: Commands operate on persisted project-scoped jobs and rely on shared observability formatting for detached-state clarity.
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -9,6 +9,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
 import { normalizeOracleProviderAlias, type OracleProvider } from "./config.js";
+import { isOraclePrintContext } from "./host.js";
 import { isOracleProjectTrusted } from "./trust.js";
 import {
   cancelOracleJob,
@@ -76,7 +77,7 @@ function parseOracleAuthProvider(args: string): OracleProvider | undefined {
 }
 
 function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
-  if (ctx.mode === "print") {
+  if (isOraclePrintContext(ctx)) {
     process.stdout.write(`${message}\n`);
     return;
   }
