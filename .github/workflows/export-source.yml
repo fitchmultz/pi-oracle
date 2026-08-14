@@ -1,0 +1,28 @@
+name: export-source
+
+on:
+  push:
+    branches:
+      - feat/prime-agent
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Create source archive
+        run: tar --exclude=.git -czf /tmp/pi-oracle-source.tgz .
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pi-oracle-source
+          path: /tmp/pi-oracle-source.tgz
+          if-no-files-found: error
