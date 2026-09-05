@@ -1425,11 +1425,18 @@ async function testOraclePreflightReportsBlockingReadinessStates(): Promise<void
     const originalCpPath = process.env.PI_ORACLE_CP_PATH;
     try {
       process.env.PI_ORACLE_CP_PATH = join(fixtureDir, "missing-cp");
-      await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-      const missingCpResult = await preflightTool.execute!("oracle-preflight-missing-cp", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
-      const missingCpError = asRecord(asRecord(missingCpResult.details)?.error);
-      assert(missingCpError?.code === "local_dependency_missing", "oracle preflight should surface local_dependency_missing when configured cp is unavailable");
-      assert(missingCpError?.rejectedValue === "cp", "oracle preflight should identify cp as the missing configured profile-copy dependency");
+      for (const cloneStrategy of ["apfs-clone", "copy"]) {
+        await writeFile(configPath, `${JSON.stringify({ browser: { authSeedProfileDir: defaultSeedDir, cloneStrategy } }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        const missingCpResult = await preflightTool.execute!("oracle-preflight-missing-cp", {}, undefined, () => { }, persistedCtx) as { details?: unknown };
+        const missingCpDetails = asRecord(missingCpResult.details);
+        if (process.platform === "darwin" && cloneStrategy === "apfs-clone") {
+          const missingCpError = asRecord(missingCpDetails?.error);
+          assert(missingCpError?.code === "local_dependency_missing", "oracle preflight should surface local_dependency_missing when configured cp is unavailable");
+          assert(missingCpError?.rejectedValue === "cp", "oracle preflight should identify cp as the missing configured profile-copy dependency");
+        } else {
+          assert(missingCpDetails?.ready === true, `oracle preflight should not require cp for ${cloneStrategy} on ${process.platform}: ${JSON.stringify(missingCpDetails)}`);
+        }
+      }
     } finally {
       if (originalCpPath === undefined) delete process.env.PI_ORACLE_CP_PATH;
       else process.env.PI_ORACLE_CP_PATH = originalCpPath;
