@@ -384,6 +384,8 @@ npm test
 npm run verify:oracle
 ```
 
+`npm test` runs `npm run verify:oracle`, so it is not a separate gate from the final line above.
+
 `npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate now blocks unless fresh live ChatGPT preset proof exists for every canonical preset, then requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
 
 Use the narrowest validation workflow that proves the change:
