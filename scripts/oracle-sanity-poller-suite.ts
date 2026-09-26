@@ -523,6 +523,11 @@ async function testBranchedSameSessionSkipsDurableNotification(config: OracleCon
   await cleanupJob(jobId);
 }
 
+// Official Pi defers the first session write until an assistant message; fitchmultz/pi (d4c320d9d) persists custom entries before it.
+function entryIds(sessionManager: Pick<SessionManager, "getEntries">): string {
+  return sessionManager.getEntries().map((entry) => entry.id).join(",");
+}
+
 async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const targetSessionManager = createPersistedSessionManager("poller-preassistant-history-target");
@@ -532,8 +537,12 @@ async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(c
   appendUserMessage(targetSessionManager, "check oracle completion");
   targetSessionManager.appendCustomEntry("oracle-sanity-preassistant", { stage: "before-assistant" });
   targetSessionManager.appendModelChange("anthropic", "claude-sonnet-4");
-  const preFlushSnapshot = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  assert(preFlushSnapshot.getEntries().length === 0, "pre-assistant notification test should start with in-memory-only session history before the first assistant message flushes it");
+  const preScanEntryIds = entryIds(SessionManager.open(targetSessionFile, undefined, process.cwd()));
+  const hostDefersFirstFlush = preScanEntryIds === "";
+  assert(
+    hostDefersFirstFlush || preScanEntryIds === entryIds(targetSessionManager),
+    "pre-assistant notification test should start with either in-memory-only history (official Pi) or fully persisted pre-assistant history (hosts that persist custom entries early)",
+  );
 
   const jobId = await createTerminalJob(config, process.cwd(), targetSessionFile);
   const liveSent: SentMessageLike[] = [];
@@ -544,9 +553,11 @@ async function testPreAssistantSameSessionNotificationPreservesInMemoryHistory(c
 
   await scanOracleJobsOnce(livePi as unknown as ExtensionAPI, createPollerCtx(targetSessionManager), "/tmp/fake-oracle-worker.mjs");
 
-  assert(!(await pathExists(targetSessionFile)), "pre-assistant same-session notification handling should not create a notification-only target session file while history is still in memory");
+  if (hostDefersFirstFlush) {
+    assert(!(await pathExists(targetSessionFile)), "pre-assistant same-session notification handling should not create a notification-only target session file while history is still in memory");
+  }
   const deferredSession = SessionManager.open(targetSessionFile, undefined, process.cwd());
-  assert(deferredSession.getEntries().length === 0, "pre-assistant same-session notification handling should preserve in-memory-only history by avoiding any direct durable append");
+  assert(entryIds(deferredSession) === preScanEntryIds, "pre-assistant same-session notification handling should preserve on-disk history by avoiding any direct durable append");
   assert(!findNotificationEntry(deferredSession, jobId), "pre-assistant same-session notification handling should defer durable completion messages while the target session is not durably materialized");
   assert(liveSent.length === 1, `pre-assistant same-session notification handling should request exactly one wake-up, saw ${liveSent.length}`);
   assert(Boolean(readJob(jobId)?.notifiedAt), "pre-assistant same-session notification handling should mark one-time wake-up delivery as notified");
@@ -583,6 +594,11 @@ async function testPreAssistantBranchedSameSessionSkipsDurableNotification(confi
   const modelEntryId = sessionManager.appendModelChange("anthropic", "claude-sonnet-4");
   const branchedSessionManager = sessionManager;
   branchedSessionManager.branch(userEntryId);
+  const preScanEntryIds = entryIds(SessionManager.open(sessionFile, undefined, process.cwd()));
+  assert(
+    preScanEntryIds === "" || preScanEntryIds === entryIds(sessionManager),
+    "pre-assistant branched notification test should start with either in-memory-only history (official Pi) or fully persisted pre-assistant history (hosts that persist custom entries early)",
+  );
   const jobId = await createTerminalJob(config, process.cwd(), sessionFile);
 
   const sent: SentMessageLike[] = [];
@@ -594,7 +610,7 @@ async function testPreAssistantBranchedSameSessionSkipsDurableNotification(confi
   await scanOracleJobsOnce(pi, createPollerCtx(branchedSessionManager), "/tmp/fake-oracle-worker.mjs");
 
   const skippedSession = SessionManager.open(sessionFile, undefined, process.cwd());
-  assert(skippedSession.getEntries().length === 0, "pre-assistant branched same-session notification handling should not flush hidden history by attempting a direct durable append from an older leaf");
+  assert(entryIds(skippedSession) === preScanEntryIds, "pre-assistant branched same-session notification handling should not flush hidden history by attempting a direct durable append from an older leaf");
   assert(!findNotificationEntry(skippedSession, jobId), "pre-assistant branched same-session notification handling should skip durable notification writes while the live leaf is behind newer in-memory history");
   assert(Boolean(readJob(jobId)?.notifiedAt), "pre-assistant branched same-session notification handling should mark one-time wake-up delivery as notified");
   assert(sent.length === 1, `pre-assistant branched same-session notification handling should request exactly one wake-up, saw ${sent.length}`);

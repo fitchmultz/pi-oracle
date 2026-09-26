@@ -490,6 +490,5 @@ export async function writeActiveJob(id: string): Promise<void> {
 }
 
 export async function cleanupJob(id: string): Promise<void> {
-  const { rm } = await import("node:fs/promises");
-  await rm(getJobDir(id), { recursive: true, force: true });
+  await removeDirRobust(getJobDir(id));
 }
