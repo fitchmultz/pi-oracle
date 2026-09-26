@@ -7,6 +7,7 @@ export interface OracleUiSelection {
   autoSwitchToThinking?: boolean;
 }
 
+export declare const CHATGPT_COMPOSER_LABELS: readonly string[];
 export declare const CHATGPT_CANONICAL_APP_ORIGINS: readonly string[];
 
 export declare function buildAllowedChatGptOrigins(chatUrl: string, authUrl?: string): string[];

@@ -5799,10 +5799,12 @@ function testChatGptFlowHelpers(): void {
     '- paragraph [ref=e4]: Second answer',
     '- textbox "Chat with ChatGPT" [ref=e5]',
   ].join("\n");
-  assert(
-    assistantSnapshotSlice(snapshot, "Chat with ChatGPT", 1)?.includes("Second answer"),
-    "conversation helpers should isolate the requested assistant snapshot slice",
-  );
+  for (const composerLabel of ["Chat with ChatGPT", "Ask ChatGPT"]) {
+    const observedSnapshot = `${snapshot.replace('textbox "Chat with ChatGPT"', `textbox "${composerLabel}"`)}\n- button "draft-only.txt" [ref=e6]`;
+    const responseSlice = assistantSnapshotSlice(observedSnapshot, "Chat with ChatGPT", 1);
+    assert(responseSlice?.includes("Second answer") && !responseSlice.includes("First answer"), "conversation helpers should isolate the requested assistant snapshot slice");
+    assert(!responseSlice?.includes(composerLabel) && !responseSlice?.includes("draft-only.txt"), "response artifacts must stop at either supported composer label, excluding unsent draft files");
+  }
   assert(stripUrlQueryAndHash("https://chatgpt.com/c/abc?model=gpt#section") === "https://chatgpt.com/c/abc", "conversation helpers should strip query/hash components from ChatGPT URLs");
   assert(isConversationPathUrl("https://chatgpt.com/c/abc-123"), "conversation helpers should recognize ChatGPT conversation URLs");
   assert(isConversationPathUrl("https://grok.com/chat/abc-123"), "conversation helpers should recognize Grok conversation URLs");

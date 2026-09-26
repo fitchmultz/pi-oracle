@@ -4,6 +4,8 @@
 // Usage: Imported by run-job.mjs and sanity tests to validate conversation-state heuristics without driving a browser.
 // Invariants/Assumptions: Snapshot text comes from agent-browser `snapshot -i`; URL inputs may be malformed and must fail safely.
 
+import { CHATGPT_COMPOSER_LABELS } from "./chatgpt-ui-helpers.mjs";
+
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleStableValueState} OracleStableValueState */
 /** @typedef {import("./chatgpt-flow-helpers.d.mts").OracleSendAcceptanceState} OracleSendAcceptanceState */
 
@@ -23,8 +25,9 @@ export function assistantSnapshotSlice(snapshot, composerLabel, responseIndex) {
   const nextAssistantIndex = assistantHeadingIndices[responseIndex + 1];
   if (nextAssistantIndex !== undefined) endCandidates.push(nextAssistantIndex);
 
+  const composerLabels = CHATGPT_COMPOSER_LABELS.includes(composerLabel) ? CHATGPT_COMPOSER_LABELS : [composerLabel];
   const composerIndex = lines.findIndex(
-    (line, index) => index > startIndex && line.includes(`textbox "${composerLabel}"`),
+    (line, index) => index > startIndex && composerLabels.some((label) => line.includes(`textbox "${label}"`)),
   );
   if (composerIndex !== -1) endCandidates.push(composerIndex);
 

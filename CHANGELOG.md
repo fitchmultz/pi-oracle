@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.21 - 2026-09-26
+
+### Fixed
+- recognize ChatGPT's current `Ask ChatGPT` input as well as `Chat with ChatGPT`, so authenticated browser verification finishes and closes the browser; share the aliases with prompt entry and response/upload boundaries
+- retry auth observations interrupted by CDP navigation without closing the browser while concurrent reads are still running
+- stop treating anonymous `ua-*` visitor IDs as signed-in account identities that need account-selection clicks or reloads
+- distinguish browser verification failures from rejected source cookies in auth recovery guidance
+
+### Validation
+- reproduced the renamed-composer failure before the fix and verified a live `/oracle-auth` refresh saved the auth seed and closed Chrome automatically
+- passed the local Oracle verification suite and independent correctness review
+
 ## 0.7.20 - 2026-07-28
 
 ### Fixed

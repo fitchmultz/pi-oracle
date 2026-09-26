@@ -4,7 +4,7 @@
 // Usage: Imported by auth-bootstrap.mjs and sanity tests to exercise auth classification behavior without driving a browser.
 // Invariants/Assumptions: Inputs are already captured snapshots/probe results from the live browser session; outputs are deterministic and side-effect free.
 
-import { snapshotHasUsableComposerControls } from "./chatgpt-ui-helpers.mjs";
+import { CHATGPT_COMPOSER_LABELS, snapshotHasUsableComposerControls } from "./chatgpt-ui-helpers.mjs";
 
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthLoginProbe} OracleAuthLoginProbe */
 /** @typedef {import("./auth-flow-helpers.d.mts").OracleAuthPageClassification} OracleAuthPageClassification */
@@ -31,9 +31,21 @@ export function normalizeLoginProbeResult(result) {
     bodyKeys: Array.isArray(value.bodyKeys) ? value.bodyKeys.filter((entry) => typeof entry === "string") : [],
     bodyHasId: value.bodyHasId === true,
     bodyHasEmail: value.bodyHasEmail === true,
+    bodyIsAnonymous: value.bodyIsAnonymous === true,
     name: typeof value.name === "string" ? value.name : undefined,
     responsePreview: typeof value.responsePreview === "string" ? value.responsePreview : undefined,
   };
+}
+
+/**
+ * CDP evaluations can be interrupted by normal redirects. Do not retry arbitrary
+ * protocol failures or explicitly closed/disconnected browser errors.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isAuthNavigationError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Inspected target navigated or closed|Execution context was destroyed|Cannot find context with specified id/i.test(message);
 }
 
 /**
@@ -69,7 +81,7 @@ export function classifyChatAuthPage(args) {
   const onAllowedOrigin = args.allowedOrigins.some((origin) => args.url.startsWith(origin));
   const hasComposer = args.snapshot.includes(`textbox "${composerLabel}"`);
   const hasAddFiles = args.snapshot.includes(`button "${addFilesLabel}"`);
-  const hasUsableComposer = composerLabel === DEFAULT_COMPOSER_LABEL && addFilesLabel === DEFAULT_ADD_FILES_LABEL
+  const hasUsableComposer = CHATGPT_COMPOSER_LABELS.includes(composerLabel) && addFilesLabel === DEFAULT_ADD_FILES_LABEL
     ? snapshotHasUsableComposerControls(args.snapshot)
     : hasComposer && hasAddFiles;
 
@@ -112,7 +124,16 @@ export function classifyChatAuthPage(args) {
     return { state: "transient_outage_error", message: `ChatGPT is showing a transient outage/error page. Logs: ${args.logPath}` };
   }
 
-  const probeHasAccountIdentity = args.probe?.bodyHasId === true || args.probe?.bodyHasEmail === true;
+  // /backend-api/me also returns HTTP 200 and an id for anonymous visitors.
+  // Those ua-* identities must not drive account selection or auth reloads.
+  if (args.probe?.bodyIsAnonymous && (args.probe?.onAuthPage || args.probe?.domLoginCta)) {
+    return {
+      state: "login_required",
+      message: `Synced cookies from ${args.cookieSourceLabel}, but ChatGPT returned an anonymous visitor session, not a signed-in account. Sign in to ChatGPT in the source browser profile, quit that browser, then rerun /oracle-auth. Logs: ${args.logPath}`,
+    };
+  }
+
+  const probeHasAccountIdentity = !args.probe?.bodyIsAnonymous && (args.probe?.bodyHasId === true || args.probe?.bodyHasEmail === true);
 
   if (args.probe?.status === 401 || (args.probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
     return {

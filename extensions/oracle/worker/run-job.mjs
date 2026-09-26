@@ -23,6 +23,7 @@ import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
+  CHATGPT_COMPOSER_LABELS,
   deriveAssistantCompletionSignature,
   matchesCompactIntelligenceControlLabel,
   matchesCompactIntelligenceOpenerLabel,
@@ -820,6 +821,7 @@ function buildLoginProbeScript(timeoutMs) {
     let bodyKeys = [];
     let bodyHasId = false;
     let bodyHasEmail = false;
+    let bodyIsAnonymous = false;
     try {
       if (typeof fetch === 'function') {
         const controller = new AbortController();
@@ -837,6 +839,7 @@ function buildLoginProbeScript(timeoutMs) {
             if (data && typeof data === 'object' && !Array.isArray(data)) {
               bodyKeys = Object.keys(data).slice(0, 12);
               bodyHasId = typeof data.id === 'string' && data.id.length > 0;
+              bodyIsAnonymous = typeof data.id === 'string' && data.id.startsWith('ua-');
               bodyHasEmail = typeof data.email === 'string' && data.email.includes('@');
             }
           }
@@ -860,6 +863,7 @@ function buildLoginProbeScript(timeoutMs) {
       bodyKeys,
       bodyHasId,
       bodyHasEmail,
+      bodyIsAnonymous,
     };
   `);
 }
@@ -936,7 +940,7 @@ function composerControlsVisible(snapshot, job = currentJob) {
   const entries = parseSnapshotEntries(snapshot);
   const hasComposer = isGrokJob(job)
     ? entries.some((entry) => !entry.disabled && ((entry.kind === "textbox" && entry.label === labels.composer) || /editable/.test(String(entry.line || ""))))
-    : entries.some((entry) => entry.kind === "textbox" && entry.label === labels.composer && !entry.disabled);
+    : entries.some((entry) => entry.kind === "textbox" && CHATGPT_COMPOSER_LABELS.includes(entry.label) && !entry.disabled);
   const hasAddFiles = entries.some(
     (entry) => entry.kind === "button" && entry.label === labels.addFiles && !entry.disabled,
   );
@@ -1041,8 +1045,7 @@ async function setComposerText(job, text) {
     return;
   }
   const snapshot = await snapshotText(job);
-  const labels = labelsForJob(job);
-  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
+  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && CHATGPT_COMPOSER_LABELS.includes(candidate.label) && !candidate.disabled);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
   await agentBrowser(job, "fill", entry.ref, text);
 }
@@ -1075,7 +1078,11 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
   const hasUsableComposer = snapshotHasUsableComposerControls(snapshot);
 
-  const probeHasAccountIdentity = probe?.bodyHasId === true || probe?.bodyHasEmail === true;
+  if (probe?.bodyIsAnonymous && (probe?.onAuthPage || probe?.domLoginCta)) {
+    return { state: "login_required", message: "ChatGPT shows login controls and returned an anonymous visitor session, not a signed-in account. Sign in to ChatGPT in the configured source browser profile, then run /oracle-auth." };
+  }
+
+  const probeHasAccountIdentity = !probe?.bodyIsAnonymous && (probe?.bodyHasId === true || probe?.bodyHasEmail === true);
 
   if (probe?.status === 401 || (probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
@@ -1268,10 +1275,10 @@ function detectResponseFailureText(text) {
 
 function composerSnapshotSlice(snapshot, job = currentJob) {
   const lines = snapshot.split("\n");
-  const labels = labelsForJob(job);
+  const composerLabels = isGrokJob(job) ? [GROK_LABELS.composer] : CHATGPT_COMPOSER_LABELS;
   let composerIndex = -1;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index].includes(`textbox "${labels.composer}"`) || (isGrokJob(job) && lines[index].includes("contenteditable"))) {
+    if (composerLabels.some((label) => lines[index].includes(`textbox "${label}"`)) || (isGrokJob(job) && lines[index].includes("contenteditable"))) {
       composerIndex = index;
       break;
     }
