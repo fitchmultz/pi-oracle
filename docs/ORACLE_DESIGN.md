@@ -198,7 +198,7 @@ Per job:
    - login required
    - challenge/verification page
    - transient outage after one retry
-6. configure ChatGPT model family/effort or Grok Heavy
+6. configure ChatGPT model family/effort or Grok Heavy; for the current Power slider, use its keyboard controls and verify both the numeric position and accessible tier announcement before closing it. Preserve the compact-menu mapping (Instant; Medium for Light/Standard; High for Extended; Extra High for Heavy; undifferentiated Pro). Reject unknown ranges or mismatched announcements instead of guessing.
 7. upload archive
 8. wait for upload confirmation scoped to the active composer
 9. fill prompt

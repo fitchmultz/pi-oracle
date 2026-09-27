@@ -134,7 +134,7 @@ export function requestedEffortLabel(selection) {
  * @returns {string}
  */
 function normalizeChipLabel(label) {
-  return normalizeText(label).replace(/, click to remove$/i, "").trim();
+  return normalizeText(label).replace(/, click to remove$/i, "").replace(/^\d+(?:\.\d+)?\s+(?=Pro$)/i, "").trim();
 }
 
 function parseComposerChipSelection(label) {
@@ -505,7 +505,9 @@ export function snapshotHasModelConfigurationUi(snapshot) {
   const hasEffortCombobox = entries.some(
     (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,
   );
-  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasIntelligenceHeading || hasEffortCombobox;
+  const hasPowerSliderMenu = entries.some((entry) => entry.kind === "menuitem" && entry.label === "Power" && !entry.disabled)
+    && entries.some((entry) => entry.kind === "menuitem" && entry.label === "Select model" && !entry.disabled);
+  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasIntelligenceHeading || hasEffortCombobox || hasPowerSliderMenu;
 }
 
 /**

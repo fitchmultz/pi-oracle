@@ -284,6 +284,8 @@ Grok uploads now use `.tar.gz` archives. Grok may accept `.tar.zst` uploads, but
 
 For ChatGPT, `oracle_submit` accepts canonical preset ids or a matching human-readable preset label. Keep config values on canonical ids. For Grok, use `provider: "grok"`; only Heavy is supported today.
 
+ChatGPT's compact picker and current **Power** slider expose fewer choices than the legacy settings dialog: both Instant presets use Instant when no auto-switch toggle exists; Thinking Light/Standard use Medium, Extended uses High, and Heavy uses Extra High. Both Pro presets use the single Pro tier when separate effort choices are unavailable. Oracle verifies the visible selection rather than assuming the saved preference.
+
 ## Outputs and cleanup
 
 - Jobs persist response text, metadata, logs, and artifacts under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default.

@@ -7,6 +7,8 @@
 - retry auth observations interrupted by CDP navigation without closing the browser while concurrent reads are still running
 - stop treating anonymous `ua-*` visitor IDs as signed-in account identities that need account-selection clicks or reloads
 - distinguish browser verification failures from rejected source cookies in auth recovery guidance
+- support ChatGPT's current Power slider and version-prefixed Pro button, verifying the selected tier before submitting
+- restore the worker jobs-directory binding so cleanup can promote queued jobs
 
 ### Validation
 - reproduced the renamed-composer failure before the fix and verified a live `/oracle-auth` refresh saved the auth seed and closed Chrome automatically

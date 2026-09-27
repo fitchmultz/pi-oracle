@@ -52,7 +52,8 @@ if (!jobId) {
   process.exit(1);
 }
 
-const jobDir = join(getOracleJobsDir(), `oracle-${jobId}`);
+const ORACLE_JOBS_DIR = getOracleJobsDir();
+const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
@@ -1533,6 +1534,54 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
   throw new Error(`Could not verify requested model settings after configuration for ${job.selection.modelFamily}`);
 }
 
+async function configurePowerSlider(job) {
+  // The current picker retains the compact tier semantics, but exposes keyboard
+  // interaction on a Power menuitem rather than accessible tier radio buttons.
+  const tiers = ["Instant", "Medium", "High", "Extra High", "Pro"];
+  const requested = job.selection.modelFamily === "instant" ? "Instant"
+    : job.selection.modelFamily === "pro" ? "Pro"
+    : job.selection.effort === "heavy" ? "Extra High"
+    : job.selection.effort === "extended" ? "High" : "Medium";
+  const target = tiers.indexOf(requested);
+  const selector = '[data-testid="composer-intelligence-picker-content"] [role="menuitem"][aria-label="Power"]';
+  await agentBrowser(job, "focus", selector);
+  const timeoutAt = Date.now() + MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS;
+  let moves = 0;
+  while (Date.now() < timeoutAt && moves < tiers.length) {
+    const state = await evalPage(job, toJsonScript(`
+      const control = document.querySelector(${JSON.stringify(selector)});
+      const slider = control?.querySelector('[role="slider"]');
+      if (!slider || control.closest('[inert]')) return null;
+      const description = (control.getAttribute('aria-describedby') || '').split(/\\s+/)
+        .map(id => document.getElementById(id)?.textContent || '').join(' ');
+      return { min: slider.getAttribute('aria-valuemin'), max: slider.getAttribute('aria-valuemax'),
+        value: slider.getAttribute('aria-valuenow'), description };
+    `));
+    // The menuitem can appear before React mounts its slider, especially headless.
+    if (!state) {
+      await sleep(150);
+      continue;
+    }
+    const value = Number(state.value);
+    if (state.min !== "0" || state.max !== "4" || typeof state.value !== "string" || !Number.isInteger(value) || value < 0 || value > 4) {
+      throw new Error("ChatGPT Power slider has an unrecognized range; refusing to guess model settings");
+    }
+    if (value === target) {
+      if (!state.description.startsWith(`${requested}, ${target + 1} of ${tiers.length}.`)) {
+        throw new Error(`Could not verify ChatGPT Power tier: ${requested}`);
+      }
+      await log(`Verified ChatGPT Power tier ${requested} for family=${job.selection.modelFamily} effort=${job.selection.effort || "(none)"}`);
+      await agentBrowser(job, "press", "Escape");
+      await waitForModelConfigurationToSettle(job, { stronglyVerified: true });
+      return;
+    }
+    await agentBrowser(job, "press", value < target ? "ArrowRight" : "ArrowLeft");
+    moves++;
+    await sleep(150);
+  }
+  throw new Error(`ChatGPT Power slider did not reach requested tier: ${requested}`);
+}
+
 async function configureModel(job) {
   if (isGrokJob(job)) return configureGrokModel(job);
   const initialSnapshot = await snapshotText(job);
@@ -1543,6 +1592,10 @@ async function configureModel(job) {
 
   await log(`Configuring model family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
   let familySnapshot = await openModelConfiguration(job);
+  if (findEntry(familySnapshot, (entry) => entry.kind === "menuitem" && entry.label === "Power" && !entry.disabled)) {
+    await configurePowerSlider(job);
+    return;
+  }
   let verificationSnapshot = familySnapshot;
 
   const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);
