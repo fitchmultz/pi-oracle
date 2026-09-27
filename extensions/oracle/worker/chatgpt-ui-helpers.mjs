@@ -13,6 +13,8 @@ import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 /** @typedef {{ responseText: string; artifactLabels?: string[]; suspiciousArtifactLabels?: string[] }} CompletionSignatureArgs */
 /** @typedef {{ hasStopStreaming: boolean; hasTargetCopyResponse: boolean; responseText: string; artifactLabels?: string[]; suspiciousArtifactLabels?: string[] }} DerivedCompletionSignatureArgs */
 
+export const CHATGPT_COMPOSER_LABELS = Object.freeze(["Chat with ChatGPT", "Ask ChatGPT"]);
+
 export const CHATGPT_CANONICAL_APP_ORIGINS = Object.freeze([
   "https://chatgpt.com",
   "https://chat.openai.com",
@@ -132,7 +134,7 @@ export function requestedEffortLabel(selection) {
  * @returns {string}
  */
 function normalizeChipLabel(label) {
-  return normalizeText(label).replace(/, click to remove$/i, "").trim();
+  return normalizeText(label).replace(/, click to remove$/i, "").replace(/^\d+(?:\.\d+)?\s+(?=Pro$)/i, "").trim();
 }
 
 function parseComposerChipSelection(label) {
@@ -503,7 +505,9 @@ export function snapshotHasModelConfigurationUi(snapshot) {
   const hasEffortCombobox = entries.some(
     (entry) => entry.kind === "combobox" && EFFORT_LABELS.has(entry.value || "") && !entry.disabled,
   );
-  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasIntelligenceHeading || hasEffortCombobox;
+  const hasPowerSliderMenu = entries.some((entry) => entry.kind === "menuitem" && entry.label === "Power" && !entry.disabled)
+    && entries.some((entry) => entry.kind === "menuitem" && entry.label === "Select model" && !entry.disabled);
+  return visibleFamilies.size >= 2 || visibleRadioFamilies.size >= 2 || visibleCompactControls.length >= 2 || hasCompactIntelligenceMenu || hasIntelligenceHeading || hasEffortCombobox || hasPowerSliderMenu;
 }
 
 /**
@@ -513,7 +517,7 @@ export function snapshotHasModelConfigurationUi(snapshot) {
 export function snapshotHasUsableComposerControls(snapshot) {
   /** @type {SnapshotEntry[]} */
   const entries = parseSnapshotEntries(snapshot);
-  const hasComposer = entries.some((entry) => entry.kind === "textbox" && entry.label === "Chat with ChatGPT" && !entry.disabled);
+  const hasComposer = entries.some((entry) => entry.kind === "textbox" && CHATGPT_COMPOSER_LABELS.includes(entry.label || "") && !entry.disabled);
   const hasAddFiles = entries.some((entry) => entry.kind === "button" && entry.label === "Add files and more" && !entry.disabled);
   return hasComposer && hasAddFiles;
 }

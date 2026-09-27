@@ -8,6 +8,7 @@ export interface OracleAuthLoginProbe {
   bodyKeys?: string[];
   bodyHasId?: boolean;
   bodyHasEmail?: boolean;
+  bodyIsAnonymous?: boolean;
   name?: string;
   responsePreview?: string;
 }
@@ -26,6 +27,7 @@ export interface OracleAuthPageClassification {
 }
 
 export declare function normalizeLoginProbeResult(result: unknown): OracleAuthLoginProbe;
+export declare function isAuthNavigationError(error: unknown): boolean;
 export declare function buildAccountChooserCandidateLabels(name?: string): string[];
 export declare function classifyChatAuthPage(args: {
   url: string;

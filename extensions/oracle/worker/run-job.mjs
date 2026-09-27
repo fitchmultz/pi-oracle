@@ -23,6 +23,7 @@ import { getOracleJobsDir } from "../shared/state-path-helpers.mjs";
 import { extractArtifactLabels, FILE_LABEL_PATTERN_SOURCE, GENERIC_ARTIFACT_LABELS, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "./artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
+  CHATGPT_COMPOSER_LABELS,
   deriveAssistantCompletionSignature,
   matchesCompactIntelligenceControlLabel,
   matchesCompactIntelligenceOpenerLabel,
@@ -51,7 +52,8 @@ if (!jobId) {
   process.exit(1);
 }
 
-const jobDir = join(getOracleJobsDir(), `oracle-${jobId}`);
+const ORACLE_JOBS_DIR = getOracleJobsDir();
+const jobDir = join(ORACLE_JOBS_DIR, `oracle-${jobId}`);
 const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
@@ -820,6 +822,7 @@ function buildLoginProbeScript(timeoutMs) {
     let bodyKeys = [];
     let bodyHasId = false;
     let bodyHasEmail = false;
+    let bodyIsAnonymous = false;
     try {
       if (typeof fetch === 'function') {
         const controller = new AbortController();
@@ -837,6 +840,7 @@ function buildLoginProbeScript(timeoutMs) {
             if (data && typeof data === 'object' && !Array.isArray(data)) {
               bodyKeys = Object.keys(data).slice(0, 12);
               bodyHasId = typeof data.id === 'string' && data.id.length > 0;
+              bodyIsAnonymous = typeof data.id === 'string' && data.id.startsWith('ua-');
               bodyHasEmail = typeof data.email === 'string' && data.email.includes('@');
             }
           }
@@ -860,6 +864,7 @@ function buildLoginProbeScript(timeoutMs) {
       bodyKeys,
       bodyHasId,
       bodyHasEmail,
+      bodyIsAnonymous,
     };
   `);
 }
@@ -936,7 +941,7 @@ function composerControlsVisible(snapshot, job = currentJob) {
   const entries = parseSnapshotEntries(snapshot);
   const hasComposer = isGrokJob(job)
     ? entries.some((entry) => !entry.disabled && ((entry.kind === "textbox" && entry.label === labels.composer) || /editable/.test(String(entry.line || ""))))
-    : entries.some((entry) => entry.kind === "textbox" && entry.label === labels.composer && !entry.disabled);
+    : entries.some((entry) => entry.kind === "textbox" && CHATGPT_COMPOSER_LABELS.includes(entry.label) && !entry.disabled);
   const hasAddFiles = entries.some(
     (entry) => entry.kind === "button" && entry.label === labels.addFiles && !entry.disabled,
   );
@@ -1041,8 +1046,7 @@ async function setComposerText(job, text) {
     return;
   }
   const snapshot = await snapshotText(job);
-  const labels = labelsForJob(job);
-  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && candidate.label === labels.composer);
+  const entry = findEntry(snapshot, (candidate) => candidate.kind === "textbox" && CHATGPT_COMPOSER_LABELS.includes(candidate.label) && !candidate.disabled);
   if (!entry) throw new Error("Could not find ChatGPT composer textbox");
   await agentBrowser(job, "fill", entry.ref, text);
 }
@@ -1075,7 +1079,11 @@ function classifyChatPage({ job, url, snapshot, body, probe }) {
   const onAuthPath = typeof url === "string" && url.includes("/auth/");
   const hasUsableComposer = snapshotHasUsableComposerControls(snapshot);
 
-  const probeHasAccountIdentity = probe?.bodyHasId === true || probe?.bodyHasEmail === true;
+  if (probe?.bodyIsAnonymous && (probe?.onAuthPage || probe?.domLoginCta)) {
+    return { state: "login_required", message: "ChatGPT shows login controls and returned an anonymous visitor session, not a signed-in account. Sign in to ChatGPT in the configured source browser profile, then run /oracle-auth." };
+  }
+
+  const probeHasAccountIdentity = !probe?.bodyIsAnonymous && (probe?.bodyHasId === true || probe?.bodyHasEmail === true);
 
   if (probe?.status === 401 || (probe?.status === 403 && (!onAllowedOrigin || !hasUsableComposer))) {
     return { state: "login_required", message: "ChatGPT login is required. Run /oracle-auth." };
@@ -1268,10 +1276,10 @@ function detectResponseFailureText(text) {
 
 function composerSnapshotSlice(snapshot, job = currentJob) {
   const lines = snapshot.split("\n");
-  const labels = labelsForJob(job);
+  const composerLabels = isGrokJob(job) ? [GROK_LABELS.composer] : CHATGPT_COMPOSER_LABELS;
   let composerIndex = -1;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index].includes(`textbox "${labels.composer}"`) || (isGrokJob(job) && lines[index].includes("contenteditable"))) {
+    if (composerLabels.some((label) => lines[index].includes(`textbox "${label}"`)) || (isGrokJob(job) && lines[index].includes("contenteditable"))) {
       composerIndex = index;
       break;
     }
@@ -1526,6 +1534,54 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
   throw new Error(`Could not verify requested model settings after configuration for ${job.selection.modelFamily}`);
 }
 
+async function configurePowerSlider(job) {
+  // The current picker retains the compact tier semantics, but exposes keyboard
+  // interaction on a Power menuitem rather than accessible tier radio buttons.
+  const tiers = ["Instant", "Medium", "High", "Extra High", "Pro"];
+  const requested = job.selection.modelFamily === "instant" ? "Instant"
+    : job.selection.modelFamily === "pro" ? "Pro"
+    : job.selection.effort === "heavy" ? "Extra High"
+    : job.selection.effort === "extended" ? "High" : "Medium";
+  const target = tiers.indexOf(requested);
+  const selector = '[data-testid="composer-intelligence-picker-content"] [role="menuitem"][aria-label="Power"]';
+  await agentBrowser(job, "focus", selector);
+  const timeoutAt = Date.now() + MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS;
+  let moves = 0;
+  while (Date.now() < timeoutAt && moves < tiers.length) {
+    const state = await evalPage(job, toJsonScript(`
+      const control = document.querySelector(${JSON.stringify(selector)});
+      const slider = control?.querySelector('[role="slider"]');
+      if (!slider || control.closest('[inert]')) return null;
+      const description = (control.getAttribute('aria-describedby') || '').split(/\\s+/)
+        .map(id => document.getElementById(id)?.textContent || '').join(' ');
+      return { min: slider.getAttribute('aria-valuemin'), max: slider.getAttribute('aria-valuemax'),
+        value: slider.getAttribute('aria-valuenow'), description };
+    `));
+    // The menuitem can appear before React mounts its slider, especially headless.
+    if (!state) {
+      await sleep(150);
+      continue;
+    }
+    const value = Number(state.value);
+    if (state.min !== "0" || state.max !== "4" || typeof state.value !== "string" || !Number.isInteger(value) || value < 0 || value > 4) {
+      throw new Error("ChatGPT Power slider has an unrecognized range; refusing to guess model settings");
+    }
+    if (value === target) {
+      if (!state.description.startsWith(`${requested}, ${target + 1} of ${tiers.length}.`)) {
+        throw new Error(`Could not verify ChatGPT Power tier: ${requested}`);
+      }
+      await log(`Verified ChatGPT Power tier ${requested} for family=${job.selection.modelFamily} effort=${job.selection.effort || "(none)"}`);
+      await agentBrowser(job, "press", "Escape");
+      await waitForModelConfigurationToSettle(job, { stronglyVerified: true });
+      return;
+    }
+    await agentBrowser(job, "press", value < target ? "ArrowRight" : "ArrowLeft");
+    moves++;
+    await sleep(150);
+  }
+  throw new Error(`ChatGPT Power slider did not reach requested tier: ${requested}`);
+}
+
 async function configureModel(job) {
   if (isGrokJob(job)) return configureGrokModel(job);
   const initialSnapshot = await snapshotText(job);
@@ -1536,6 +1592,10 @@ async function configureModel(job) {
 
   await log(`Configuring model family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
   let familySnapshot = await openModelConfiguration(job);
+  if (findEntry(familySnapshot, (entry) => entry.kind === "menuitem" && entry.label === "Power" && !entry.disabled)) {
+    await configurePowerSlider(job);
+    return;
+  }
   let verificationSnapshot = familySnapshot;
 
   const alreadyConfiguredInUi = snapshotStronglyMatchesRequestedModel(familySnapshot, job.selection);

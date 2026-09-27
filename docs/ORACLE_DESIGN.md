@@ -143,6 +143,9 @@ Auth bootstrap flow:
 7. clear isolated browser cookies and seed the staged profile with imported provider cookies
 8. open the configured provider in the isolated browser
 9. verify auth with provider-specific readiness checks
+   - recognize both `Chat with ChatGPT` and `Ask ChatGPT` composer labels via the shared UI helpers; the same aliases apply to prompt entry and response/upload boundaries
+   - drain concurrent page reads and discard the whole observation if a CDP evaluation was interrupted by navigation; retry within the existing bootstrap deadline without relaunching a closed browser
+   - ChatGPT's anonymous `ua-*` visitor IDs are not account identity evidence; a login page/public login controls with an anonymous probe require refreshing the source browser login, not account-selection clicks or reloads
 10. on success, close the isolated browser so Chrome flushes profile state cleanly
 11. atomically swap the staged profile into `browser.authSeedProfileDir`, keeping `*.prev` as rollback
 12. write a seed-generation marker used by future runtime clones
@@ -195,7 +198,7 @@ Per job:
    - login required
    - challenge/verification page
    - transient outage after one retry
-6. configure ChatGPT model family/effort or Grok Heavy
+6. configure ChatGPT model family/effort or Grok Heavy; for the current Power slider, use its keyboard controls and verify both the numeric position and accessible tier announcement before closing it. Preserve the compact-menu mapping (Instant; Medium for Light/Standard; High for Extended; Extra High for Heavy; undifferentiated Pro). Reject unknown ranges or mismatched announcements instead of guessing.
 7. upload archive
 8. wait for upload confirmation scoped to the active composer
 9. fill prompt

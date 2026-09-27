@@ -284,6 +284,8 @@ Grok uploads now use `.tar.gz` archives. Grok may accept `.tar.zst` uploads, but
 
 For ChatGPT, `oracle_submit` accepts canonical preset ids or a matching human-readable preset label. Keep config values on canonical ids. For Grok, use `provider: "grok"`; only Heavy is supported today.
 
+ChatGPT's compact picker and current **Power** slider expose fewer choices than the legacy settings dialog: both Instant presets use Instant when no auto-switch toggle exists; Thinking Light/Standard use Medium, Extended uses High, and Heavy uses Extra High. Both Pro presets use the single Pro tier when separate effort choices are unavailable. Oracle verifies the visible selection rather than assuming the saved preference.
+
 ## Outputs and cleanup
 
 - Jobs persist response text, metadata, logs, and artifacts under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/` by default.
@@ -319,7 +321,9 @@ Review the code and design docs before using it with private or regulated materi
 - For custom Chromium cookie sources, confirm `auth.chromeCookiePath` points at that profile's `Cookies` DB. On macOS, also confirm `auth.chromiumKeychain.services` names the browser's safe-storage Keychain service. On Linux, leave `auth.chromiumKeychain` unset and use Sweet Cookie's `SWEET_COOKIE_LINUX_KEYRING`, `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, or `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` options for encrypted Chrome/Chromium/Brave cookies.
 - Re-run `/oracle-auth`.
 - Agent callers can use `oracle_auth({})` once before retrying a stale-auth oracle submission.
-- If the provider is half-logged-in or challenge flow state looks weird, finish the login/challenge in the headed auth browser and retry.
+- If ChatGPT reports an anonymous visitor session, sign in in the configured **source browser profile**, quit that browser fully, and rerun `/oracle-auth`. This command imports an existing login; the isolated verification window is not a manual-login setup flow.
+- Navigation interruptions during verification are retried until the auth deadline. A closed browser or verification timeout does not by itself mean the source cookies are invalid; leave the isolated window open and inspect the printed diagnostics if retries fail.
+- If the provider presents a challenge and Oracle explicitly leaves the headed auth browser open, complete the challenge there and retry.
 
 ### Custom Chromium auth says cookies synced but the session is rejected
 
