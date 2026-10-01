@@ -26,6 +26,7 @@ export function expandHomePath(value: string, homeDir?: string): string;
 export function normalizedAbsolutePath(value: string, options?: BrowserPathOptions): string;
 export function linuxConfigHome(options?: BrowserPathOptions): string;
 export function linuxChromiumCookieImportUserDataDirs(options?: BrowserPathOptions): string[];
+export function isNativeLinuxChromiumCookieSource(source: string, options?: BrowserPathOptions): boolean;
 export function linuxBrowserSafetyUserDataDirs(options?: BrowserPathOptions): string[];
 export function browserUserDataDirsForPlatform(
   platform?: OraclePlatform,

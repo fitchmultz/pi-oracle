@@ -98,6 +98,38 @@ export function linuxChromiumCookieImportUserDataDirs(options = {}) {
 }
 
 /**
+ * Match only native Chromium sources under the same roots as autodetection.
+ * Profile names alone remain Chrome selectors, as in Sweet Cookie.
+ * @param {string} source
+ * @param {BrowserPathOptions} [options]
+ * @returns {boolean}
+ */
+export function isNativeLinuxChromiumCookieSource(source, options = {}) {
+  if (!source.includes("/") && !source.includes("\\")) return false;
+  if (isAbsolute(source) && !source.includes("chromium")) return false;
+  return matchesNativeLinuxChromiumCookieSource(source, options);
+}
+
+/**
+ * @param {string} source
+ * @param {BrowserPathOptions} options
+ * @returns {boolean}
+ */
+function matchesNativeLinuxChromiumCookieSource(source, options) {
+  const path = normalizedAbsolutePath(source, options);
+  let profile = path;
+  if (basename(profile) === "Cookies") {
+    profile = dirname(profile);
+    if (basename(profile) === "Network") profile = dirname(profile);
+  }
+  const root = dirname(profile);
+  if (basename(root) !== "chromium" && basename(root) !== "chromium-browser") return false;
+  if (!linuxChromiumCookieImportUserDataDirs(options).includes(root)) return false;
+  return basename(path) === "Cookies" ? existsSync(path)
+    : existsSync(join(profile, "Cookies")) || existsSync(join(profile, "Network", "Cookies"));
+}
+
+/**
  * @param {BrowserPathOptions} [options]
  * @returns {string[]}
  */

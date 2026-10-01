@@ -12,6 +12,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { getCookies } from "@steipete/sweet-cookie";
 import {
   assertNotKnownBrowserUserDataPath,
+  isNativeLinuxChromiumCookieSource,
   sweetCookieSafeStoragePasswordScrubbedEnv,
 } from "../shared/browser-profile-helpers.mjs";
 import { ensureAccountCookie, filterImportableAuthCookies } from "./auth-cookie-policy.mjs";
@@ -573,6 +574,15 @@ function formatAuthFailureGuidance(error) {
   return lines.join("\n");
 }
 
+function canUseCalibratedChromeKey(source) {
+  if (!source.includes("/") && !source.includes("\\")) return false;
+  // Match Sweet Cookie's candidate expansion, not normalized source qualification:
+  // a literal absolute Cookies path can retain a Brave selector before "..".
+  const candidate = source.startsWith("~/") ? join(homedir(), source.slice(2))
+    : isAbsolute(source) ? source : resolve(process.cwd(), source);
+  return !/bravesoftware|brave-browser|brave browser/i.test(candidate);
+}
+
 async function readRawSourceCookies() {
   if (config.auth.chromeCookiePath && config.auth.chromiumKeychain) {
     return await getCookiesFromConfiguredChromiumSource({
@@ -584,14 +594,24 @@ async function readRawSourceCookies() {
     });
   }
 
-  return await getCookies({
+  const options = {
     url: providerChatUrl(),
     origins: cookieOrigins(),
     browsers: ["chrome"],
     mode: "merge",
     chromeProfile: cookieSource(),
     timeoutMs: COOKIE_READ_TIMEOUT_MS,
-  });
+  };
+  if (process.platform === "linux") {
+    if (process.env.SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD?.trim() && canUseCalibratedChromeKey(options.chromeProfile)) {
+      return await getCookies(options);
+    }
+    if (isNativeLinuxChromiumCookieSource(options.chromeProfile)) {
+      const { getCookiesFromNativeLinuxChromium } = await import("./linux-chromium-cookie-source.mjs");
+      return await getCookiesFromNativeLinuxChromium(options, getCookies);
+    }
+  }
+  return await getCookies(options);
 }
 
 async function readSourceCookies() {

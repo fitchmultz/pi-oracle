@@ -30,6 +30,10 @@
     "extensions/oracle/worker/chatgpt-flow-helpers.mjs",
     "extensions/oracle/worker/chatgpt-flow-helpers.d.mts",
     "extensions/oracle/worker/auth-flow-helpers.mjs",
+    "extensions/oracle/worker/chromium-cookie-source.mjs",
+    "extensions/oracle/worker/chromium-cookie-source.d.mts",
+    "extensions/oracle/worker/linux-chromium-cookie-source.mjs",
+    "extensions/oracle/worker/linux-chromium-cookie-source.d.mts",
     "extensions/oracle/worker/auth-flow-helpers.d.mts",
     "extensions/oracle/worker/state-locks.mjs",
     "extensions/oracle/worker/state-locks.d.mts"
