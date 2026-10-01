@@ -1,8 +1,9 @@
-FROM cimg/node:24.16
+FROM cimg/node:24.21
 
 USER root
 RUN apt-get update \
   && apt-get install -y --no-install-recommends zstd rsync \
   && rm -rf /var/lib/apt/lists/*
-RUN npm install -g agent-browser@0.29.1
+RUN npm install -g npm@11.21.0 \
+  && npm install -g agent-browser@0.29.1
 USER circleci
