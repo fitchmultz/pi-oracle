@@ -86,7 +86,7 @@
     "typebox": "*"
   },
   "overrides": {
-    "basic-ftp": "6.0.1",
+    "basic-ftp": "6.2.1",
     "protobufjs": "7.6.1"
   },
   "devDependencies": {
@@ -106,7 +106,7 @@
     "linux",
     "win32"
   ],
-  "packageManager": "npm@11.16.0",
+  "packageManager": "npm@11.21.0",
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
       "optional": true
