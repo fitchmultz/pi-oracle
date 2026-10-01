@@ -1,8 +1,8 @@
-// Purpose: Read provider cookies from arbitrary macOS Chromium-family cookie stores when sweet-cookie's built-in browser list is too narrow.
-// Responsibilities: Snapshot a Chromium Cookies SQLite DB, decrypt AES-CBC cookie values with a configured Keychain item, and return sweet-cookie-shaped cookie objects.
-// Scope: macOS Chromium cookie extraction only; auth policy filtering and browser seeding stay in auth-bootstrap.mjs.
-// Usage: auth-bootstrap.mjs uses this when auth.chromiumKeychain is configured alongside auth.chromeCookiePath.
-// Invariants/Assumptions: The configured cookie path points at a Chromium Cookies DB and the configured Keychain item is the browser's safe-storage secret.
+// Purpose: Read provider cookies from configured macOS Chromium stores.
+// Responsibilities: Snapshot and decrypt configured macOS cookie stores.
+// Scope: macOS cookie extraction only; auth policy filtering and browser seeding stay in auth-bootstrap.mjs.
+// Usage: auth-bootstrap.mjs calls the configured macOS API after selecting the source.
+// Invariants/Assumptions: Configured Keychain items identify the browser secret; helper environments are scrubbed.
 import { spawn } from "node:child_process";
 import { sweetCookieSafeStoragePasswordScrubbedEnv } from "../shared/browser-profile-helpers.mjs";
 import { createDecipheriv, pbkdf2Sync } from "node:crypto";
@@ -11,10 +11,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+/** @typedef {import("./chromium-cookie-source.d.mts").ChromiumKeychainConfig} ChromiumKeychainConfig */
+/** @typedef {import("./chromium-cookie-source.d.mts").ConfiguredChromiumSourceOptions} ConfiguredChromiumSourceOptions */
+/** @typedef {import("./auth-cookie-policy.mjs").ImportedAuthCookie} ImportedAuthCookie */
+
 const CHROMIUM_EPOCH_OFFSET_SECONDS = 11_644_473_600n;
 const COOKIE_VALUE_DECODER = new TextDecoder("utf-8", { fatal: true });
 const MACOS_CHROMIUM_KEY_ITERATIONS = 1003;
 
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{timeoutMs?: number}} [options]
+ * @returns {Promise<{ok: boolean, stdout: string, stderr: string, error: string}>}
+ */
 function spawnCapture(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { env: sweetCookieSafeStoragePasswordScrubbedEnv(), stdio: ["ignore", "pipe", "pipe"], shell: process.platform === "win32" });
@@ -46,9 +56,14 @@ function spawnCapture(command, args, options = {}) {
   });
 }
 
+/**
+ * @param {ChromiumKeychainConfig} keychain
+ * @param {number} timeoutMs
+ * @returns {Promise<{ok: true, password: string, service: string} | {ok: false, error: string}>}
+ */
 async function readKeychainPassword(keychain, timeoutMs) {
   const services = Array.isArray(keychain.services) && keychain.services.length > 0 ? keychain.services : [keychain.service];
-  for (const service of services.filter(Boolean)) {
+  for (const service of services.filter(/** @returns {service is string} */ (service) => Boolean(service))) {
     const result = await spawnCapture("security", ["find-generic-password", "-w", "-a", keychain.account, "-s", service], { timeoutMs });
     if (result.ok) {
       const password = result.stdout.trim();
@@ -59,6 +74,7 @@ async function readKeychainPassword(keychain, timeoutMs) {
   return { ok: false, error: `Failed to read macOS Keychain (${keychain.label || keychain.account}): no configured service returned a password.` };
 }
 
+/** @param {string} dbPath */
 function snapshotCookieDb(dbPath) {
   const tempDir = mkdtempSync(join(tmpdir(), "pi-oracle-chromium-cookies-"));
   const tempDbPath = join(tempDir, "Cookies");
@@ -73,6 +89,7 @@ function snapshotCookieDb(dbPath) {
   }
 }
 
+/** @param {string} sourceDbPath @param {string} targetPath @param {string} suffix */
 function copySidecar(sourceDbPath, targetPath, suffix) {
   const sidecarPath = `${sourceDbPath}${suffix}`;
   try {
@@ -83,10 +100,12 @@ function copySidecar(sourceDbPath, targetPath, suffix) {
   }
 }
 
+/** @param {unknown} error */
 function isMissingFileError(error) {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
 }
 
+/** @param {DatabaseSync} db */
 function readMetaVersion(db) {
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key = 'version'").get();
@@ -97,6 +116,7 @@ function readMetaVersion(db) {
   }
 }
 
+/** @param {string} host */
 function parentCookieDomains(host) {
   const labels = host.split(".").filter(Boolean);
   const domains = new Set([host, `.${host}`]);
@@ -108,11 +128,14 @@ function parentCookieDomains(host) {
   return [...domains];
 }
 
+/** @param {string} value */
 function sqlStringLiteral(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+/** @param {string[]} origins */
 function buildHostWhereClause(origins) {
+  /** @type {Set<string>} */
   const domains = new Set();
   for (const origin of origins) {
     try {
@@ -125,11 +148,13 @@ function buildHostWhereClause(origins) {
   return `host_key IN (${[...domains].map(sqlStringLiteral).join(", ")})`;
 }
 
+/** @param {string[]} originHosts @param {string} hostKey */
 function hostMatchesAny(originHosts, hostKey) {
   const cookieDomain = hostKey.startsWith(".") ? hostKey.slice(1) : hostKey;
   return originHosts.some((host) => host === cookieDomain || host.endsWith(`.${cookieDomain}`));
 }
 
+/** @param {unknown} value */
 function chromiumExpirationToUnixSeconds(value) {
   if (value === undefined || value === null || String(value) === "0") return undefined;
   try {
@@ -142,6 +167,7 @@ function chromiumExpirationToUnixSeconds(value) {
   }
 }
 
+/** @param {unknown} value @returns {ImportedAuthCookie["sameSite"]} */
 function normalizeSameSite(value) {
   const normalized = String(value ?? "").toLowerCase();
   if (normalized === "2" || normalized === "strict") return "Strict";
@@ -150,10 +176,12 @@ function normalizeSameSite(value) {
   return undefined;
 }
 
+/** @param {string} password */
 function deriveMacosChromiumKey(password) {
   return pbkdf2Sync(password, "saltysalt", MACOS_CHROMIUM_KEY_ITERATIONS, 16, "sha1");
 }
 
+/** @param {Uint8Array} encryptedValue @param {Buffer} key @param {{stripHashPrefix: boolean}} options */
 function decryptCookieValue(encryptedValue, key, options) {
   const buffer = Buffer.from(encryptedValue);
   if (buffer.length < 3) return null;
@@ -172,6 +200,7 @@ function decryptCookieValue(encryptedValue, key, options) {
   }
 }
 
+/** @param {Buffer} value */
 function removePkcs7Padding(value) {
   if (!value.length) return value;
   const padding = value[value.length - 1];
@@ -179,6 +208,7 @@ function removePkcs7Padding(value) {
   return value.subarray(0, value.length - padding);
 }
 
+/** @param {Uint8Array} value @param {boolean} stripHashPrefix */
 function decodeCookieBytes(value, stripHashPrefix) {
   const bytes = stripHashPrefix && value.length >= 32 ? value.subarray(32) : value;
   try {
@@ -188,12 +218,19 @@ function decodeCookieBytes(value, stripHashPrefix) {
   }
 }
 
+/** @param {string} value */
 function stripLeadingControlChars(value) {
   let index = 0;
   while (index < value.length && value.charCodeAt(index) < 0x20) index += 1;
   return value.slice(index);
 }
 
+/**
+ * @param {Record<string, unknown>[]} rows
+ * @param {Pick<ConfiguredChromiumSourceOptions, "origins" | "profile" | "includeExpired"> & {stripHashPrefix: boolean}} options
+ * @param {Buffer} key
+ * @param {string[]} warnings
+ */
 function collectCookies(rows, options, key, warnings) {
   const cookies = [];
   const now = Math.floor(Date.now() / 1000);
@@ -221,6 +258,7 @@ function collectCookies(rows, options, key, warnings) {
     const expires = chromiumExpirationToUnixSeconds(row.expires_utc);
     if (!options.includeExpired && expires !== undefined && expires < now) continue;
 
+    /** @type {ImportedAuthCookie & {source: {browser: string, profile: string}}} */
     const cookie = {
       name,
       value,
@@ -239,7 +277,9 @@ function collectCookies(rows, options, key, warnings) {
   return dedupeCookies(cookies);
 }
 
+/** @param {ImportedAuthCookie[]} cookies */
 function dedupeCookies(cookies) {
+  /** @type {Map<string, ImportedAuthCookie>} */
   const seen = new Map();
   for (const cookie of cookies) {
     const key = `${cookie.domain}\t${cookie.path}\t${cookie.name}`;
@@ -248,6 +288,10 @@ function dedupeCookies(cookies) {
   return [...seen.values()];
 }
 
+/**
+ * @param {ConfiguredChromiumSourceOptions} options
+ * @returns {Promise<{cookies: ImportedAuthCookie[], warnings: string[]}>}
+ */
 export async function getCookiesFromConfiguredChromiumSource(options) {
   const warnings = [];
   if (!options.dbPath || !existsSync(options.dbPath)) {

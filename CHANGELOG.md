@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- decrypt native Linux Chromium/Chromium Browser encrypted cookies with Chromium's safe-storage key, retaining GNOME/KWallet/basic controls and per-run password calibration without upgrading the unaffected Chrome/Brave importer
+
 ## 0.7.21 - 2026-09-26
 
 ### Fixed

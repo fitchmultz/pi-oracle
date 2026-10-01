@@ -215,19 +215,19 @@ Notes:
 
 ### Linux cookie import notes
 
-`/oracle-auth` delegates the default cookie read to `@steipete/sweet-cookie`'s Linux Chrome/Chromium backend. The packaged default auto-detects existing Google Chrome, Chromium, Chromium Browser, or Brave profile roots under `${XDG_CONFIG_HOME:-~/.config}` and passes non-Google roots as absolute profile paths so the correct cookie DB is read. Set `auth.chromeProfile` to another profile name, a profile directory, or a `Cookies` DB path when needed, and leave `auth.chromiumKeychain` unset on Linux.
+`/oracle-auth` uses `@steipete/sweet-cookie`'s public Chrome backend to parse and decrypt Linux cookies. The packaged default auto-detects existing Google Chrome, Chromium, Chromium Browser, or Brave profile roots under `${XDG_CONFIG_HOME:-~/.config}` and passes non-Google roots as absolute profile paths. For native `chromium` and `chromium-browser` profiles or `Cookies` DBs under those roots, Oracle selects **Chromium Safe Storage** rather than Chrome's key, including GNOME application lookup fallback and KDE KWallet. The Linux key-selection module loads only when needed and reuses the worker's existing public cookie getter; ordinary calibrated Chrome-password paths bypass it. Set `auth.chromeProfile` to another profile name, a profile directory, or a `Cookies` DB path when needed, and leave `auth.chromiumKeychain` unset on Linux. Profile names alone still select Google Chrome; relocated, Snap, and Flatpak Chromium sources are outside this automatic key-selection boundary.
 
-Sweet Cookie's Linux encrypted-cookie handling is controlled outside pi-oracle:
+Linux encrypted-cookie handling is controlled outside pi-oracle:
 
 - `SWEET_COOKIE_LINUX_KEYRING=gnome|kwallet|basic` selects GNOME/libsecret, KDE KWallet, or no keyring probing.
 - GNOME probing shells out to `secret-tool`; KDE probing shells out to `kwallet-query` and `dbus-send`.
-- `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` and `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` bypass keyring probing when you already know the browser safe-storage password.
+- `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD` (also for a selected Chromium source) and `SWEET_COOKIE_BRAVE_SAFE_STORAGE_PASSWORD` bypass keyring probing when you already know the browser safe-storage password.
 
-Do not put safe-storage passwords in project config or persistent shell startup files. Prefer keyring helpers when possible; if you use an environment override for one `/oracle-auth` run, pi-oracle scrubs it before launching browser/helper subprocesses after cookie import.
+Do not put safe-storage passwords in project config or persistent shell startup files. Prefer keyring helpers when possible. Oracle's native Chromium adapter scrubs password overrides from keyring subprocesses, uses the obtained password only around the public cookie read in the short-lived auth worker, and restores its prior environment in `finally`. Browser/helper subprocesses launched by Oracle receive a scrubbed environment; this guarantee does not cover upstream fallback helpers for unqualified sources. The parent Pi environment and persistent config are not changed.
 
 ### Custom Chromium cookie sources
 
-Most Chrome/Chromium-compatible browsers should work through Sweet Cookie's default Chrome backend when `auth.chromeProfile` points at the right profile or cookie DB. pi-oracle does not currently select Sweet Cookie's Edge or Firefox backends. The `auth.chromiumKeychain` alternate path is macOS-only and is intended for a Chromium-family browser that is not one of Sweet Cookie's built-in Chrome/Brave/Arc/Chromium targets or otherwise cannot import cookies without dependency patching.
+Chrome-compatible browsers can use Sweet Cookie's default Chrome backend when `auth.chromeProfile` points at the right profile or cookie DB and the matching safe-storage key is available. On Linux, automatic Chromium-specific key selection is limited to the native roots described above; for relocated Chromium profiles use the matching Chrome or Brave password override for that auth run. Outside the confirmed native roots, Sweet Cookie 0.3 still selects Brave when the resolved cookie DB path contains `bravesoftware`, `brave-browser`, or `brave browser` (case-insensitive), even in an ancestor directory; such paths may require the Brave override. pi-oracle does not currently select Sweet Cookie's Edge or Firefox backends. The `auth.chromiumKeychain` alternate path is macOS-only and is intended for a Chromium-family browser that is not one of Sweet Cookie's built-in Chrome/Brave/Arc/Chromium targets or otherwise cannot import cookies without dependency patching.
 
 Before running `/oracle-auth` with this macOS path:
 
@@ -310,6 +310,7 @@ Review the code and design docs before using it with private or regulated materi
 - Provider UI, auth, model controls, and artifact download behavior can drift.
 - Archive uploads are capped at 250 MiB for ChatGPT and 200 MiB for Grok after default exclusions and automatic whole-repo pruning.
 - A real ChatGPT or Grok web session is required for the provider you use.
+- Cookie replay still uses domain-based browser commands; this fix does not preserve host-only or partitioned-cookie isolation metadata.
 - The README currently uses command-level proof and design docs; no public screenshot or demo GIF is checked into the repo.
 - Production hardening should keep focusing on UI drift detection, auth recovery, artifact capture, platform compatibility, and environment diagnostics.
 

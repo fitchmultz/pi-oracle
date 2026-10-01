@@ -38,6 +38,7 @@
     "scripts/platform-smoke",
     "scripts/oracle-real-smoke.mjs",
     "scripts/oracle-auth.test.mjs",
+    "scripts/oracle-cookie-import.test.mjs",
     "scripts/oracle-model.test.mjs",
     "scripts/oracle-chatgpt-preset-proof.mjs"
   ],
@@ -50,10 +51,10 @@
     ]
   },
   "scripts": {
-    "check:oracle-extension": "node --check extensions/oracle/shared/browser-profile-helpers.mjs && node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-path-helpers.mjs && node --check extensions/oracle/shared/time-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/chromium-cookie-source.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
+    "check:oracle-extension": "node --check extensions/oracle/shared/browser-profile-helpers.mjs && node --check extensions/oracle/shared/process-helpers.mjs && node --check extensions/oracle/shared/state-path-helpers.mjs && node --check extensions/oracle/shared/time-helpers.mjs && node --check extensions/oracle/shared/state-coordination-helpers.mjs && node --check extensions/oracle/shared/job-coordination-helpers.mjs && node --check extensions/oracle/shared/job-lifecycle-helpers.mjs && node --check extensions/oracle/shared/job-observability-helpers.mjs && node --check extensions/oracle/worker/run-job.mjs && node --check extensions/oracle/worker/state-locks.mjs && node --check extensions/oracle/worker/artifact-heuristics.mjs && node --check extensions/oracle/worker/chatgpt-ui-helpers.mjs && node --check extensions/oracle/worker/chatgpt-flow-helpers.mjs && node --check extensions/oracle/worker/auth-flow-helpers.mjs && node --check extensions/oracle/worker/auth-cookie-policy.mjs && node --check extensions/oracle/worker/chromium-cookie-source.mjs && node --check extensions/oracle/worker/linux-chromium-cookie-source.mjs && node --check extensions/oracle/worker/auth-bootstrap.mjs && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
-    "sanity:oracle": "node --test scripts/oracle-auth.test.mjs scripts/oracle-model.test.mjs && node scripts/oracle-sanity-runner.mjs",
+    "sanity:oracle": "node --test scripts/oracle-auth.test.mjs scripts/oracle-cookie-import.test.mjs scripts/oracle-model.test.mjs && node scripts/oracle-sanity-runner.mjs",
     "pack:check": "npm pack --dry-run",
     "verify:oracle": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run typecheck && npm run typecheck:worker-helpers && npm run sanity:oracle && npm run pack:check",
     "test": "npm run verify:oracle",
@@ -74,7 +75,7 @@
     "release:proof:chatgpt-presets": "node scripts/oracle-chatgpt-preset-proof.mjs check",
     "smoke:real:packed": "node scripts/oracle-real-smoke.mjs run --mode packed",
     "smoke:real:source": "node scripts/oracle-real-smoke.mjs run --mode source",
-    "sanity:oracle:platform": "node --test scripts/oracle-auth.test.mjs scripts/oracle-model.test.mjs && node scripts/oracle-sanity-runner.mjs --mode platform",
+    "sanity:oracle:platform": "node --test scripts/oracle-auth.test.mjs scripts/oracle-cookie-import.test.mjs scripts/oracle-model.test.mjs && node scripts/oracle-sanity-runner.mjs --mode platform",
     "verify:oracle:platform": "npm run check:oracle-extension && npm run check:platform-smoke && npm run check:oracle-real-smoke && npm run check:oracle-release-proof && npm run sanity:oracle:platform && npm run pack:check"
   },
   "dependencies": {
