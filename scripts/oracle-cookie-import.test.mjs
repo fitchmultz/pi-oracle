@@ -92,7 +92,10 @@ test("Linux auth imports native Chromium with its own key and preserves Chrome/B
     { browser: "chromium", password: "fixture-override-key", override: true, db: true, dotSegment: true },
   ];
   for (const [index, c] of cases.entries()) {
-    await t.test(JSON.stringify(c), async () => {
+    // Keep the release artifact scanner strict: fixture password values stay in
+    // this file, out of captured platform-smoke stdout (case flags stay unique).
+    const { password: _fixturePassword, ...label } = c;
+    await t.test(JSON.stringify(label), async () => {
       const sourceHome = c.tilde ? join(root, "BraveSoftware", "home") : home;
       const sourceConfigHome = c.tilde ? join(sourceHome, ".config")
         : c.braveAncestor ? join(root, "BraveSoftware", "config")
