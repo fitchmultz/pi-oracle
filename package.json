@@ -107,7 +107,7 @@
     "linux",
     "win32"
   ],
-  "packageManager": "npm@11.21.0",
+  "packageManager": "npm@12.2.0",
   "peerDependenciesMeta": {
     "@earendil-works/pi-ai": {
       "optional": true
