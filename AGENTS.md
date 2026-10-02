@@ -23,6 +23,12 @@ This file contains project-specific guidance for this repository.
 - During those tests, feel free to ask the agents you are exercising for suggestions and feedback about the tool.
 - Ask specifically about friction points such as clunky behavior, uninformative output, workflows that feel slower with no clear gain, or anything else that seems off during real use.
 
+## Test ownership
+- Shared coordination, lifecycle, process, and atomic lease behavior belongs to the executable sanity keepers. Retain worker-specific timeout, security, and integration guards when those keepers cannot exercise the worker wiring.
+- Queue submission-before-spawn proof must observe state at spawn. Retry-race proof must change eligibility after the scan's snapshot and reach the under-lock claim check.
+- No-session startup coverage proves quiet unavailable status and no sends, not absence of startup maintenance or ownership of polling resources. Missing-session submit denial and legacy-job exclusion have separate keepers.
+- Retain the two-120k-entry archive merge regression and its small forwarding seam: public archive expansion would require at least 120k real filesystem entries to reach the same spread-argument failure. Rehome only when a practical public-boundary proof preserves both scale and no-loss checks.
+
 ## Temporary working files
 - `progress.md` and `review.md` are temporary working artifacts.
 - If `progress.md` exists, read it at the start of a continuation to recover current branch/task state; keep it concise and current during active work.

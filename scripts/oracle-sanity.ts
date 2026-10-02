@@ -3962,9 +3962,7 @@ async function testResponseTimeoutGuard(): Promise<void> {
   const stateLocksSource = await readFile(new URL("../extensions/oracle/worker/state-locks.mjs", import.meta.url), "utf8");
   const sharedStateSource = await readFile(new URL("../extensions/oracle/shared/state-coordination-helpers.mjs", import.meta.url), "utf8");
   const sharedJobCoordinationSource = await readFile(new URL("../extensions/oracle/shared/job-coordination-helpers.mjs", import.meta.url), "utf8");
-  const sharedLifecycleSource = await readFile(new URL("../extensions/oracle/shared/job-lifecycle-helpers.mjs", import.meta.url), "utf8");
   const sharedObservabilitySource = await readFile(new URL("../extensions/oracle/shared/job-observability-helpers.mjs", import.meta.url), "utf8");
-  const sharedProcessSource = await readFile(new URL("../extensions/oracle/shared/process-helpers.mjs", import.meta.url), "utf8");
   const browserProfileHelpersSource = await readFile(new URL("../extensions/oracle/shared/browser-profile-helpers.mjs", import.meta.url), "utf8");
   const queueSource = await readFile(new URL("../extensions/oracle/lib/queue.ts", import.meta.url), "utf8");
   const toolsSource = await readFile(new URL("../extensions/oracle/lib/tools.ts", import.meta.url), "utf8");
@@ -3985,9 +3983,6 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('if (["complete", "failed", "cancelled"].includes(String(latest.status || ""))) return latest;'), "cleanup-driven promotion failure should mark killed jobs terminal even if they advanced beyond submitted");
   assert(workerSource.includes("spawnDetachedNodeProcess"), "cleanup-driven worker promotion should capture worker start time through the shared detached-process helper");
   assert(!workerSource.includes("workerStartedAt: undefined"), "cleanup-driven worker promotion should not drop worker start time metadata");
-  assert(sharedJobCoordinationSource.includes("if (job.workerPid) return true;"), "worker-side durable handoff checks should require a persisted pid");
-  assert(!sharedJobCoordinationSource.includes('if (job.status === "waiting") return true;'), "worker-side durable handoff checks should not trust phase alone without a persisted pid");
-  assert(sharedLifecycleSource.includes("transitionOracleJobPhase"), "worker/extension lifecycle changes should flow through the shared lifecycle transition helper");
   assert(workerSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.workerStartedAt)"), "cleanup-driven queued promotion should terminate spawned workers when metadata persistence fails");
   assert(workerSource.includes("cleanupWarnings = await cleanupRuntime(job);"), "cleanup-driven queued promotion should tear down runtime artifacts after spawned-worker failures");
   assert(workerSource.includes("PROFILE_CLONE_TIMEOUT_MS = 120_000"), "worker runtime profile cloning should enforce a subprocess timeout");
@@ -4049,11 +4044,6 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(stateLocksSource.includes("state-coordination-helpers.mjs"), "worker state-lock wrappers should delegate to the shared state coordination helper module");
   assert(sharedStateSource.includes("ORACLE_METADATA_WRITE_GRACE_MS = 1_000"), "shared worker state-lock helper should use a bounded grace before reclaiming metadata-less state dirs");
   assert(sharedStateSource.includes("ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000"), "shared worker state-lock helper should use a longer grace for in-flight .tmp-* dirs under concurrent sweep");
-  assert(sharedStateSource.includes("createStateDirAtomically"), "shared worker state-lock helper should publish new state dirs atomically so first creation never exposes a final dir without metadata");
-  assert(sharedStateSource.includes(".tmp-"), "shared worker state-lock helper should use hidden temp dir prefixes so fresh publishes are never mistaken for final lease/lock dirs");
-  assert(sharedStateSource.includes("maybeReclaimIncompleteStateDir"), "shared worker state-lock helper should reclaim metadata-less state dirs left behind by crashes");
-  assert(sharedStateSource.includes("await rename(tempPath, finalPath);"), "shared worker state-lock helper should atomically rename fully populated temp dirs into place for first publish");
-  assert(sharedStateSource.includes("await rename(tempPath, targetPath);"), "shared worker state-lock helper should write metadata atomically via temp-file rename");
   assert(queueSource.includes("appendCleanupWarnings"), "global queued promotion should persist cleanup warnings from failed teardown");
   assert(queueSource.includes("runQueuedJobPromotionPass"), "global queued promotion should delegate the shared queued-promotion orchestration helper");
   assert(queueSource.includes("transitionOracleJobPhase"), "global queued promotion should apply queue state changes through the shared lifecycle helper");
@@ -4064,7 +4054,6 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes("Stopping queued cleanup promotion after"), "cleanup-driven queued promotion should stop when teardown leaves warnings");
   assert(workerSource.includes("if (existing?.jobId === job.id) return true;"), "cleanup-driven queued promotion should reuse same-job conversation leases during retry");
   assert(workerSource.includes("runQueuedJobPromotionPass"), "cleanup-driven queued promotion should reuse the shared queued-promotion orchestration helper");
-  assert(sharedProcessSource.includes("terminateTrackedProcess"), "shared process helpers should centralize tracked-process termination semantics");
   assert(workerSource.includes("cleanupPending: true"), "worker should mark terminal jobs as cleanup-pending before teardown starts");
   assert(workerSource.includes("clearOracleJobCleanupState"), "worker should clear cleanup-pending through the shared lifecycle helper once teardown finishes");
   assert(workerSource.includes("if (cleanupWarnings.length === 0)"), "worker should only auto-promote queued jobs after a clean runtime teardown");
@@ -4659,7 +4648,7 @@ async function testSharedQueuedPromotionHelper(): Promise<void> {
 
     const failed: string[] = [];
     const releasedRuntime: string[] = [];
-    const submitted: string[] = [];
+    const statusAtSpawn: string[] = [];
     const persisted: string[] = [];
     const spawned: string[] = [];
 
@@ -4672,12 +4661,12 @@ async function testSharedQueuedPromotionHelper(): Promise<void> {
       releaseRuntimeLease: async (job) => {
         releasedRuntime.push(job.id);
       },
-      markSubmitted: async (job, at) => {
+      markSubmitted: async (job) => {
         const current = jobs.get(job.id)!;
         jobs.set(job.id, { ...current, status: "submitted", queuedAt: current.queuedAt, createdAt: current.createdAt });
-        submitted.push(`${job.id}:${at}`);
       },
       spawnWorker: async (job) => {
+        statusAtSpawn.push(jobs.get(job.id)!.status);
         spawned.push(job.id);
         return { pid: 100 + spawned.length, startedAt: `started-${job.id}`, nonce: `nonce-${job.id}` };
       },
@@ -4700,7 +4689,7 @@ async function testSharedQueuedPromotionHelper(): Promise<void> {
 
     assert(result.promotedJobIds.length === 1 && result.promotedJobIds[0] === "job-promote", "shared queued promotion helper should promote successful queued jobs and stop once runtime capacity is exhausted");
     assert(failed.includes("job-missing"), "shared queued promotion helper should fail missing-archive queued jobs instead of silently skipping them");
-    assert(submitted.some((entry) => entry.startsWith("job-promote:")), "shared queued promotion helper should mark promoted jobs submitted before spawning workers");
+    assert(statusAtSpawn.join(",") === "submitted", "shared queued promotion helper should mark promoted jobs submitted before spawning workers");
     assert(spawned.join(",") === "job-promote", "shared queued promotion helper should only spawn workers for promotable jobs before capacity blocks later entries");
     assert(persisted.join(",") === "job-promote", "shared queued promotion helper should persist worker metadata for successfully promoted jobs");
     assert(releasedRuntime.length === 0, "shared queued promotion helper should not release runtime leases on successful conversation acquisition");

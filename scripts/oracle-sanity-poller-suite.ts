@@ -5,11 +5,11 @@
 // Invariants/Assumptions: Tests run with isolated oracle state/jobs directories and use persisted session managers for wake-up routing coverage.
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { OracleConfig } from "../extensions/oracle/lib/config.ts";
+import { loadOracleConfig, type OracleConfig } from "../extensions/oracle/lib/config.ts";
 import {
   getJobDir,
   listOracleJobDirs,
@@ -356,7 +356,7 @@ async function testPollerSkipsContendedAdmissionPromotion(config: OracleConfig):
   await cleanupJob(jobId);
 }
 
-async function testOracleExtensionSkipsNoSessionWakeupRouting(config: OracleConfig): Promise<void> {
+async function testOracleExtensionHandlesNoSessionStartup(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const sessionManager = createPersistedSessionManager("poller-no-session-submit");
   const sessionFile = sessionManager.getSessionFile();
@@ -378,15 +378,28 @@ async function testOracleExtensionSkipsNoSessionWakeupRouting(config: OracleConf
   assert(sessionStart, "oracle extension should register a session_start handler");
 
   const ui = createUiStub();
-  await sessionStart!({}, createExtensionCtx({ getSessionFile: () => undefined } as ExtensionContext["sessionManager"], ui));
-  await waitForCondition(() => (ui.statuses.some((entry) => entry.value.includes("oracle: unavailable")) ? true : undefined), {
-    timeoutMs: 1_000,
-    description: "oracle unavailable status",
-  });
+  const agentDir = await mkdtemp(join(tmpdir(), "oracle-no-session-agent-"));
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    loadOracleConfig(process.cwd());
+    await sessionStart!({}, createExtensionCtx({ getSessionFile: () => undefined } as ExtensionContext["sessionManager"], ui));
+    await waitForCondition(() => (ui.statuses.some((entry) => entry.value.includes("oracle: unavailable")) ? true : undefined), {
+      timeoutMs: 1_000,
+      description: "oracle unavailable status",
+    });
 
-  assert(sent.length === 0, `oracle extension should not start wake-up routing for no-session contexts, saw ${sent.length}`);
-  assert(ui.statuses.some((entry) => entry.value.includes("oracle: unavailable")), "oracle extension should mark oracle unavailable when the current session has no persisted identity");
-  await cleanupJob(jobId);
+    await waitForAllPollersToQuiesce();
+    assert(ui.notifications.length === 0, "no-session startup should report unavailable without attempting initialization that produces warnings");
+    assert(sent.length === 0, `no-session startup should not send wake-up messages, saw ${sent.length}`);
+    assert(ui.statuses.some((entry) => entry.value.includes("oracle: unavailable")), "oracle extension should mark oracle unavailable when the current session has no persisted identity");
+  } finally {
+    await resetOracleStateDir();
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await cleanupJob(jobId);
+    await rm(agentDir, { recursive: true, force: true });
+  }
 }
 
 async function testOracleExtensionSkipsPollerInOneShotModes(config: OracleConfig): Promise<void> {
@@ -1071,23 +1084,30 @@ async function testStaleWakeupClaimsDoNotDuplicateReminders(config: OracleConfig
   appendAssistantMessage(submitterSessionManager, "prime stale wake-up target history", { provider: "anthropic", model: "claude-sonnet-4" });
   const jobId = await createTerminalJob(config, process.cwd(), targetSessionFile);
 
-  // Reproduce the state a crashed poller leaves behind: it claimed the
-  // notification, counted one wake-up attempt, then died before marking the
-  // job notified and released its claim. The job is unnotified but recent.
-  const firstClaim = await tryClaimNotification(jobId, "poller-stale-wakeup-first");
-  assert(firstClaim, "first claimant should win the initial notification claim for a fresh terminal job");
-  const noted = await noteWakeupRequested(jobId);
-  assert(noted?.wakeupAttemptCount === 1 && Boolean(noted?.wakeupLastRequestedAt), "first claimant should record exactly one recent wake-up attempt without delivering");
-  await releaseNotificationClaim(jobId, "poller-stale-wakeup-first");
-
   const sent: SentMessageLike[] = [];
   const pi = createPiHarness();
   pi.sendMessage = (message) => {
     sent.push(message);
   };
-  await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
+  let reachedClaim = false;
+  await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs", {
+    hooks: {
+      beforeNotificationClaim: async (candidateId) => {
+        assert(candidateId === jobId, "stale retry fixture should reach the intended job after the scan's eligibility filter");
+        reachedClaim = true;
+        // A competing poller records an attempt after this scan's snapshot,
+        // then crashes before delivery. The under-lock claim must recheck it.
+        const firstClaim = await tryClaimNotification(jobId, "poller-stale-wakeup-first");
+        assert(firstClaim, "first claimant should win the initial notification claim for a fresh terminal job");
+        const noted = await noteWakeupRequested(jobId);
+        assert(noted?.wakeupAttemptCount === 1 && Boolean(noted?.wakeupLastRequestedAt), "first claimant should record exactly one recent wake-up attempt without delivering");
+        await releaseNotificationClaim(jobId, "poller-stale-wakeup-first");
+      },
+    },
+  });
 
   const after = readJob(jobId);
+  assert(reachedClaim, "stale retry test should exercise the under-lock claim recheck rather than only the scan's eligibility filter");
   assert(sent.length === 0, `stale claimants inside the wake-up retry window must not emit an extra wake-up, saw ${sent.length}`);
   assert(after?.wakeupAttemptCount === 1, "stale claimants inside the retry window must not increment the bounded wake-up retry counter");
   assert(!after?.notifiedAt, "undelivered jobs must stay unnotified while the wake-up retry window is open");
@@ -1303,7 +1323,7 @@ export async function runPollerSanitySuite(config: OracleConfig): Promise<void> 
   await testPreSendStatusObservationDoesNotSuppressFirstWakeup(config);
   await testPollerNotification(config);
   await testPollerSkipsContendedAdmissionPromotion(config);
-  await testOracleExtensionSkipsNoSessionWakeupRouting(config);
+  await testOracleExtensionHandlesNoSessionStartup(config);
   await testOracleExtensionSkipsPollerInOneShotModes(config);
   await testPersistedSessionsDoNotAdoptLegacyProjectScopedJobs(config);
   await testBranchedSameSessionSkipsDurableNotification(config);
