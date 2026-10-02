@@ -287,6 +287,11 @@ async function preparePackedProject({ runDir, provider, model, timeoutMs }) {
   writeFileSync(join(piProject, ".artifacts", "ignored", "artifact.txt"), "ignore me\n");
   mkdirSync(join(piProject, ".crabbox", "ignored"), { recursive: true });
   writeFileSync(join(piProject, ".crabbox", "ignored", "capture.txt"), "ignore me\n");
+  mkdirSync(join(piProject, ".pi"), { recursive: true });
+  writeFileSync(join(piProject, ".pi", "workspace-notes.txt"), "ignore me\n");
+  mkdirSync(join(piProject, ".oracle-context"), { recursive: true });
+  writeFileSync(join(piProject, ".oracle-context", "context.md"), "ignore me\n");
+  writeFileSync(join(piProject, ".scratchpad.md"), "ignore me\n");
 
   return { mode: "packed", cwd: piProject, installDir, provider, model, extensionPath: `./node_modules/${PACKAGE_NAME}` };
 }
@@ -369,11 +374,6 @@ async function run(mode = "packed") {
   const piVersion = await mustRun(runDir, "pi-version", piCommand(), ["--version"], { cwd: process.cwd(), env: process.env, timeoutMs: 30_000 });
   if (piVersion.stdout.trim() !== EXPECTED_PI_VERSION) throw new Error(`real smoke requires Pi ${EXPECTED_PI_VERSION}; found ${piVersion.stdout.trim() || "unknown"}`);
   const tmpRoot = mkdtempSync(join(tmpdir(), "pi-oracle-real-smoke-"));
-  const prepared = mode === "packed"
-    ? await preparePackedProject({ runDir, provider, model, timeoutMs })
-    : prepareSourceProject({ provider, model });
-  console.log(`Oracle real smoke mode=${prepared.mode} extension=${prepared.extensionPath}`);
-  writeFileSync(join(runDir, "run.json"), `${JSON.stringify({ runId, mode: prepared.mode, provider, model, extensionPath: prepared.extensionPath, timeoutMs, startedAt: new Date().toISOString() }, null, 2)}\n`);
 
   function assert(id, condition, message) {
     assertions.push({ id, ok: Boolean(condition), ...(condition ? {} : { error: message }) });
@@ -381,6 +381,12 @@ async function run(mode = "packed") {
   }
 
   try {
+    const prepared = mode === "packed"
+      ? await preparePackedProject({ runDir, provider, model, timeoutMs })
+      : prepareSourceProject({ provider, model });
+    console.log(`Oracle real smoke mode=${prepared.mode} extension=${prepared.extensionPath}`);
+    writeFileSync(join(runDir, "run.json"), `${JSON.stringify({ runId, mode: prepared.mode, provider, model, extensionPath: prepared.extensionPath, timeoutMs, startedAt: new Date().toISOString() }, null, 2)}\n`);
+
     const test1 = join(runDir, "whole-repo-submit");
     const agent1 = join(runDir, "agent1");
     const sessions1 = join(runDir, "sessions1");
@@ -423,7 +429,7 @@ async function run(mode = "packed") {
       const entries = await tarList(archivePath);
       writeFileSync(join(test1, "archive-list.txt"), `${entries.join("\n")}\n`);
       assert("archive-includes-readme", entryExists(entries, "README.md"), "archive should include README.md");
-      for (const excluded of [".pi", ".oracle-context", ".scratchpad.md", ".artifacts", ".crabbox", ".debug"]) {
+      for (const excluded of [".pi", ".oracle-context", ".scratchpad.md", ".artifacts", ".crabbox"]) {
         assert(`archive-excludes-${excluded.replace(/[^a-z0-9]+/gi, "-")}`, !entryExists(entries, excluded), `archive should exclude ${excluded}`);
       }
     } else {
@@ -466,7 +472,11 @@ async function run(mode = "packed") {
       const jobDir2 = latestJobDir(jobs2);
       writeFileSync(join(test2, "job-dir.txt"), `${jobDir2 ?? ""}\n`);
       const symlinkOutput = `${symlinkResult.stdout}\n${symlinkResult.stderr}`;
-      assert("symlink-rejected", /resolve inside|symlink|outside|escape|must be inside/i.test(symlinkOutput), "symlink escape test output did not show the expected rejection");
+      assert(
+        "symlink-rejected",
+        symlinkOutput.includes("archive_input_symlink_escape") || symlinkOutput.includes("Archive input must resolve inside the project cwd without symlink escapes"),
+        "symlink escape test output did not show the actual oracle_submit rejection evidence",
+      );
       assert("symlink-no-job-created", !jobDir2, "symlink escape rejection should not create an oracle job");
     }
 

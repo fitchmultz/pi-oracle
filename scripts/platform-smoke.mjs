@@ -131,6 +131,8 @@ async function main() {
   if (args.command === "run") {
     const targets = args.target ? splitCsv(args.target) : config.requiredTargets;
     const suites = args.suite ? [args.suite] : config.requiredSuites;
+    if (targets.length === 0) throw new Error("--target did not resolve to any targets");
+    if (suites.length === 0) throw new Error("--suite did not resolve to any suites");
     validateSelection(targets, suites);
     const results = await Promise.all(targets.map(async (target) => {
       console.log(`\n=== Target: ${target} ===`);
