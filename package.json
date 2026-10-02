@@ -88,7 +88,7 @@
   },
   "overrides": {
     "basic-ftp": "6.2.1",
-    "protobufjs": "7.6.6"
+    "protobufjs": "8.8.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.99.2",
