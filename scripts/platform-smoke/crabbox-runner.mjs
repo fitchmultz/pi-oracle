@@ -14,8 +14,7 @@ export function execCrabbox(args, opts = {}) {
   return new Promise((resolve) => {
     const child = spawn(CRABBOX_BIN, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, CRABBOX_SYNC_GIT_SEED: "false", ...opts.env },
-      ...opts.spawnOpts,
+      env: { ...process.env, CRABBOX_SYNC_GIT_SEED: "false" },
     });
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -122,10 +121,9 @@ export async function runOnLease(config, targetName, leaseId, command, opts = {}
   for (const name of opts.allowEnvNames ?? []) args.push("--allow-env", name);
   if (opts.sync === false) args.push("--no-sync");
   else args.push("--fresh-sync");
-  if (opts.shell) args.push("--shell", command);
-  else args.push("--", ...(Array.isArray(command) ? command : command.split(" ")));
+  args.push("--shell", command);
   console.log(`  [crabbox] run ${targetName} ${opts.sync === false ? "--no-sync" : "--fresh-sync"} ...`);
-  return execCrabbox(args, { timeout: opts.timeout ?? 900_000, env: opts.env });
+  return execCrabbox(args, { timeout: opts.timeout ?? 900_000 });
 }
 
 export async function stopLease(config, targetName, leaseId) {

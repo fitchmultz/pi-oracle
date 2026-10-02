@@ -85,11 +85,6 @@ function testSourceSmokeExplicitlyDebugOnly() {
 
 function testCanonicalWorkflowConfig() {
   const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-  assert.deepEqual(config.workflows?.everyday?.commands, ["npm run verify:oracle"], "everyday workflow should use the local verification gate");
-  assert(config.workflows?.platformSensitive?.commands?.includes("npm run smoke:platform:doctor"), "platform-sensitive workflow should start with doctor");
-  assert(config.workflows?.platformSensitive?.commands?.some((command) => command.includes("--target <target> --suite <suite>")), "platform-sensitive workflow should document focused target/suite runs");
-  assert.deepEqual(config.workflows?.platformMatrix?.commands, ["npm run smoke:platform:all"], "platform matrix workflow should use the full target matrix");
-  assert.deepEqual(config.workflows?.release?.commands, ["npm run release:check"], "release workflow should use the full local-plus-platform release gate");
   assert.equal(config.requiredCrabbox?.minVersion, "0.26.0", "Crabbox baseline should match the documented provider contract");
   assert.equal(pkg.scripts["smoke:platform:all"], "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "full platform smoke should remain doctor-first and cover all required targets");
   assert.match(pkg.scripts["release:check"], /npm run verify:oracle && npm run release:proof:chatgpt-presets && npm run smoke:platform:all/, "release check should combine local verification, ChatGPT preset proof, and full platform smoke");

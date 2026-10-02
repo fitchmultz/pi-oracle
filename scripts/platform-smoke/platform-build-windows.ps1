@@ -24,11 +24,9 @@ Write-Output "Starting pi-oracle platform-build in $(Get-Location) at $(Get-Date
 $SourceRoot = (Get-Location).Path
 $RunRoot = Join-Path $SourceRoot (Join-Path ".platform-smoke-runs" ("platform-build-" + (Get-Date -Format "yyyyMMddTHHmmssZ") + "-" + $PID))
 $PackDir = Join-Path $RunRoot "pack"
-$TestWorkspace = Join-Path $RunRoot "test-workspace"
 $PiProject = Join-Path $RunRoot "pi-project"
-New-Item -ItemType Directory -Force -Path $PackDir, $TestWorkspace, $PiProject | Out-Null
+New-Item -ItemType Directory -Force -Path $PackDir, $PiProject | Out-Null
 Write-Output "PLATFORM_RUN_ROOT=$RunRoot"
-Write-Output "PLATFORM_TEST_WORKSPACE=$TestWorkspace"
 Write-Output "PLATFORM_PI_PROJECT=$PiProject"
 
 $NodeVersion = (& node.exe --version).Trim()
@@ -81,16 +79,6 @@ if ($PackTarball -and (Test-Path -LiteralPath $PackTarball)) {
 }
 Write-Output "PLATFORM_PACKED_TARBALL=$PackTarball"
 Set-Content -Path (Join-Path $PackDir "packed-tarball.txt") -Value $PackTarball
-
-Write-Output "=== fixture workspace ==="
-Copy-Item -LiteralPath package.json, README.md -Destination $TestWorkspace -ErrorAction SilentlyContinue
-Copy-Item -LiteralPath extensions, prompts, docs -Destination $TestWorkspace -Recurse -ErrorAction SilentlyContinue
-if ((Test-Path -LiteralPath (Join-Path $TestWorkspace "package.json")) -and (Test-Path -LiteralPath (Join-Path $TestWorkspace "README.md")) -and (Test-Path -LiteralPath (Join-Path $TestWorkspace "extensions")) -and (Test-Path -LiteralPath (Join-Path $TestWorkspace "prompts")) -and (Test-Path -LiteralPath (Join-Path $TestWorkspace "docs"))) {
-  $FIXTURE_EXIT = 0
-} else {
-  $FIXTURE_EXIT = 1
-}
-Write-Output "PLATFORM_FIXTURE_EXIT=$FIXTURE_EXIT"
 
 $PiCli = Join-Path (Get-Location) "node_modules\.bin\pi.cmd"
 if (-not (Test-Path -LiteralPath $PiCli)) { $PiCli = Join-Path (Get-Location) "node_modules\.bin\pi" }
@@ -160,9 +148,9 @@ Write-Output "PLATFORM_PI_LIST_EXIT=$PI_LIST_EXIT"
 Write-SectionFile "PI_LIST_STDOUT" $PiListOut
 Write-SectionFile "PI_LIST_STDERR" $PiListErr
 
-Write-Output "node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT fixture=$FIXTURE_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"
-if ($NODE_VERSION_EXIT -ne 0 -or $CI_EXIT -ne 0 -or $DEPS_EXIT -ne 0 -or $TEST_EXIT -ne 0 -or $PACK_EXIT -ne 0 -or $FIXTURE_EXIT -ne 0 -or $PACKED_NODE_INSTALL_EXIT -ne 0 -or $PI_INSTALL_EXIT -ne 0 -or $PI_LIST_EXIT -ne 0) {
-  Write-Output "PLATFORM_BUILD_FAILED: node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT fixture=$FIXTURE_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"
+Write-Output "node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"
+if ($NODE_VERSION_EXIT -ne 0 -or $CI_EXIT -ne 0 -or $DEPS_EXIT -ne 0 -or $TEST_EXIT -ne 0 -or $PACK_EXIT -ne 0 -or $PACKED_NODE_INSTALL_EXIT -ne 0 -or $PI_INSTALL_EXIT -ne 0 -or $PI_LIST_EXIT -ne 0) {
+  Write-Output "PLATFORM_BUILD_FAILED: node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"
   exit 1
 }
 Write-Output "PLATFORM_BUILD_OK"

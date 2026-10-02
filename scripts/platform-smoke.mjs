@@ -142,8 +142,6 @@ async function main() {
     }
     return;
   }
-
-  throw new Error(`unknown command: ${args.command}`);
 }
 
 main().catch((error) => {

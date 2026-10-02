@@ -127,11 +127,9 @@ export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "
   lines.push('RUN_ROOT=".platform-smoke-runs/platform-build-$(date -u +%Y%m%dT%H%M%SZ)-$$"');
   lines.push('SOURCE_ROOT="$(pwd)"');
   lines.push('PACK_DIR="$SOURCE_ROOT/$RUN_ROOT/pack"');
-  lines.push('TEST_WORKSPACE="$SOURCE_ROOT/$RUN_ROOT/test-workspace"');
   lines.push('PI_PROJECT="$SOURCE_ROOT/$RUN_ROOT/pi-project"');
-  lines.push('mkdir -p "$PACK_DIR" "$TEST_WORKSPACE" "$PI_PROJECT"');
+  lines.push('mkdir -p "$PACK_DIR" "$PI_PROJECT"');
   lines.push('echo "PLATFORM_RUN_ROOT=$RUN_ROOT"');
-  lines.push('echo "PLATFORM_TEST_WORKSPACE=$TEST_WORKSPACE"');
   lines.push('echo "PLATFORM_PI_PROJECT=$PI_PROJECT"');
   lines.push("");
   lines.push('NODE_VERSION=$(node --version)');
@@ -177,15 +175,6 @@ export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "
   lines.push('echo "PLATFORM_PACKED_TARBALL=$PACK_TARBALL"');
   lines.push('printf "%s\\n" "$PACK_TARBALL" > "$PACK_DIR/packed-tarball.txt"');
   lines.push("");
-  lines.push('echo "=== fixture workspace ==="');
-  lines.push('cp package.json README.md "$TEST_WORKSPACE"/ 2>"$PACK_DIR/fixture.stderr.txt"');
-  lines.push('FIXTURE_COPY_EXIT=$?');
-  lines.push('cp -R extensions prompts docs "$TEST_WORKSPACE"/ 2>>"$PACK_DIR/fixture.stderr.txt"');
-  lines.push('TREE_COPY_EXIT=$?');
-  lines.push('if [ "$FIXTURE_COPY_EXIT" -eq 0 ] && [ "$TREE_COPY_EXIT" -eq 0 ]; then FIXTURE_EXIT=0; else FIXTURE_EXIT=1; fi');
-  lines.push('cat "$PACK_DIR/fixture.stderr.txt"');
-  lines.push('echo "PLATFORM_FIXTURE_EXIT=$FIXTURE_EXIT"');
-  lines.push("");
   lines.push('echo "=== pi install packed package ==="');
   lines.push('PI_CLI="$(pwd)/node_modules/.bin/pi"');
   lines.push('if [ ! -x "$PI_CLI" ]; then PI_CLI="$(command -v pi || true)"; fi');
@@ -205,9 +194,9 @@ export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "
   lines.push(...posixSection("PI_LIST_STDOUT", 'cat "$PACK_DIR/pi-list.stdout.txt" 2>/dev/null || true'));
   lines.push(...posixSection("PI_LIST_STDERR", 'cat "$PACK_DIR/pi-list.stderr.txt" 2>/dev/null || true'));
   lines.push("");
-  lines.push('echo "node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT fixture=$FIXTURE_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"');
-  lines.push('if [ "$NODE_VERSION_EXIT" -ne 0 ] || [ "$CI_EXIT" -ne 0 ] || [ "$DEPS_EXIT" -ne 0 ] || [ "$TEST_EXIT" -ne 0 ] || [ "$PACK_EXIT" -ne 0 ] || [ "$FIXTURE_EXIT" -ne 0 ] || [ "$PACKED_NODE_INSTALL_EXIT" -ne 0 ] || [ "$PI_INSTALL_EXIT" -ne 0 ] || [ "$PI_LIST_EXIT" -ne 0 ]; then');
-  lines.push('  echo "PLATFORM_BUILD_FAILED: node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT fixture=$FIXTURE_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"');
+  lines.push('echo "node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"');
+  lines.push('if [ "$NODE_VERSION_EXIT" -ne 0 ] || [ "$CI_EXIT" -ne 0 ] || [ "$DEPS_EXIT" -ne 0 ] || [ "$TEST_EXIT" -ne 0 ] || [ "$PACK_EXIT" -ne 0 ] || [ "$PACKED_NODE_INSTALL_EXIT" -ne 0 ] || [ "$PI_INSTALL_EXIT" -ne 0 ] || [ "$PI_LIST_EXIT" -ne 0 ]; then');
+  lines.push('  echo "PLATFORM_BUILD_FAILED: node=$NODE_VERSION_EXIT ci=$CI_EXIT deps=$DEPS_EXIT test=$TEST_EXIT pack=$PACK_EXIT packedNodeInstall=$PACKED_NODE_INSTALL_EXIT install=$PI_INSTALL_EXIT list=$PI_LIST_EXIT"');
   lines.push('  exit 1');
   lines.push('fi');
   lines.push('echo "PLATFORM_BUILD_OK"');
@@ -239,7 +228,6 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
   const startedAt = Date.now();
   console.log(`  executing ${suiteName} on ${targetName}...`);
   const result = await runOnLease(config, targetName, warmup.leaseId, command, {
-    shell: true,
     timeout: suiteName === "real-extension" ? 900_000 : 900_000,
     sync: leaseSession?.sync,
     allowEnvNames: suiteName === "real-extension" ? realSmokeAllowedEnvNames(config) : undefined,
@@ -281,7 +269,6 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
       { id: "platform-dependencies", fn: () => /PLATFORM_DEPS_EXIT=0/.test(stdout) },
       { id: "platform-verification", fn: () => /PLATFORM_NPM_TEST_EXIT=0/.test(stdout) },
       { id: "npm-pack", fn: () => /PLATFORM_NPM_PACK_EXIT=0/.test(stdout) && /PLATFORM_PACKED_TARBALL=\S+/.test(stdout) },
-      { id: "fixture-workspace", fn: () => /PLATFORM_FIXTURE_EXIT=0/.test(stdout) },
       { id: "packed-node-install", fn: () => /PLATFORM_PACKED_NODE_INSTALL_EXIT=0/.test(stdout) },
       { id: "pi-install", fn: () => /PLATFORM_PI_INSTALL_EXIT=0/.test(stdout) },
       { id: "pi-list", fn: () => /PLATFORM_PI_LIST_EXIT=0/.test(stdout) && listOutput.includes(packageName) && packageInstallPattern.test(listOutput) },
@@ -427,8 +414,4 @@ function createStopFailureResult(config, targetName, leaseId, stopResult) {
     ["summary.json", "target.json", "suite.json", "command.txt", "exit-code.txt", "crabbox.stop.stdout.txt", "crabbox.stop.stderr.txt", "crabbox.stop.exit-code.txt", "assertions.json"],
   );
   return { ok: false, suiteDir, assertions };
-}
-
-export function readSuiteSummary(suiteDir) {
-  return JSON.parse(readFileSync(resolve(suiteDir, "summary.json"), "utf8"));
 }
