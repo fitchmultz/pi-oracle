@@ -14,9 +14,11 @@ import {
   getJobDir,
   listOracleJobDirs,
   markJobNotified,
+  noteWakeupRequested,
   pruneTerminalOracleJobs,
   readJob,
   removeTerminalOracleJob,
+  releaseNotificationClaim,
   tryClaimNotification,
   updateJob,
 } from "../extensions/oracle/lib/jobs.ts";
@@ -1063,51 +1065,32 @@ async function testOffSessionWakeupsDoNotWriteTargetSessionHistory(config: Oracl
 async function testStaleWakeupClaimsDoNotDuplicateReminders(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const submitterSessionManager = createPersistedSessionManager("poller-stale-wakeup-submit");
-  const firstAdopterSessionManager = createPersistedSessionManager("poller-stale-wakeup-first-adopter");
-  const secondAdopterSessionManager = createPersistedSessionManager("poller-stale-wakeup-second-adopter");
+  const adopterSessionManager = createPersistedSessionManager("poller-stale-wakeup-adopter");
   const targetSessionFile = submitterSessionManager.getSessionFile();
   assert(targetSessionFile, "stale wake-up claim test should persist a target session file");
   appendAssistantMessage(submitterSessionManager, "prime stale wake-up target history", { provider: "anthropic", model: "claude-sonnet-4" });
   const jobId = await createTerminalJob(config, process.cwd(), targetSessionFile);
 
-  const firstSent: SentMessageLike[] = [];
-  const firstPi = createPiHarness();
-  firstPi.sendMessage = (message) => {
-    firstSent.push(message);
+  // Reproduce the state a crashed poller leaves behind: it claimed the
+  // notification, counted one wake-up attempt, then died before marking the
+  // job notified and released its claim. The job is unnotified but recent.
+  const firstClaim = await tryClaimNotification(jobId, "poller-stale-wakeup-first");
+  assert(firstClaim, "first claimant should win the initial notification claim for a fresh terminal job");
+  const noted = await noteWakeupRequested(jobId);
+  assert(noted?.wakeupAttemptCount === 1 && Boolean(noted?.wakeupLastRequestedAt), "first claimant should record exactly one recent wake-up attempt without delivering");
+  await releaseNotificationClaim(jobId, "poller-stale-wakeup-first");
+
+  const sent: SentMessageLike[] = [];
+  const pi = createPiHarness();
+  pi.sendMessage = (message) => {
+    sent.push(message);
   };
-  const secondSent: SentMessageLike[] = [];
-  const secondPi = createPiHarness();
-  secondPi.sendMessage = (message) => {
-    secondSent.push(message);
-  };
+  await scanOracleJobsOnce(pi as unknown as ExtensionAPI, createPollerCtx(adopterSessionManager), "/tmp/fake-oracle-worker.mjs");
 
-  let allowSecondClaim: (() => void) | undefined;
-  const secondClaimBlocked = new Promise<void>((resolve) => {
-    allowSecondClaim = resolve;
-  });
-  let signalSecondClaimReady: (() => void) | undefined;
-  const secondClaimReady = new Promise<void>((resolve) => {
-    signalSecondClaimReady = resolve;
-  });
-
-  const secondScan = scanOracleJobsOnce(secondPi as unknown as ExtensionAPI, createPollerCtx(secondAdopterSessionManager), "/tmp/fake-oracle-worker.mjs", {
-    hooks: {
-      beforeNotificationClaim: async (candidateJobId) => {
-        if (candidateJobId !== jobId) return;
-        signalSecondClaimReady?.();
-        await secondClaimBlocked;
-      },
-    },
-  });
-
-  await secondClaimReady;
-  await scanOracleJobsOnce(firstPi as unknown as ExtensionAPI, createPollerCtx(firstAdopterSessionManager), "/tmp/fake-oracle-worker.mjs");
-  allowSecondClaim?.();
-  await secondScan;
-
-  assert(firstSent.length === 1, `first claimant should emit exactly one best-effort wake-up, saw ${firstSent.length}`);
-  assert(secondSent.length === 0, `stale second claimants must not emit an extra wake-up inside the same retry window, saw ${secondSent.length}`);
-  assert(readJob(jobId)?.wakeupAttemptCount === 1, "stale second claimants must not increment the bounded wake-up retry counter");
+  const after = readJob(jobId);
+  assert(sent.length === 0, `stale claimants inside the wake-up retry window must not emit an extra wake-up, saw ${sent.length}`);
+  assert(after?.wakeupAttemptCount === 1, "stale claimants inside the retry window must not increment the bounded wake-up retry counter");
+  assert(!after?.notifiedAt, "undelivered jobs must stay unnotified while the wake-up retry window is open");
   await cleanupJob(jobId);
 }
 

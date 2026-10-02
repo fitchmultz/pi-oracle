@@ -3,7 +3,7 @@
  * The suites prove the package builds, packs, installs, loads, and runs through pi's package path.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runAssertions } from "./assertions.mjs";
@@ -272,7 +272,7 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
       { id: "packed-node-install", fn: () => /PLATFORM_PACKED_NODE_INSTALL_EXIT=0/.test(stdout) },
       { id: "pi-install", fn: () => /PLATFORM_PI_INSTALL_EXIT=0/.test(stdout) },
       { id: "pi-list", fn: () => /PLATFORM_PI_LIST_EXIT=0/.test(stdout) && listOutput.includes(packageName) && packageInstallPattern.test(listOutput) },
-      { id: "no-source-extension-path", fn: () => !/\bpi\s+(?:-e|--extension)\s+\./.test(stdout) },
+      { id: "no-source-extension-path", fn: () => !/\bpi\s+(?:-e|--extension)\s+\./.test(command), error: "platform-build must execute through the packed install path, not a source extension" },
       { id: "no-secrets", fn: () => violations.length === 0, error: "redaction violations found" },
     ];
     expectedFiles = [
@@ -289,7 +289,7 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
       { id: "real-smoke-doctor", fn: () => stdout.includes("Oracle real smoke doctor") && stdout.includes(`provider: ${provider}`) },
       { id: "real-smoke-marker", fn: () => stdout.includes("Oracle real smoke passed:") },
       { id: "real-smoke-packed-install", fn: () => stdout.includes("mode=packed") && stdout.includes("extension=./node_modules/pi-oracle") },
-      { id: "real-smoke-no-source-extension", fn: () => !stdout.includes("extensions/oracle/index.ts") && !/\bpi\s+(?:-e|--extension)\s+extensions\/oracle/.test(stdout) },
+      { id: "real-smoke-no-source-extension", fn: () => !command.includes("extensions/oracle/index.ts") && !/\bpi\s+(?:-e|--extension)\s+extensions\/oracle/.test(command) },
       { id: "no-secrets", fn: () => violations.length === 0, error: "redaction violations found" },
     ];
     expectedFiles = [
@@ -325,7 +325,13 @@ export async function runTargetSuites(config, targetName, suiteNames) {
     }
   } finally {
     stopResult = await stopLease(config, targetName, warmup.leaseId);
-    for (const result of results) recordStopResultOnSuite(result.suiteDir, stopResult);
+    for (const result of results) {
+      const stopAssertions = recordStopResultOnSuite(result.suiteDir, stopResult);
+      if (stopAssertions) {
+        result.ok = Boolean(result.ok && stopAssertions.ok);
+        result.assertions = stopAssertions;
+      }
+    }
   }
   if (stopResult?.code !== 0) results.push(createStopFailureResult(config, targetName, warmup.leaseId, stopResult));
   return { ok: results.every((result) => result.ok), results };
@@ -338,15 +344,33 @@ function writeStopArtifacts(suiteDir, stopResult) {
 }
 
 function recordStopResultOnSuite(suiteDir, stopResult) {
-  if (!suiteDir || !stopResult) return;
+  if (!suiteDir || !stopResult) return undefined;
   writeStopArtifacts(suiteDir, stopResult);
+  // Stop output is appended after the suite ran; rescan the final evidence so
+  // secrets in stop stdout/stderr cannot slip past the no-secrets gate.
+  const violationsPath = resolve(suiteDir, "redaction-violations.json");
+  const stopViolations = [
+    ...scanForSecrets(stopResult.stdout ?? "").map((violation) => `crabbox.stop.stdout.txt: ${violation}`),
+    ...scanForSecrets(stopResult.stderr ?? "").map((violation) => `crabbox.stop.stderr.txt: ${violation}`),
+  ];
+  if (stopViolations.length > 0) {
+    const previousViolations = existsSync(violationsPath) ? JSON.parse(readFileSync(violationsPath, "utf8")) : [];
+    writeFileSync(violationsPath, JSON.stringify([...new Set([...previousViolations, ...stopViolations])], null, 2));
+  }
   const assertionsPath = resolve(suiteDir, "assertions.json");
   const summaryPath = resolve(suiteDir, "summary.json");
   const manifestPath = resolve(suiteDir, "artifact-manifest.json");
   const assertions = JSON.parse(readFileSync(assertionsPath, "utf8"));
   const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
   const stopCheck = { id: "lease-stop", ok: stopResult.code === 0, ...(stopResult.code === 0 ? {} : { error: `stop exit ${stopResult.code}` }) };
-  assertions.checks = [...(assertions.checks ?? []).filter((check) => check.id !== "lease-stop"), stopCheck];
+  const checks = (assertions.checks ?? []).filter((check) => check.id !== "lease-stop");
+  if (stopViolations.length > 0) {
+    const noSecretsIndex = checks.findIndex((check) => check.id === "no-secrets");
+    const failingNoSecrets = { id: "no-secrets", ok: false, error: "redaction violations found" };
+    if (noSecretsIndex === -1) checks.push(failingNoSecrets);
+    else checks[noSecretsIndex] = failingNoSecrets;
+  }
+  assertions.checks = [...checks, stopCheck];
   assertions.ok = assertions.checks.every((check) => check.ok);
   writeFileSync(assertionsPath, JSON.stringify({ ...assertions, writtenAt: new Date().toISOString() }, null, 2));
   if (!assertions.ok) {
@@ -357,6 +381,7 @@ function recordStopResultOnSuite(suiteDir, stopResult) {
   const previousManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const expected = [...new Set([...(previousManifest.expected ?? []), "crabbox.stop.stdout.txt", "crabbox.stop.stderr.txt", "crabbox.stop.exit-code.txt", "artifact-manifest.json"])]
   writeManifest(suiteDir, expected);
+  return assertions;
 }
 
 function finalizeSuiteArtifacts(suiteDir, checks, summary, expectedFiles) {

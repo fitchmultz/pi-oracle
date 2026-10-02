@@ -27,7 +27,6 @@ export interface PromoteQueuedJobsOptions {
   source: string;
   lockTimeoutMs?: number;
   spawnWorkerFn?: typeof spawnWorker;
-  loadConfigFn?: typeof loadOracleConfig;
 }
 
 function isQueuedJob(job: OracleJob | undefined): job is OracleJob {
@@ -70,7 +69,6 @@ async function failQueuedPromotion(job: OracleJob, message: string, at: string):
 
 export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueuedJobsOptions): Promise<{ promotedJobIds: string[] }> {
   const spawnWorkerFn = options.spawnWorkerFn ?? spawnWorker;
-  const loadConfigFn = options.loadConfigFn ?? loadOracleConfig;
 
   return runQueuedJobPromotionPass<OracleJob, Awaited<ReturnType<typeof spawnWorkerFn>>>({
     listQueuedJobs,
@@ -78,7 +76,7 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
     readLatestJob: (jobId) => readJob(jobId),
     isQueuedJob,
     acquireRuntimeLease: async (job, at) => {
-      const config = job.config ?? loadConfigFn(job.cwd);
+      const config = job.config ?? loadOracleConfig(job.cwd);
       const attempt = await tryAcquireRuntimeLease(config, buildRuntimeLeaseMetadata(job, at));
       return attempt.acquired;
     },
@@ -92,7 +90,7 @@ export async function promoteQueuedJobsWithinAdmissionLock(options: PromoteQueue
       await releaseRuntimeLease(job.runtimeId);
     },
     markSubmitted: async (job, at) => {
-      const config = job.config ?? loadConfigFn(job.cwd);
+      const config = job.config ?? loadOracleConfig(job.cwd);
       await updateJob(job.id, (latest) => {
         if (latest.status !== "queued") {
           throw new Error(`Queued job ${latest.id} changed state during promotion (${latest.status})`);

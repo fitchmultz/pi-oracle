@@ -103,10 +103,10 @@ On each required target, `platform-build`:
 2. installs the tarball into a clean pi project;
 3. runs `pi install -l ./node_modules/pi-oracle --approve`;
 4. asserts `pi list --approve` shows the packed install path;
-5. executes `oracle_submit` from the installed package path, not source `pi -e`;
-6. asserts whole-project archive creation and default exclusions.
+5. executes the deterministic `/oracle-status` command through the installed extension's Pi loader;
+6. asserts the command output came from the loaded packed extension and that the safe default path created no oracle job.
 
-The default runtime suite executes the installed tool directly so platform proof is deterministic and bounded instead of waiting on a model turn. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when you specifically need to debug the slower model-agent path. Symlink escape rejection and other negative archive cases are covered by `npm run sanity:oracle`; the optional second-agent negative check is available with `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1` when debugging that path.
+The default runtime suite executes a deterministic command through the installed extension's Pi loader so platform proof is bounded instead of waiting on a model turn. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when you specifically need to debug the slower model-agent path. Symlink escape rejection and other negative archive cases are covered by `npm run sanity:oracle`; the optional second-agent negative check is available with `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1` when debugging that path.
 
 For inner-loop/debug only, use:
 
