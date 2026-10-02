@@ -5,8 +5,8 @@
 // Invariants/Assumptions: Helpers run from the repository root with isolated PI_ORACLE_STATE_DIR/PI_ORACLE_JOBS_DIR and should fail loudly on drift.
 
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
-import { chmod, mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -25,36 +25,6 @@ export function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-export function assertThrows(block: () => void, failureMessage: string, expectedSubstring: string): void {
-  try {
-    block();
-  } catch (error) {
-    const text = error instanceof Error ? error.message : String(error);
-    if (!text.includes(expectedSubstring)) {
-      throw new Error(
-        `${failureMessage}: expected error message to include ${JSON.stringify(expectedSubstring)}, got ${JSON.stringify(text)}`,
-      );
-    }
-    return;
-  }
-  throw new Error(`${failureMessage}: expected throw`);
-}
-
-export async function assertRejects(block: () => Promise<unknown>, failureMessage: string, expectedSubstring: string): Promise<void> {
-  try {
-    await block();
-  } catch (error) {
-    const text = error instanceof Error ? error.message : String(error);
-    if (!text.includes(expectedSubstring)) {
-      throw new Error(
-        `${failureMessage}: expected error message to include ${JSON.stringify(expectedSubstring)}, got ${JSON.stringify(text)}`,
-      );
-    }
-    return;
-  }
-  throw new Error(`${failureMessage}: expected rejection`);
-}
-
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -71,57 +41,6 @@ export async function waitForCondition<T>(
     await sleep(options.intervalMs ?? 25);
   }
   throw new Error(`Timed out waiting for ${options.description}`);
-}
-
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `"'"'`)}'`;
-}
-
-export async function writeExecutableScript(path: string, content: string): Promise<void> {
-  await writeFile(path, content, { encoding: "utf8", mode: 0o755 });
-  await chmod(path, 0o755);
-}
-
-export async function runProcess(
-  command: string,
-  args: string[],
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
-): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options?.cwd,
-      env: options?.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let killTimer: NodeJS.Timeout | undefined;
-
-    if ((options?.timeoutMs ?? 0) > 0) {
-      killTimer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGKILL"), 2_000).unref?.();
-      }, options?.timeoutMs);
-      killTimer.unref?.();
-    }
-
-    child.stdout.on("data", (data) => {
-      stdout += String(data);
-    });
-    child.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    child.on("error", (error) => {
-      if (killTimer) clearTimeout(killTimer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      if (killTimer) clearTimeout(killTimer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
-  });
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -199,18 +118,6 @@ export async function resetOracleStateDir(): Promise<void> {
   await stopAllPollers();
   await waitForAllPollersToQuiesce().catch(() => undefined);
   await removeDirRobust(getOracleStateDir());
-}
-
-export async function waitForTmpStateDir(parentDir: string, finalName: string, timeoutMs: number): Promise<string> {
-  return waitForCondition(async () => {
-    const entries = await readdir(parentDir).catch(() => [] as string[]);
-    const match = entries.find((name) => name.startsWith(`.tmp-${finalName}.`));
-    return match ? join(parentDir, match) : undefined;
-  }, {
-    timeoutMs,
-    intervalMs: 25,
-    description: `in-flight .tmp-* dir for ${finalName}`,
-  });
 }
 
 export function hashedOracleStatePath(kind: string, key: string, rootDir: string): string {
@@ -481,12 +388,6 @@ export async function createTerminalJob(
   const jobId = await createJobForTest(config, cwd, sessionId, { requestSource });
   await completeJob(jobId, "complete");
   return jobId;
-}
-
-export async function writeActiveJob(id: string): Promise<void> {
-  const dir = getJobDir(id);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeFile(join(dir, "job.json"), `${JSON.stringify({ id, status: "submitted" }, null, 2)}\n`, { mode: 0o600 });
 }
 
 export async function cleanupJob(id: string): Promise<void> {

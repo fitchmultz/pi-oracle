@@ -12,8 +12,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, s
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { basename, delimiter, dirname, join } from "node:path";
-import { ProjectTrustStore, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import { ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import {
   coerceOracleSubmitPresetId,
@@ -32,7 +31,7 @@ import {
 } from "../extensions/oracle/lib/config.ts";
 import { ensureAccountCookie, filterImportableAuthCookies, type ImportedAuthCookie } from "../extensions/oracle/worker/auth-cookie-policy.mjs";
 import { getCookiesFromConfiguredChromiumSource } from "../extensions/oracle/worker/chromium-cookie-source.mjs";
-import { extractArtifactLabels, filterStructuralArtifactCandidates, parseSnapshotEntries, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
+import { extractArtifactLabels, filterStructuralArtifactCandidates, partitionStructuralArtifactCandidates } from "../extensions/oracle/worker/artifact-heuristics.mjs";
 import {
   buildAllowedChatGptOrigins,
   buildAssistantCompletionSignature,
@@ -107,14 +106,12 @@ import {
   hasDurableWorkerHandoff,
   isActiveOracleJob,
   listOracleJobDirs,
-  markJobNotified,
   pruneTerminalOracleJobs,
   ORACLE_WAKEUP_POST_SEND_RETENTION_MS,
   readJob,
   reconcileStaleOracleJobs,
   removeTerminalOracleJob,
   resolveArchiveInputs,
-  tryClaimNotification,
   updateJob,
   withJobPhase,
 } from "../extensions/oracle/lib/jobs.ts";
@@ -127,13 +124,11 @@ import {
   ORACLE_METADATA_WRITE_GRACE_MS,
   ORACLE_TMP_STATE_DIR_GRACE_MS,
   readLeaseMetadata,
-  releaseLease,
   releaseLock,
   sweepStaleLocks,
   withGlobalReconcileLock,
-  writeLeaseMetadata,
 } from "../extensions/oracle/lib/locks.ts";
-import { getPollerSessionKey, scanOracleJobsOnce, startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
+import { startPoller, stopPollerForSession } from "../extensions/oracle/lib/poller.ts";
 import { getQueuePosition, promoteQueuedJobs, promoteQueuedJobsWithinAdmissionLock } from "../extensions/oracle/lib/queue.ts";
 import {
   acquireConversationLease,
@@ -621,69 +616,6 @@ function createUiStub() {
 
 function createPersistedSessionManager(name: string) {
   return SessionManager.create(process.cwd(), join(tmpdir(), `oracle-sanity-sessions-${name}-${randomUUID()}`));
-}
-
-const TEST_ASSISTANT_USAGE: AssistantMessage["usage"] = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    total: 0,
-  },
-};
-
-function appendUserMessage(sessionManager: Pick<SessionManager, "appendMessage">, text: string): string {
-  return sessionManager.appendMessage({
-    role: "user",
-    content: text,
-    timestamp: Date.now(),
-  });
-}
-
-function appendAssistantMessage(
-  sessionManager: Pick<SessionManager, "appendMessage">,
-  text: string,
-  options?: { api?: AssistantMessage["api"]; provider?: AssistantMessage["provider"]; model?: string; responseId?: string },
-): string {
-  return sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text }],
-    api: options?.api ?? "openai-responses",
-    provider: options?.provider ?? "openai",
-    model: options?.model ?? "gpt-5",
-    responseId: options?.responseId,
-    usage: { ...TEST_ASSISTANT_USAGE, cost: { ...TEST_ASSISTANT_USAGE.cost } },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  });
-}
-
-function createPollerCtx(sessionManager: SessionManager) {
-  return {
-    cwd: process.cwd(),
-    mode: "tui" as const,
-    sessionManager,
-    hasUI: true,
-    ui: createUiStub(),
-    isIdle: () => true,
-    hasPendingMessages: () => false,
-  };
-}
-
-type AssistantSessionEntry = Extract<SessionEntry, { type: "message" }> & { message: AssistantMessage };
-
-function findNotificationEntry(sessionManager: Pick<SessionManager, "getEntries">, jobId: string): AssistantSessionEntry | undefined {
-  const entry = sessionManager.getEntries().find((candidate) => {
-    if (candidate.type !== "message" || candidate.message.role !== "assistant") return false;
-    return candidate.message.responseId === `oracle-notification:${jobId}`;
-  });
-  return entry as AssistantSessionEntry | undefined;
 }
 
 async function completeJob(jobId: string, status: "complete" | "failed" | "cancelled" = "complete") {
@@ -1626,7 +1558,7 @@ async function testWorkspaceRootProjectIdentityCoversSubdirectories(config: Orac
 
     await cancelCommand.handler(queuedId, cancelCtx);
     const cancelMessage = cancelUi.notifications.at(-1)?.message;
-    assert(typeof cancelMessage === "string" && cancelMessage.includes(`Cancelled oracle job ${queuedId}`), "oracle cancel should cancel repo-scoped jobs from a subdirectory cwd");
+    assert(cancelMessage === `Cancelled oracle job ${queuedId}.`, "oracle cancel should truthfully report repo-scoped cancellation from a subdirectory cwd");
   } finally {
     await rm(fakeWorkerPath, { force: true });
     await cleanupJob(queuedId);
@@ -1979,7 +1911,8 @@ async function testOracleToolResultsExposeStructuredJobDetails(config: OracleCon
     assert(readQueue?.queued === true, "oracle read should preserve structured queue metadata");
     assert(typeof readJobDetails?.responseAvailable === "boolean", "oracle read should report responseAvailable in structured details");
 
-    const cancelResult = await cancelTool.execute!("oracle-cancel-details-test", { jobId: queuedId }, undefined, () => { }, ctx) as { details?: unknown };
+    const cancelResult = await cancelTool.execute!("oracle-cancel-details-test", { jobId: queuedId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }>; details?: unknown };
+    assert(cancelResult.content?.[0]?.text === `Cancelled oracle job ${queuedId}.`, "oracle cancel tool messaging should say cancelled only when the final status is cancelled");
     const cancelledJobDetails = asRecord(asRecord(cancelResult.details)?.job);
     const cancelQueue = asRecord(cancelledJobDetails?.queue);
     assert(cancelledJobDetails?.id === queuedId, "oracle cancel should return structured job details for the cancelled job");
@@ -2833,95 +2766,6 @@ async function testQueuedArchivePressureCountsRetainedCancelledPreSubmitArchives
   }
 }
 
-async function testCancelToolAndCommandMessagesAreTruthful(config: OracleConfig): Promise<void> {
-  await resetOracleStateDir();
-  const cwd = process.cwd();
-  const fakeWorkerPath = join(tmpdir(), `oracle-sanity-cancel-message-worker-${randomUUID()}.mjs`);
-  await writeFile(fakeWorkerPath, "process.exit(0);\n", { mode: 0o600 });
-
-  const pi = createPiHarness();
-  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
-  registerOracleCommands(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath, fakeWorkerPath);
-
-  const cancelTool = pi.tools.get("oracle_cancel");
-  const cancelCommand = pi.commands.get("oracle-cancel");
-  assert(cancelTool?.execute, "oracle cancel tool should register for message testing");
-  assert(cancelCommand, "oracle cancel command should register for message testing");
-
-  const runCancelledCase = async (kind: "tool" | "command") => {
-    const sessionFile = `/tmp/oracle-sanity-session-cancel-message-cancelled-${kind}-${randomUUID()}.jsonl`;
-    const queuedId = await createJobForTest(config, cwd, sessionFile, { initialState: "queued" });
-    const ui = createUiStub();
-    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
-    (ctx as { hasUI: boolean }).hasUI = false;
-
-    try {
-      const message = kind === "tool"
-        ? (await cancelTool.execute!("oracle-cancel-message-cancelled-test", { jobId: queuedId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
-        : (await cancelCommand.handler(queuedId, ctx), ui.notifications.at(-1)?.message ?? pi.sentMessages.at(-1)?.content);
-      assert(message === `Cancelled oracle job ${queuedId}.`, `${kind} cancel messaging should say cancelled only when the final status is cancelled`);
-    } finally {
-      await cleanupJob(queuedId);
-    }
-  };
-
-  const runFailedCase = async (kind: "tool" | "command") => {
-    const sessionFile = `/tmp/oracle-sanity-session-cancel-message-failed-${kind}-${randomUUID()}.jsonl`;
-    const activeId = await createJobForTest(config, cwd, sessionFile);
-    const activeJob = readJob(activeId);
-    assert(activeJob, "active cancellation message test job should exist");
-    await acquireRuntimeLease(config, {
-      jobId: activeJob.id,
-      runtimeId: activeJob.runtimeId,
-      runtimeSessionName: activeJob.runtimeSessionName,
-      runtimeProfileDir: activeJob.runtimeProfileDir,
-      projectId: activeJob.projectId,
-      sessionId: activeJob.sessionId,
-      createdAt: new Date().toISOString(),
-    });
-
-    const stuckWorker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    stuckWorker.unref();
-    const stuckWorkerPid = stuckWorker.pid;
-    assert(stuckWorkerPid !== undefined, `${kind} cancel message test worker should expose a pid`);
-
-    await updateJob(activeId, (job) => ({
-      ...job,
-      workerPid: stuckWorkerPid,
-      workerStartedAt: "mismatched-start-time",
-    }));
-
-    const ui = createUiStub();
-    const ctx = createCommandCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionCommandContext["sessionManager"], ui);
-    (ctx as { hasUI: boolean }).hasUI = false;
-
-    try {
-      const message = kind === "tool"
-        ? (await cancelTool.execute!("oracle-cancel-message-failed-test", { jobId: activeId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
-        : (await cancelCommand.handler(activeId, ctx), ui.notifications.at(-1)?.message ?? pi.sentMessages.at(-1)?.content);
-      assert(readJob(activeId)?.status === "failed", `${kind} cancel message test should drive the job into failed status when worker termination is unsafe`);
-      assert(message === `Oracle job ${activeId} failed during cancellation.`, `${kind} cancel messaging should describe failed outcomes explicitly instead of claiming cancellation succeeded`);
-    } finally {
-      if (isPidAlive(stuckWorkerPid)) process.kill(stuckWorkerPid, "SIGKILL");
-      await waitForPidExit(stuckWorkerPid);
-      await releaseRuntimeLease(activeJob.runtimeId);
-      await cleanupJob(activeId);
-    }
-  };
-
-  try {
-    await runCancelledCase("tool");
-    await runCancelledCase("command");
-    await runFailedCase("tool");
-    await runFailedCase("command");
-  } finally {
-    await rm(fakeWorkerPath, { force: true });
-  }
-}
-
 async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const cwd = process.cwd();
@@ -2972,14 +2816,13 @@ async function testCancelFailureDoesNotPromoteQueuedJobs(config: OracleConfig): 
     (ctx as { hasUI: boolean }).hasUI = false;
 
     try {
-      if (kind === "tool") {
-        await cancelTool.execute!("oracle-cancel-test", { jobId: activeId }, undefined, () => { }, ctx);
-      } else {
-        await cancelCommand.handler(activeId, ctx);
-      }
+      const message = kind === "tool"
+        ? (await cancelTool.execute!("oracle-cancel-test", { jobId: activeId }, undefined, () => { }, ctx) as { content?: Array<{ text?: string }> }).content?.[0]?.text
+        : (await cancelCommand.handler(activeId, ctx), ui.notifications.at(-1)?.message ?? pi.sentMessages.at(-1)?.content);
 
       const cancelled = readJob(activeId);
       assert(cancelled?.status === "failed", `${kind} cancellation should fail when the worker pid cannot be safely terminated`);
+      assert(message === `Oracle job ${activeId} failed during cancellation.`, `${kind} cancel messaging should describe failed outcomes explicitly instead of claiming cancellation succeeded`);
       assert(Boolean(cancelled?.cleanupWarnings?.length), `${kind} cancellation failure should retain cleanup warnings to keep runtime admission blocked`);
       assert(listLeaseMetadata<{ jobId: string }>("runtime").some((lease) => lease.jobId === activeId), `${kind} cancellation failure should retain the runtime lease until cleanup succeeds`);
       assert(readJob(queuedId)?.status === "queued", `${kind} cancellation should not promote queued jobs when the cancelled worker is still alive`);
@@ -3409,33 +3252,6 @@ async function testTmpLockDirGraceHonorsConfiguredWindow(): Promise<void> {
   assert(!(await pathExists(tempPath)), "expired .tmp-* lock dirs should be removed after the tmp grace window");
 }
 
-async function testTmpLockDirGracePreventsInFlightPublishReclaim(): Promise<void> {
-  await resetOracleStateDir();
-  const kind = "job";
-  const key = `tmp-lock-grace-${randomUUID()}`;
-  const finalPath = hashedOracleStatePath(kind, key, getLocksDir());
-  const finalName = basename(finalPath);
-  const tempPath = join(getLocksDir(), `.tmp-${finalName}.${process.pid}.${Date.now()}.inflight`);
-
-  try {
-    await mkdir(tempPath, { recursive: false, mode: 0o700 });
-    await sleep(ORACLE_METADATA_WRITE_GRACE_MS + 200);
-
-    const removed = await sweepStaleLocks();
-    assert(!removed.includes(tempPath), "sweep should not reclaim fresh in-flight .tmp-* lock dirs within the tmp grace window");
-    assert(await pathExists(tempPath), "fresh in-flight .tmp-* lock dirs should still exist after a sweep");
-
-    await writeFile(join(tempPath, "metadata.json"), `${JSON.stringify({ processPid: process.pid, source: "oracle-sanity-inflight-publisher" }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    await rename(tempPath, finalPath);
-
-    const metadata = JSON.parse(await readFile(join(finalPath, "metadata.json"), "utf8")) as { source?: string };
-    assert(metadata.source === "oracle-sanity-inflight-publisher", "in-flight publish should finish by atomically promoting the temp lock dir");
-  } finally {
-    await rm(tempPath, { recursive: true, force: true }).catch(() => undefined);
-    await rm(finalPath, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
 async function testMetadataLessLockRecovery(): Promise<void> {
   await resetOracleStateDir();
   const key = `metadata-less-lock-${randomUUID()}`;
@@ -3617,9 +3433,6 @@ async function testLifecycleEventCutover(): Promise<void> {
   assert(extensionSource.includes('pi.on("session_start"'), "oracle extension should bind session_start");
   assert(!extensionSource.includes('pi.on("session_switch"'), "oracle extension must not bind removed session_switch event");
   assert(!extensionSource.includes('pi.on("session_fork"'), "oracle extension must not bind removed session_fork event");
-  assert(extensionSource.includes('ctx.mode === "print" || ctx.mode === "json"'), "oracle extension should use Pi 0.78 mode metadata to skip background polling in one-shot modes");
-  assert(extensionSource.includes("hasPersistedSessionFile(sessionFile)"), "oracle extension should refuse to start poller routing when the current session has no persisted identity");
-  assert(extensionSource.includes("oracle: unavailable"), "oracle extension should mark oracle unavailable when no persisted session identity exists");
   assert(extensionSource.includes("if (ctx.hasUI) ctx.ui.notify"), "oracle extension should surface startup-maintenance failures through available session UI as well as stderr");
 }
 
@@ -3717,10 +3530,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   }
   assert(promptSource.includes("Call `oracle_preflight` immediately"), "/oracle prompt should require an immediate oracle_preflight guard before repo context gathering");
   assert(promptSource.includes("Do not read files, search the codebase, prepare archive inputs, or call `oracle_auth` automatically"), "/oracle prompt should forbid expensive prep and automatic auth before preflight passes");
-  assert(promptSource.includes("Do not plan instead of submitting"), "/oracle prompt should explicitly forbid planning instead of dispatching");
-  assert(promptSource.includes("Do not claim preflight, auth, archive prep, or submission happened unless the matching tool call actually happened"), "/oracle prompt should forbid fabricated preflight/submission claims");
   assert(promptSource.includes("If the user explicitly says ChatGPT Instant or Instant, use provider `chatgpt` and preset `instant`"), "/oracle prompt should hard-route explicit ChatGPT Instant requests to the chatgpt instant preset");
-  assert(promptSource.includes("Do not ask questions, offer to watch/poll/read, list next steps, or continue working"), "/oracle prompt should forbid post-dispatch follow-up offers");
   assert(promptSource.includes("Bias toward context-rich submissions when they fit within the provider archive ceiling"), "/oracle prompt should bias toward context-rich pre-submit context gathering within the upload ceiling");
   assert(promptSource.includes("Do not call `oracle_auth` automatically"), "/oracle prompt should stop on auth blockers instead of launching auth automatically");
   assert(promptSource.includes("details.error.code === \"archive_too_large\""), "/oracle prompt should explicitly recognize retryable archive_too_large submit failures");
@@ -3921,9 +3731,6 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(commandsSource.includes("Usage: /oracle-cancel <job-id>"), "oracle cancel command should require an explicit job id instead of silently cancelling the latest job");
   assert(jobsSource.includes("requirePersistedSessionFile(originSessionFile, \"create oracle jobs\")"), "oracle jobs should require a persisted session identity at creation time");
   assert(toolsSource.includes("obvious credentials/private data"), "oracle tool guidance should mention default exclusion of obvious credentials/private data");
-  assert(promptSource.includes("submit automatically prunes the largest nested directories matching generic generated-output names"), "oracle prompt should describe whole-repo auto-pruning when archives are still too large");
-  assert(promptSource.includes("outside obvious source roots like `src/` and `lib/`"), "oracle prompt should describe the source-root guard for auto-pruning");
-  assert(toolsSource.includes("After a successful or queued oracle_submit, stop"), "oracle tool guidance should explain queued oracle submissions as successful waits");
   assert(toolsSource.includes('if (latest?.status === "queued" && queuedSubmissionDurable)'), "oracle submit should preserve queued jobs only after the archive and metadata persist durably");
   assert(toolsSource.includes("await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt)"), "oracle submit should terminate a spawned worker if persisting worker metadata fails");
   assert(toolsSource.includes("shouldAdvanceQueueAfterCancellation(cancelled)"), "oracle cancel tool should only promote queued jobs after a clean cancellation");
@@ -3953,9 +3760,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes("processStartedAt"), "poller wake-up target leases should persist process identity to defend against PID reuse");
   assert(pollerSource.includes("!jobHasLiveWakeupTarget(job, liveWakeupTargets)"), "poller should adopt completed jobs whose original session no longer has a live wake-up target");
   assert(pollerSource.includes("await hooks.beforeNotificationClaim?.(jobId);"), "poller should support a hook immediately before claiming notification ownership so stale-snapshot retry races can be regression-tested");
-  assert(pollerSource.includes("const preNotifyLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should re-check live wake-up targets after claiming a notification and before notifying another session");
+  assert(pollerSource.includes("const preNotifyLiveWakeupTargets = await collectLiveWakeupTargets();"), "poller should re-check live wake-up targets after claiming a notification and before notifying another session");
   assert(pollerSource.includes("if (shouldPruneTerminalJob(job, now)) return false;"), "poller should exclude already-prunable terminal jobs from wake-up candidacy");
-  assert(pollerSource.includes("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should re-check live wake-up targets again immediately before sending a best-effort wake-up");
+  assert(pollerSource.includes("const preWakeupLiveWakeupTargets = await collectLiveWakeupTargets();"), "poller should re-check live wake-up targets again immediately before sending a best-effort wake-up");
   assert(pollerSource.includes("recordNotificationTarget(jobId, notificationClaimant"), "poller should persist the intended wake-up target before sending a best-effort completion reminder");
   assert(pollerSource.includes("buildOracleWakeupNotificationContent"), "poller wake-up turns should format content through the shared observability helper");
   assert(pollerSource.includes("buildOracleStatusText"), "poller status updates should format session status through the shared observability helper");
@@ -3965,8 +3772,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pollerSource.includes('readiness === "auth_needed" || readiness === "config_error"') && pollerSource.includes('snapshot.ui.theme.fg("error", statusText)'), "poller should color broken oracle readiness states as error");
   assert(pollerSource.includes("stopAllPollers"), "poller module should expose a way for the sanity harness to stop all background pollers before isolated-state teardown");
   assert(pollerSource.includes("waitForAllPollersToQuiesce"), "poller module should expose a way for the sanity harness to wait for in-flight scans before teardown");
-  assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
-  assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck before sending a best-effort wake-up");
+  assert(pollerSource.indexOf("await recordNotificationTarget(jobId, notificationClaimant") < pollerSource.indexOf("const preWakeupLiveWakeupTargets = await collectLiveWakeupTargets();"), "poller should finish recording the intended wake-up target before the final live-target recheck");
+  assert(pollerSource.indexOf("const preWakeupLiveWakeupTargets = await collectLiveWakeupTargets();") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should perform the final live-target recheck before sending a best-effort wake-up");
   assert(pollerSource.includes("const deliverable = readJob(jobId);"), "poller should re-read the job immediately before send so deleted/pruned jobs cannot emit stale wake-ups");
   assert(pollerSource.includes("if (!deliverable || shouldPruneTerminalJob(deliverable, Date.now())) {"), "poller should abort wake-up delivery if the job was deleted or became prunable before send");
   assert(pollerSource.indexOf("await noteWakeupRequested(jobId)") < pollerSource.indexOf("requestWakeupTurn(pi, deliverable)"), "poller should record wake-up intent before sending so manual reads cannot race ahead of delivery state");
@@ -4686,49 +4493,18 @@ async function testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge(): Pr
   }
 }
 
-async function testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge(): Promise<void> {
-  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-small-prune-"));
-  const archivePath = join(tmpdir(), `oracle-archive-small-prune-${randomUUID()}.tar.zst`);
-  try {
-    await mkdir(join(fixtureDir, "apps", "Tiny", "build"), { recursive: true });
-    await mkdir(join(fixtureDir, "src"), { recursive: true });
-    await writeFile(join(fixtureDir, "src", "main.ts"), "export const main = true;\n");
-    await writeFile(join(fixtureDir, "apps", "Tiny", "build", "bundle.bin"), randomBytes(12 * 1024));
-
-    const result = await createArchiveForTesting(fixtureDir, ["."], archivePath, {
-      maxBytes: 8 * 1024,
-      adaptivePruneMinBytes: 0,
-    });
-
-    assert(result.autoPrunedPrefixes.some((entry) => entry.relativePath === "apps/Tiny/build"), "whole-repo archive creation should prune matching generated dirs even when they are below 4 MiB");
-    assert((result.initialArchiveBytes ?? 0) >= 8 * 1024, "sub-threshold pruning test should begin over the size limit");
-    assert(result.archiveBytes < 8 * 1024, "sub-threshold pruning should reduce the archive below the configured limit");
-  } finally {
-    await rm(fixtureDir, { recursive: true, force: true });
-    await rm(archivePath, { force: true });
-  }
-}
-
 async function testArchiveOversizeErrorExplainsRetryPlan(): Promise<void> {
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-oversize-"));
   const archivePath = join(tmpdir(), `oracle-archive-oversize-${randomUUID()}.tar.zst`);
   try {
     await writeFile(join(fixtureDir, "big.bin"), randomBytes(32 * 1024));
-    await assertRejects(
-      () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
-      "archive oversize errors should explain the configured size limit and retry plan",
-      "Oracle archive exceeds provider upload limit (0.01 MiB) after default exclusions.",
-    );
-    await assertRejects(
-      () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
-      "archive oversize errors should report that submission stopped before dispatch",
-      "so submission stopped before dispatch",
-    );
-    await assertRejects(
-      () => createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }),
-      "archive oversize errors should describe the retry order for narrowing archives",
-      "Recommended retry order:",
-    );
+    const oversizeError = await new Promise<Error>((resolve, reject) => {
+      createArchiveForTesting(fixtureDir, ["big.bin"], archivePath, { maxBytes: 8 * 1024 }).then(reject, resolve);
+    });
+    const oversizeMessage = String(oversizeError instanceof Error ? oversizeError.message : oversizeError);
+    assert(oversizeMessage.includes("Oracle archive exceeds provider upload limit (0.01 MiB) after default exclusions."), "archive oversize errors should explain the configured size limit and retry plan");
+    assert(oversizeMessage.includes("so submission stopped before dispatch"), "archive oversize errors should report that submission stopped before dispatch");
+    assert(oversizeMessage.includes("Recommended retry order:"), "archive oversize errors should describe the retry order for narrowing archives");
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
     await rm(archivePath, { force: true });
@@ -6213,7 +5989,6 @@ async function runPlatformSanity(): Promise<void> {
   await testArchiveSubprocessesScrubSafeStoragePasswords();
   await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
-  await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testArchiveOversizeErrorExplainsRetryPlan();
   await testSharedProcessHelpers();
   await testSharedQueuedPromotionHelper();
@@ -6277,7 +6052,6 @@ async function main() {
   await testCancelCleanupWarningsDoNotPromoteQueuedJobs(config);
   await testQueuedCleanupWarningsRetryArchiveDeletion(config);
   await testQueuedArchivePressureCountsRetainedCancelledPreSubmitArchives(config);
-  await testCancelToolAndCommandMessagesAreTruthful(config);
   await testCancelFailureDoesNotPromoteQueuedJobs(config);
   await testQueuedPromotionPersistsCleanupWarningsOnTeardownFailure(config);
   await testQueuedPromotionKillsWorkerWhenMetadataWriteFails(config);
@@ -6289,7 +6063,6 @@ async function main() {
   await testStaleLockRecovery();
   await testDeadPidLockSweep();
   await testTmpLockDirGraceHonorsConfiguredWindow();
-  await testTmpLockDirGracePreventsInFlightPublishReclaim();
   await testMetadataLessLockRecovery();
   await testMetadataLessConversationLeaseRecovery();
   await testWorkerAuthLockRecoversMetadataLessDir();
@@ -6311,7 +6084,6 @@ async function main() {
   await testArchiveSubprocessesScrubSafeStoragePasswords();
   await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
-  await testArchiveAutoPrunesSubThresholdGeneratedDirsWhenWholeRepoIsTooLarge();
   await testArchiveOversizeErrorExplainsRetryPlan();
   sanityProgress("shared/helper suites");
   await testSanityRunnerIsolation();

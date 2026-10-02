@@ -3,6 +3,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { buildTargetBaseArgs } from "./crabbox-runner.mjs";
 
 let failures = 0;
 
@@ -63,24 +64,6 @@ function parseJson(text) {
   try { return JSON.parse(text); } catch { return undefined; }
 }
 
-function targetBaseArgs(targetName, config) {
-  if (targetName === "macos") {
-    const host = env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost";
-    const user = env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER");
-    const workRoot = env("PI_ORACLE_SMOKE_MAC_WORK_ROOT") || env("PLATFORM_SMOKE_MAC_WORK_ROOT") || `/Users/${env("USER")}/crabbox/${config.packageName}`;
-    return ["--provider", "ssh", "--target", "macos", "--static-host", host, "--static-user", user, "--static-port", "22", "--static-work-root", workRoot];
-  }
-  if (targetName === "ubuntu") {
-    const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24";
-    return ["--provider", "local-container", "--target", "linux", "--local-container-image", image];
-  }
-  const vm = windowsVmName(config);
-  const snapshot = windowsSnapshotName(config);
-  const user = env("PI_ORACLE_SMOKE_WINDOWS_USER") || env("PLATFORM_SMOKE_WINDOWS_USER") || env("USER");
-  const workRoot = env("PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT") || env("PLATFORM_SMOKE_WINDOWS_WORK_ROOT") || `C:\\crabbox\\${config.packageName}`;
-  return ["--provider", "parallels", "--target", "windows", "--windows-mode", "normal", "--parallels-source", vm, "--parallels-source-snapshot", snapshot, "--parallels-user", user, "--parallels-work-root", workRoot];
-}
-
 function runCrabboxDoctor(cbox, label, args, timeout = 120_000) {
   const output = silent(cbox, ["doctor", ...args, "--json"], { env: { ...process.env, CRABBOX_SYNC_GIT_SEED: "false" }, timeout });
   if (!output) {
@@ -100,7 +83,7 @@ function runTargetToolProbe(cbox, targetName, config) {
   const command = targetName === "windows-native"
     ? `cmd.exe /c "where node && where npm && where git && where tar && where zstd && where agent-browser && zstd --version && agent-browser --version && echo tools-ok"`
     : `missing=""; for tool in ${required.join(" ")}; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done; if [ -n "$missing" ]; then echo "missing=$missing"; exit 1; fi; zstd --version >/dev/null && agent-browser --version >/dev/null && echo tools-ok`;
-  const baseArgs = targetBaseArgs(targetName, config);
+  const baseArgs = buildTargetBaseArgs(targetName, config);
   if (targetName === "macos") baseArgs.push("--reclaim");
   const result = silent(cbox, ["run", ...baseArgs, "--no-sync", "--shell", command], {
     env: { ...process.env, CRABBOX_SYNC_GIT_SEED: "false" },
@@ -184,9 +167,9 @@ export async function runDoctor(config) {
   for (const provider of ["ssh", "local-container", "parallels"]) {
     new RegExp(`^${provider}$`, "m").test(providers) ? ok(`provider available: ${provider}`) : fail(`crabbox providers missing ${provider}`);
   }
-  runCrabboxDoctor(cbox, "macOS static SSH", targetBaseArgs("macos", config), 120_000);
-  runCrabboxDoctor(cbox, "Windows native Parallels", targetBaseArgs("windows-native", config), 180_000);
-  runCrabboxDoctor(cbox, "local-container", targetBaseArgs("ubuntu", config), 120_000);
+  runCrabboxDoctor(cbox, "macOS static SSH", buildTargetBaseArgs("macos", config), 120_000);
+  runCrabboxDoctor(cbox, "Windows native Parallels", buildTargetBaseArgs("windows-native", config), 180_000);
+  runCrabboxDoctor(cbox, "local-container", buildTargetBaseArgs("ubuntu", config), 120_000);
 
   console.log("\n── Host tools ──");
   for (const [name, command] of [["Docker", "docker info --format '{{.ServerVersion}}'"], ["Node", "node --version"], ["npm", "npm --version"], ["git", "git --version"], ["tar", "tar --version"], ["rsync", "rsync --version"]]) {

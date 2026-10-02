@@ -6,27 +6,6 @@ export default {
   artifactRoot: ".artifacts/platform-smoke",
   requiredTargets: ["macos", "ubuntu", "windows-native"],
   requiredSuites: ["platform-build", "real-extension"],
-  workflows: {
-    everyday: {
-      description: "Fast local validation for normal iteration.",
-      commands: ["npm run verify:oracle"],
-    },
-    platformSensitive: {
-      description: "Doctor plus focused platform target/suite runs for platform-sensitive changes.",
-      commands: [
-        "npm run smoke:platform:doctor",
-        "node scripts/platform-smoke.mjs run --target <target> --suite <suite>",
-      ],
-    },
-    platformMatrix: {
-      description: "Doctor-first packed-install macOS/Ubuntu/Windows platform proof.",
-      commands: ["npm run smoke:platform:all"],
-    },
-    release: {
-      description: "Full release gate: local verification, fresh ChatGPT preset proof, plus the doctor-first platform matrix.",
-      commands: ["npm run release:check"],
-    },
-  },
   requiredCrabbox: {
     source: "https://github.com/openclaw/crabbox",
     minVersion: "0.26.0",

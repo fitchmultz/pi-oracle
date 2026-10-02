@@ -67,12 +67,9 @@ interface OracleWakeupTargetLeaseMetadata {
 type OraclePollerJob = NonNullable<ReturnType<typeof readJob>>;
 
 export interface OraclePollerHooks {
-  collectLiveWakeupTargets?: (now?: number) => Promise<Set<string>>;
   beforeNotificationClaim?: (jobId: string) => Promise<void> | void;
   afterNotificationClaim?: (job: OraclePollerJob) => Promise<void> | void;
   beforeNotificationPersist?: (job: OraclePollerJob) => Promise<void> | void;
-  afterNotificationPersisted?: (job: OraclePollerJob) => Promise<void> | void;
-  beforeMarkJobNotified?: (job: OraclePollerJob) => Promise<void> | void;
 }
 
 export interface OraclePollerOptions {
@@ -228,7 +225,6 @@ async function scan(
   const sessionId = getSessionId(currentSessionFile, projectId);
   const processStartedAt = readProcessStartedAt(process.pid);
   const wakeupTargetLeaseKey = getWakeupTargetLeaseKey(pollerKey, process.pid, processStartedAt || "unknown");
-  const resolveLiveWakeupTargets = hooks.collectLiveWakeupTargets ?? collectLiveWakeupTargets;
   await writeLeaseMetadata(WAKEUP_TARGET_LEASE_KIND, wakeupTargetLeaseKey, {
     leaseKey: wakeupTargetLeaseKey,
     projectId,
@@ -239,7 +235,7 @@ async function scan(
   }).catch(() => undefined);
   if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
-  const liveWakeupTargets = await resolveLiveWakeupTargets();
+  const liveWakeupTargets = await collectLiveWakeupTargets();
   if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) return;
 
   try {
@@ -294,7 +290,7 @@ async function scan(
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
       }
-      const preNotifyLiveWakeupTargets = await resolveLiveWakeupTargets();
+      const preNotifyLiveWakeupTargets = await collectLiveWakeupTargets();
       if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
@@ -319,7 +315,7 @@ async function scan(
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
       }
-      const preWakeupLiveWakeupTargets = await resolveLiveWakeupTargets();
+      const preWakeupLiveWakeupTargets = await collectLiveWakeupTargets();
       if (await releaseWakeupLeaseIfInactive(wakeupTargetLeaseKey, lifecycle)) {
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
@@ -347,7 +343,6 @@ async function scan(
         await releaseNotificationClaim(jobId, notificationClaimant).catch(() => undefined);
         return;
       }
-      await hooks.beforeMarkJobNotified?.(deliverable);
       await markJobNotified(jobId, notificationClaimant, {
         notificationSessionKey: pollerKey,
         notificationSessionFile: currentSessionFile,
