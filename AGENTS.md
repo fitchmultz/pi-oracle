@@ -2,6 +2,9 @@
 
 This file contains project-specific guidance for this repository.
 
+## Host qualification
+- Qualify latest stable official Pi and latest maintained fork main independently; resolve version/commit once per workflow run and retain exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets. Use the shared qualifier to select each host graph before offline checks; historical support floors do not waive fork qualification.
+
 ## Project map
 - `extensions/oracle/index.ts` registers the pi extension.
 - `extensions/oracle/lib/` contains the agent-facing tools, slash commands, config, queue/job state, runtime/profile coordination, and poller logic.
