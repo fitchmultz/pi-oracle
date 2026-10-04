@@ -14,10 +14,10 @@ This file contains project-specific guidance for this repository.
 - `scripts/oracle-sanity.ts` is the main regression/source-contract sanity harness; `npm run verify:oracle` is the local full gate.
 - `README.md` is the user-facing entry point; `docs/ORACLE_DESIGN.md` is the durable design/source-of-truth detail.
 
-## Single-operator ownership
-- Treat this repository as single-operator: no human or external agent is working here except the current pi agent.
-- Assume every lingering change, background process, temp file, queue entry, job directory, or other artifact was created by a prior version of you or by one of your delegated runs.
-- You own reconciliation and cleanup for that state. Do not attribute unexplained repo state to another person.
+## Shared-workspace ownership
+- Work in an isolated worktree and preserve unrelated user and agent changes.
+- Reconcile and clean up changes, background processes, temp files, queue entries, and job directories created by this task or verified as task-owned; investigate unknown ownership rather than assuming it is yours.
+- Preserve unrelated jobs, auth profiles, saved responses/artifacts, and session records. Use the existing lease, worker-identity, terminal-job, and retention checks for Oracle runtime cleanup.
 
 ## Extension testing feedback
 - Pre-commit requirement for any code changes: always test with isolated `pi` agent sessions that load this local version of the extension.
