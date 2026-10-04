@@ -5,6 +5,16 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      official-version:
+        description: Official stable version resolved for this run; blank resolves latest
+        type: string
+        default: ''
+      fork-ref:
+        description: Maintained fork commit resolved for this run; blank resolves main
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -15,6 +25,8 @@ concurrency:
 
 jobs:
   compatibility:
-    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@f2a480f00d45cdbd8595090b79aee107c4d88098 # main
+    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@33c292e42ab4f4c815c0f1c8e775d5adf0a3e5b3 # main
     with:
-      automation-ref: f2a480f00d45cdbd8595090b79aee107c4d88098 # main
+      automation-ref: 33c292e42ab4f4c815c0f1c8e775d5adf0a3e5b3 # main
+      official-version: ${{ inputs.official-version }}
+      fork-ref: ${{ inputs.fork-ref }}

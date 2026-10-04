@@ -2,7 +2,7 @@
 
 `pi-oracle` lets a `pi` agent send hard, long-running work to ChatGPT.com or Grok through the web app, with repo archives, background execution, saved results, and a best-effort wake-up back into `pi` when the answer is ready.
 
-> Status: experimental public beta. Current development baseline is official pi `1.0.0`, with offline compatibility checks against both official Pi and the maintained fork; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
+> Status: experimental public beta. Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases. Normal oracle jobs run in an isolated browser profile, not your active browser window.
 
 ## What a successful run looks like
 
@@ -374,9 +374,17 @@ Install the missing local dependency and rerun the command. `zstd` is only neede
 
 Inspect the job directory under `${PI_ORACLE_JOBS_DIR:-/tmp}/oracle-<job-id>/`. The worker log and captured diagnostics are stored there.
 
+## Automatic npm releases (maintainers)
+
+Follow the [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases): merge a reviewed PR into `main` with an intentional `package.json` version bump and a matching versioned `CHANGELOG.md` section. Automation never bumps versions, overwrites releases, or republishes an existing version. Once configured and enabled, it runs existing offline compatibility checks, qualifies one candidate tarball, then waits for `fitchmultz` approval in the `npm` environment.
+
+Approve only after checking the exact source commit, version, downloaded candidate tarball and summary against [the existing `release:check` requirements](#verification) and [packed platform proof](docs/platform-smoke.md). Fresh all-preset ChatGPT proof must match that commit/version, satisfy the proof checker's timing and saved-response requirements, and accompany the required doctor-first macOS/Ubuntu/native-Windows evidence. Old-commit proof is not sufficient. Approval attests genuine satisfaction of these gates; it does not create proof or waive `release:check`. Authenticated and paid checks remain outside CI. Automated publication disables npm hooks to publish the checked bytes; manual `npm publish` still runs its existing `prepublishOnly` gate.
+
+Failed/unpublished candidates can retry daily at 12:17 UTC or via manual dispatch of `npm release` on `main`, without another bump. Set repository variable `NPM_RELEASE_ENABLED` to anything other than `true` to stop new release plans; cancel pending runs separately when needed. Workflow validation is not evidence of a completed real OIDC publication.
+
 ## Verification
 
-For credential-free host qualification, run `npm ci --ignore-scripts` then `npm run check:compat` with an empty HOME/agent profile. It runs the existing syntax, type, isolated sanity, and pack checks plus native Pi `/oracle-status` dispatch, asserting that no browser job is created. Sanity uses fixture browser/keychain commands and private job/state directories; it needs local archive utilities (`tar` and `zstd`), not browser credentials. This is source/host proof, not authenticated ChatGPT/Grok or packed cross-platform release proof. The older suggested floor is historical support guidance, not requalified by a current-host run.
+For credential-free latest-host qualification, use the shared qualifier with `--host official --target latest` and separately with the packed latest maintained fork revision. It selects a consistent host graph before running `npm run check:compat` with an empty HOME/agent profile. A plain `npm ci --ignore-scripts` uses only the locked development snapshot, not latest qualification. It runs the existing syntax, type, isolated sanity, and pack checks plus native Pi `/oracle-status` dispatch, asserting that no browser job is created. Sanity uses fixture browser/keychain commands and private job/state directories; it needs local archive utilities (`tar` and `zstd`), not browser credentials. This is source/host proof, not authenticated ChatGPT/Grok or packed cross-platform release proof. The older suggested floor is historical support guidance, not requalified by a current-host run.
 
 Useful local checks:
 
