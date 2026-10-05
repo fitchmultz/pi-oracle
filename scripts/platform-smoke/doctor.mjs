@@ -120,11 +120,13 @@ function verifyPackageExclusions() {
   const forbiddenPatterns = [/^\.env(?:\.|$)/, /^\.artifacts(?:\/|$)/, /^\.crabbox(?:\/|$)/, /^\.debug(?:\/|$)/, /^\.platform-smoke-runs(?:\/|$)/, /\.tgz$/];
   const output = shell("npm pack --dry-run --json", { timeout: 120_000 });
   const parsed = parseJson(output);
-  if (!Array.isArray(parsed) || !parsed[0]?.files) {
+  // npm 11 returns an array; npm 12 keys the same records by package name.
+  const [pack] = parsed && typeof parsed === "object" ? Object.values(parsed) : [];
+  if (!pack?.files) {
     warn("could not inspect npm pack file list");
     return;
   }
-  const files = parsed[0].files.map((file) => file.path);
+  const files = pack.files.map((file) => file.path);
   const forbidden = files.filter((file) => forbiddenPatterns.some((pattern) => pattern.test(file)));
   forbidden.length ? fail(`forbidden files in package: ${forbidden.join(", ")}`) : ok("package excludes local env/artifact/debug state");
 }
