@@ -280,7 +280,9 @@ function testLeaseStopFailureSurfacesAndRescansEvidence() {
 function testPackageExclusion() {
   const result = spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: repoRoot, encoding: "utf8", shell: process.platform === "win32" });
   assert.equal(result.status, 0, `npm pack dry-run failed: ${result.stderr}`);
-  const files = JSON.parse(result.stdout)[0].files.map((file) => file.path);
+  // npm 11 returns an array; npm 12 keys the same records by package name.
+  const [pack] = Object.values(JSON.parse(result.stdout));
+  const files = pack.files.map((file) => file.path);
   for (const forbidden of [".artifacts/", ".crabbox/", ".debug/", ".platform-smoke-runs/", ".env", "context.md"]) {
     assert(!files.some((file) => file === forbidden || file.startsWith(forbidden)), `package should exclude ${forbidden}`);
   }
