@@ -25,8 +25,8 @@ concurrency:
 
 jobs:
   compatibility:
-    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@3b7a5f72d9c2d67d6fb53ef7bd308b005c385af3 # main
+    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
     with:
-      automation-ref: 3b7a5f72d9c2d67d6fb53ef7bd308b005c385af3 # main
+      automation-ref: 9b08d65d70a01c74c4e01477ccf9473e86be33ee # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
