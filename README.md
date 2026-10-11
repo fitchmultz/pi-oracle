@@ -4,8 +4,6 @@ pi-oracle sends project files and questions from [Pi](https://github.com/earendi
 
 ![Oracle workflow: Pi packages project files, an isolated browser sends them to ChatGPT or Grok, and Oracle saves the answer locally.](.github/readme/oracle-workflow.png)
 
-*Pi request → project archive → web model → saved answer, with a best-effort notification to Pi.*
-
 ## Install
 
 Use Node.js 22.19.0 or newer on macOS, Linux, or Windows native. Use a current Pi release and a Chromium-family browser.
