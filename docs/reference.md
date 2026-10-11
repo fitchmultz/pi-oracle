@@ -2,6 +2,30 @@
 
 Start with the [README](../README.md) for installation and your first job. This page covers command details, browser configuration, provider controls, and troubleshooting.
 
+## Installation options
+
+Install from GitHub:
+
+```bash
+pi install https://github.com/fitchmultz/pi-oracle
+```
+
+To update the package later, use `pi update --extensions`, `pi update --all`, or `pi update npm:pi-oracle`. Bare `pi update` updates Pi itself only. Versioned npm/git refs stay pinned until you change the configured source.
+
+## Requirements
+
+You need:
+
+- macOS, Linux, or Windows native
+- Node.js 22.19.0 or newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
+- Suggested tested floor: `pi` 0.80.9 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
+- Google Chrome/Chromium or another Chromium-family browser
+- ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
+- `agent-browser` and `tar` available on the machine; `zstd` is also required when submitting ChatGPT `.tar.zst` archives
+- on macOS APFS clone mode, `cp` available on PATH or via `PI_ORACLE_CP_PATH`; Linux/Windows runtime profile copies use Node's recursive copy
+- a normal persisted `pi` session, not `pi --no-session`
+- on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
+
 ## What a successful run looks like
 
 ```text

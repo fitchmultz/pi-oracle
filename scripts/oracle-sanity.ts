@@ -3694,17 +3694,17 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(referenceSource.includes("returns the next eligible cleanup time"), "Oracle reference should explain that oracle-clean returns a retry-after hint when post-send retention grace blocks cleanup");
   assert(referenceSource.includes("### `/oracle-clean` refuses a terminal job right after completion"), "Oracle reference troubleshooting should explain oracle-clean retention-grace refusals");
   assert(referenceSource.includes("Retry after ..."), "Oracle reference troubleshooting should mention the oracle-clean retry-after hint");
-  assert(readmeSource.includes("## Available providers and presets"), "README should document available oracle preset ids");
+  assert(referenceSource.includes("## Available providers and presets"), "Oracle reference should document available oracle preset ids");
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
-  assert(readmeSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "README/design/prompts should use MiB wording for ChatGPT upload ceiling");
+  assert(referenceSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "Reference/design/prompts should use MiB wording for ChatGPT upload ceiling");
   assert(readmeSource.includes("Node.js 22.19.0 or newer") && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README and development guide should distinguish package Node floor from Node 24 platform validation");
   assert(developmentSource.includes("npm run check:platform-smoke") && developmentSource.includes("npm run sanity:oracle:platform"), "Development guide verification table should include the cheap platform-focused validation commands");
   assert(referenceSource.includes("Grok uploads now use `.tar.gz` archives"), "Oracle reference should document Grok's gzip archive format because Grok lacks zstd extraction tools");
-  assert(readmeSource.includes("defaults.preset"), "README should document defaults.preset");
+  assert(referenceSource.includes("defaults.preset"), "Oracle reference should document defaults.preset");
   assert(referenceSource.includes("human-readable preset label"), "Oracle reference should mention preset label normalization");
   for (const [presetId, preset] of Object.entries(ORACLE_SUBMIT_PRESETS) as [OracleSubmitPresetId, (typeof ORACLE_SUBMIT_PRESETS)[OracleSubmitPresetId]][]) {
-    assert(readmeSource.includes(`\`${presetId}\``), `README should list preset id ${presetId}`);
-    assert(readmeSource.includes(preset.label), `README should describe preset ${presetId} with label ${preset.label}`);
+    assert(referenceSource.includes(`\`${presetId}\``), `Oracle reference should list preset id ${presetId}`);
+    assert(referenceSource.includes(preset.label), `Oracle reference should describe preset ${presetId} with label ${preset.label}`);
   }
   const preflightSchema = preflightTool.parameters as import("typebox").TSchema;
   const authSchema = authTool.parameters as import("typebox").TSchema;
