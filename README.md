@@ -2,7 +2,7 @@
 
 pi-oracle sends project files and questions from [Pi](https://github.com/earendil-works/pi) to ChatGPT or Grok through your web account. Each job uses an isolated browser and saves its answer locally.
 
-![Oracle workflow: Pi checks the request and packages project files, an isolated browser sends them to ChatGPT or Grok, and Oracle saves the answer locally.](.github/readme/oracle-workflow.png)
+![Oracle workflow: Pi packages project files, an isolated browser sends them to ChatGPT or Grok, and Oracle saves the answer locally.](.github/readme/oracle-workflow.png)
 
 *Pi request → project archive → web model → saved answer, with a best-effort notification to Pi.*
 

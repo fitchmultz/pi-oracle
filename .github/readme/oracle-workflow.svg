@@ -40,8 +40,8 @@
   <rect width="1600" height="600" fill="url(#canvas)"/>
   <rect width="1600" height="600" fill="url(#blueBloom)"/>
   <rect width="1600" height="600" fill="url(#violetBloom)"/>
-  <text x="64" y="78" font-size="48" font-weight="720" letter-spacing="-1">A second opinion you can come back to</text>
-  <text x="64" y="123" class="copy">pi-oracle · your project context, your web account, a saved answer</text>
+  <text x="64" y="78" font-size="48" font-weight="720" letter-spacing="-1">Ask in Pi. Read the answer later.</text>
+  <text x="64" y="123" class="copy">pi-oracle sends your project files to ChatGPT or Grok in an isolated browser.</text>
 
   <!-- Request → preparation → web execution → local result. -->
   <g class="connector" stroke="#60A5FA" marker-end="url(#arrowBlue)">
@@ -67,7 +67,7 @@
     <rect x="468" y="202" width="80" height="34" rx="17" fill="#172554"/>
     <text x="508" y="227" text-anchor="middle" class="mono chip" fill="#93C5FD">02</text>
     <text x="468" y="284" class="heading">Check &amp; pack</text>
-    <text x="468" y="327" class="copy">Session + auth ready?</text>
+    <text x="468" y="327" class="copy">Check session + auth</text>
     <text x="468" y="364" class="copy">Choose project files</text>
     <text x="468" y="401" class="copy">Queue when busy</text>
 
