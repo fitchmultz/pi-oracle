@@ -46,7 +46,7 @@ What you are seeing: the local `pi` agent keeps control of context selection and
 
 ## Dispatch details
 
-Expected result:
+After you submit an `/oracle` request:
 
 - The `/oracle` prompt now runs an early oracle preflight before expensive repo reading or archive creation.
 - The agent chooses a context-rich relevant archive up to the selected provider's upload ceiling, not the smallest possible one-file slice when nearby context helps.
@@ -74,7 +74,7 @@ If the wake-up does not arrive, run:
 ```
 
 ```text
-/oracle Explain the Oracle reference guidance for /oracle-clean retention grace. Archive README.md plus any nearby docs or implementation files that help answer accurately.
+/oracle Explain the Oracle reference guidance for /oracle-clean retention grace. Archive docs/reference.md plus any nearby docs or implementation files that help answer accurately.
 ```
 
 ```text
@@ -239,6 +239,19 @@ ChatGPT's compact picker and current **Power** slider expose fewer choices than 
 - `/oracle-read [job-id]` and `oracle_read({ jobId })` inspect saved output later.
 - `/oracle-clean` removes terminal job temp files, but can briefly refuse cleanup after a wake-up so the follow-up turn can still read the saved paths.
 
+### Job retention
+
+Oracle automatically deletes completed and cancelled jobs after 14 days, and failed jobs after 30 days, by default. Retention starts at completion, or creation when no completion timestamp exists. Cleanup runs at session start, on submission, and during `/oracle-auth`; it can be delayed by active notification or cleanup guards.
+
+Set these keys in `~/.pi/agent/extensions/oracle.json` to change retention for new jobs. Values use milliseconds. Each job keeps the settings from its submission.
+
+| Key | Default |
+| --- | --- |
+| `cleanup.completeJobRetentionMs` | `1209600000` — 14 days, for completed and cancelled jobs |
+| `cleanup.failedJobRetentionMs` | `2592000000` — 30 days, for failed jobs |
+
+Copy answers and artifacts you need to keep. Temporary storage can be cleared before the retention period ends.
+
 ## Privacy and local data
 
 This extension is local-first, but it handles sensitive local and project data:
@@ -255,7 +268,7 @@ Review the code and design docs before using it with private or regulated materi
 - Provider UI, auth, model controls, and artifact download behavior can drift.
 - Archive uploads are capped at 250 MiB for ChatGPT and 200 MiB for Grok after default exclusions and automatic whole-repo pruning.
 - A real ChatGPT or Grok web session is required for the provider you use.
-- Cookie replay still uses domain-based browser commands; this fix does not preserve host-only or partitioned-cookie isolation metadata.
+- Cookie replay uses domain-based browser commands and does not preserve host-only or partitioned-cookie isolation metadata.
 
 ## Troubleshooting
 
