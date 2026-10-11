@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Documentation
+- rewrite the README around installation, first use, commands, and privacy; add an editable workflow diagram and move detailed setup and maintainer guidance into linked reference docs
+
 ### Fixed
 - decrypt native Linux Chromium/Chromium Browser encrypted cookies with Chromium's safe-storage key, retaining GNOME/KWallet/basic controls and per-run password calibration without upgrading the unaffected Chrome/Brave importer
 
