@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600" role="img" aria-labelledby="title desc">
+  <title id="title">From a Pi request to a saved second opinion</title>
+  <desc id="desc">Pi checks session and authentication readiness, packages relevant project files, and sends the job to ChatGPT or Grok in an isolated browser. The answer and artifacts are saved locally. Completion sends a best-effort notification back to the matching Pi session.</desc>
+  <defs>
+    <!-- Fleet dark canvas and glass tokens from modern-svg-starter.svg. -->
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#060A12"/><stop offset=".52" stop-color="#0B1120"/><stop offset="1" stop-color="#080C16"/>
+    </linearGradient>
+    <radialGradient id="blueBloom" cx=".18" cy=".18" r=".8">
+      <stop stop-color="#2563EB" stop-opacity=".22"/><stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violetBloom" cx=".82" cy=".36" r=".7">
+      <stop stop-color="#8B5CF6" stop-opacity=".16"/><stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#172238" stop-opacity=".96"/><stop offset="1" stop-color="#0E1525" stop-opacity=".98"/>
+    </linearGradient>
+    <linearGradient id="focus" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#172554" stop-opacity=".82"/><stop offset="1" stop-color="#312E81" stop-opacity=".58"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#02040A" flood-opacity=".54"/>
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#60A5FA"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M1 1 11 6 1 11Z" fill="#6EE7B7"/>
+    </marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, Arial, sans-serif; fill: #F8FAFC; }
+      .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+      .heading { font-size: 32px; font-weight: 650; }
+      .copy { font-size: 26px; fill: #B6C3D7; }
+      .chip { font-size: 22px; font-weight: 650; }
+      .connector { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <!-- Solid base keeps the export readable in either GitHub theme. -->
+  <rect width="1600" height="600" fill="url(#canvas)"/>
+  <rect width="1600" height="600" fill="url(#blueBloom)"/>
+  <rect width="1600" height="600" fill="url(#violetBloom)"/>
+  <text x="64" y="78" font-size="48" font-weight="720" letter-spacing="-1">A second opinion you can come back to</text>
+  <text x="64" y="123" class="copy">pi-oracle · your project context, your web account, a saved answer</text>
+
+  <!-- Request → preparation → web execution → local result. -->
+  <g class="connector" stroke="#60A5FA" marker-end="url(#arrowBlue)">
+    <path d="M408 310H438"/><path d="M784 310H814"/><path d="M1160 310H1190"/>
+  </g>
+  <!-- The return lane is explicitly best effort, never the only result path. -->
+  <path d="M1364 428V500Q1364 518 1346 518H254Q236 518 236 500V432" class="connector" stroke="#6EE7B7" stroke-dasharray="8 9" marker-end="url(#arrowGreen)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="64" y="178" width="344" height="250" rx="26" fill="url(#glass)" stroke="#2A3851"/>
+    <rect x="440" y="178" width="344" height="250" rx="26" fill="url(#focus)" stroke="#6073B0"/>
+    <rect x="816" y="178" width="344" height="250" rx="26" fill="url(#glass)" stroke="#4A3563"/>
+    <rect x="1192" y="178" width="344" height="250" rx="26" fill="url(#glass)" stroke="#285647"/>
+  </g>
+
+  <g>
+    <rect x="92" y="202" width="80" height="34" rx="17" fill="#172554"/>
+    <text x="132" y="227" text-anchor="middle" class="mono chip" fill="#93C5FD">01</text>
+    <text x="92" y="284" class="heading">Ask in Pi</text>
+    <text x="92" y="327" class="mono" font-size="25" fill="#93C5FD">/oracle &lt;request&gt;</text>
+    <text x="92" y="371" class="copy">Review, plan, analyze</text>
+
+    <rect x="468" y="202" width="80" height="34" rx="17" fill="#172554"/>
+    <text x="508" y="227" text-anchor="middle" class="mono chip" fill="#93C5FD">02</text>
+    <text x="468" y="284" class="heading">Check &amp; pack</text>
+    <text x="468" y="327" class="copy">Session + auth ready?</text>
+    <text x="468" y="364" class="copy">Choose project files</text>
+    <text x="468" y="401" class="copy">Queue when busy</text>
+
+    <rect x="844" y="202" width="168" height="34" rx="17" fill="#312E51"/>
+    <text x="928" y="227" text-anchor="middle" class="chip" fill="#D8B4FE">03 · WEB</text>
+    <text x="844" y="284" class="heading">ChatGPT or Grok</text>
+    <text x="844" y="327" class="copy">Prompt + archive</text>
+    <text x="844" y="364" class="copy">Isolated browser</text>
+    <text x="844" y="401" class="copy">Background worker</text>
+
+    <rect x="1220" y="202" width="216" height="34" rx="17" fill="#123E32"/>
+    <text x="1328" y="227" text-anchor="middle" class="chip" fill="#6EE7B7">04 · LOCAL</text>
+    <text x="1220" y="284" class="heading">Saved answer</text>
+    <text x="1220" y="327" class="copy">Response + artifacts</text>
+    <text x="1220" y="370" class="mono" font-size="25" fill="#6EE7B7">/oracle-read</text>
+    <text x="1220" y="405" class="mono" font-size="25" fill="#6EE7B7">&lt;job-id&gt;</text>
+  </g>
+  <rect x="540" y="493" width="520" height="50" rx="25" fill="#0E1525" stroke="#285647"/>
+  <text x="800" y="526" text-anchor="middle" font-size="26" fill="#6EE7B7">Best-effort notification back to Pi</text>
+  <text x="800" y="579" text-anchor="middle" font-size="25" fill="#B6C3D7">Before your first job: /oracle-auth imports your existing provider login.</text>
+</svg>
