@@ -10,7 +10,7 @@ Install from GitHub:
 pi install https://github.com/fitchmultz/pi-oracle
 ```
 
-To update the package later, use `pi update --extensions`, `pi update --all`, or `pi update npm:pi-oracle`. Bare `pi update` updates Pi itself only. Versioned npm/git refs stay pinned until you change the configured source.
+To update the package later, use `pi update --extensions`, `pi update --all`, or `pi update npm:pi-oracle`. Bare `pi update` updates Pi itself only.
 
 ## Requirements
 
