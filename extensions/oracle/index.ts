@@ -118,6 +118,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event) => {
+    if (!("prompt" in event)) return;
     const parsed = parseOracleInput(event.prompt);
     if (!parsed?.args || (parsed.command === "oracle-followup" && !/^\S+\s+\S/.test(parsed.args))) return;
     const template = parsed.command === "oracle" ? oraclePrompt : oracleFollowupPrompt;
