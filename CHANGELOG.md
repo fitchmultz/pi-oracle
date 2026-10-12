@@ -8,6 +8,8 @@
 ### Fixed
 - decrypt native Linux Chromium/Chromium Browser encrypted cookies with Chromium's safe-storage key, retaining GNOME/KWallet/basic controls and per-run password calibration without upgrading the unaffected Chrome/Brave importer
 - ignore custom-message agent starts in the `/oracle` user-command handler, so idle completion notifications can trigger a turn on newer Pi hosts without a missing-prompt error
+- wait for agent-browser's closing daemon to become launchable after its known pre-launch socket failure, retaining a bounded deadline and failing other launch errors immediately
+- wait for ChatGPT's Power slider to mount and focus its observed control rather than a brittle picker-container selector before selecting and verifying the requested tier
 
 ## 0.7.21 - 2026-09-26
 

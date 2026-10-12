@@ -1534,7 +1534,7 @@ async function waitForModelConfigurationToSettle(job, options = {}) {
   throw new Error(`Could not verify requested model settings after configuration for ${job.selection.modelFamily}`);
 }
 
-async function configurePowerSlider(job) {
+async function configurePowerSlider(job, powerRef) {
   // The current picker retains the compact tier semantics, but exposes keyboard
   // interaction on a Power menuitem rather than accessible tier radio buttons.
   const tiers = ["Instant", "Medium", "High", "Extra High", "Pro"];
@@ -1543,10 +1543,10 @@ async function configurePowerSlider(job) {
     : job.selection.effort === "heavy" ? "Extra High"
     : job.selection.effort === "extended" ? "High" : "Medium";
   const target = tiers.indexOf(requested);
-  const selector = '[data-testid="composer-intelligence-picker-content"] [role="menuitem"][aria-label="Power"]';
-  await agentBrowser(job, "focus", selector);
+  const selector = '[role="menuitem"][aria-label="Power"]';
   const timeoutAt = Date.now() + MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS;
   let moves = 0;
+  let focused = false;
   while (Date.now() < timeoutAt && moves < tiers.length) {
     const state = await evalPage(job, toJsonScript(`
       const control = document.querySelector(${JSON.stringify(selector)});
@@ -1565,6 +1565,10 @@ async function configurePowerSlider(job) {
     const value = Number(state.value);
     if (state.min !== "0" || state.max !== "4" || typeof state.value !== "string" || !Number.isInteger(value) || value < 0 || value > 4) {
       throw new Error("ChatGPT Power slider has an unrecognized range; refusing to guess model settings");
+    }
+    if (!focused) {
+      await agentBrowser(job, "focus", powerRef);
+      focused = true;
     }
     if (value === target) {
       if (!state.description.startsWith(`${requested}, ${target + 1} of ${tiers.length}.`)) {
@@ -1592,8 +1596,9 @@ async function configureModel(job) {
 
   await log(`Configuring model family=${job.selection.modelFamily} effort=${job.selection?.effort || "(none)"}`);
   let familySnapshot = await openModelConfiguration(job);
-  if (findEntry(familySnapshot, (entry) => entry.kind === "menuitem" && entry.label === "Power" && !entry.disabled)) {
-    await configurePowerSlider(job);
+  const powerEntry = findEntry(familySnapshot, (entry) => entry.kind === "menuitem" && entry.label === "Power" && !entry.disabled);
+  if (powerEntry) {
+    await configurePowerSlider(job, powerEntry.ref);
     return;
   }
   let verificationSnapshot = familySnapshot;

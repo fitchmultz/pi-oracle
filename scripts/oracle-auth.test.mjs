@@ -46,6 +46,41 @@ function pollingHarness(overrides = {}) {
   return { poll, logs, get captures() { return captures; } };
 }
 
+test("auth launch waits for a closing daemon only on the known pre-launch socket failure", async () => {
+  const socketFailure = "Could not configure browser: Failed to connect: No such file or directory (os error 2)";
+  for (const [failures, message, succeeds] of [
+    [1, socketFailure, true],
+    [Infinity, socketFailure, false],
+    [1, "Chrome exited before startup", false],
+  ]) {
+    let now = 0;
+    let launches = 0;
+    const launch = vm.runInNewContext(`(${functionSource(bootstrap, "launchTargetBrowser")})`, {
+      Date: { now: () => now }, Math, Error, JSON,
+      AGENT_BROWSER_BIN: "agent-browser", AGENT_BROWSER_COMMAND_TIMEOUT_MS: 500,
+      closeTargetBrowser: async () => {},
+      targetBrowserBaseArgs: () => ["--session", "fixture-auth", "--profile", "/fixture/seed"],
+      log: async () => {},
+      sleep: async (ms) => { now += ms; },
+      spawnCommand: async (_command, args, options) => {
+        assert.equal(args.at(-1), "about:blank");
+        assert(options.timeoutMs > 0 && options.timeoutMs <= 500);
+        return ++launches <= failures
+          ? { code: 1, stdout: "", stderr: message }
+          : { code: 0, stdout: "Browser opened", stderr: "" };
+      },
+    });
+    if (succeeds) {
+      await launch();
+      assert.equal(launches, 2);
+    } else {
+      await assert.rejects(launch(), (error) => error.message === message);
+      if (message === socketFailure) assert(now <= 500 && launches > 1, "persistent socket failure must stop at the launch deadline");
+      else assert.equal(launches, 1, "other launch failures must not be retried");
+    }
+  }
+});
+
 test("auth polling retries a complete observation after each navigation-interrupted read", async () => {
   for (const read of ["getUrl", "snapshotText", "pageText", "loginProbe"]) {
     let calls = 0;
