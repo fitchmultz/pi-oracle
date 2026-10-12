@@ -1,16 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.7.22 - 2026-10-12
 
 ### Documentation
 - rewrite the README around installation, first use, commands, and privacy; add an editable workflow diagram and move detailed setup and maintainer guidance into linked reference docs
 
 ### Fixed
 - decrypt native Linux Chromium/Chromium Browser encrypted cookies with Chromium's safe-storage key, retaining GNOME/KWallet/basic controls and per-run password calibration without upgrading the unaffected Chrome/Brave importer
-
-## 0.7.22 - 2026-10-12
-
-### Fixed
 - ignore custom-message agent starts in the `/oracle` user-command handler, so idle completion notifications can trigger a turn on newer Pi hosts without a missing-prompt error
 
 ## 0.7.21 - 2026-09-26
