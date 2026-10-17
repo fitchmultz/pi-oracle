@@ -341,10 +341,19 @@ async function launchTargetBrowser() {
   await closeTargetBrowser();
   const args = [...targetBrowserBaseArgs({ withLaunchOptions: true, mode: "headed" }), "open", "about:blank"];
   await log(`Launching isolated browser: agent-browser ${JSON.stringify(args)}`);
-  const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true, timeoutMs: AGENT_BROWSER_COMMAND_TIMEOUT_MS });
-  await log(`launch result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
-  if (result.code !== 0) {
-    throw new Error(result.stderr || result.stdout || "Failed to launch isolated oracle browser");
+  const deadline = Date.now() + AGENT_BROWSER_COMMAND_TIMEOUT_MS;
+  while (true) {
+    const result = await spawnCommand(AGENT_BROWSER_BIN, args, { allowFailure: true, timeoutMs: Math.max(1, deadline - Date.now()) });
+    await log(`launch result: code=${result.code} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`);
+    if (result.code === 0) return;
+    const message = result.stderr || result.stdout || "Failed to launch isolated oracle browser";
+    // agent-browser 0.39 can return from close before its daemon socket disappears.
+    // This configure failure happens before open is dispatched; other launch errors are not safe to retry.
+    if (!/Could not configure browser: Failed to connect: No such file or directory/i.test(message) || Date.now() >= deadline) {
+      throw new Error(message);
+    }
+    await log("Waiting for the closing agent-browser daemon before retrying launch");
+    await sleep(Math.min(250, deadline - Date.now()));
   }
 }
 

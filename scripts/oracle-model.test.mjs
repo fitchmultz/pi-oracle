@@ -38,7 +38,11 @@ function harness({ initial = 3, max = "4", wrongLabel = false, stuck = false, mo
     composerControlsVisible: ui.snapshotHasUsableComposerControls,
     log: async (line) => { if (line.startsWith("Verified ChatGPT Power tier")) verified = true; },
     agentBrowser: async (_job, command, arg) => {
-      if (command === "focus") { assert(open); return; }
+      if (command === "focus") {
+        assert(open);
+        assert(mountingReads < 0, "wait for the Power slider to mount before focusing it");
+        return;
+      }
       if (command !== "press") return;
       if (arg === "Escape") open = false;
       else if (!stuck) value = Math.max(0, Math.min(4, value + (arg === "ArrowRight" ? 1 : -1)));
