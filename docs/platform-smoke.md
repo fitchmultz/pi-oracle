@@ -29,7 +29,7 @@ crabbox providers
 
 Target setup:
 
-- macOS: Remote Login enabled; noninteractive `ssh $USER@localhost` works; `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` are on the SSH PATH.
+- macOS: Remote Login enabled; noninteractive `ssh $USER@localhost` works; `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` are on the SSH PATH. Use `PI_ORACLE_SMOKE_MAC_PORT` or `PLATFORM_SMOKE_MAC_PORT` for a non-default SSH port.
 - Ubuntu: Docker is running and the configured image (`PI_ORACLE_SMOKE_UBUNTU_IMAGE`, default `pi-oracle-platform-smoke:node24`) has `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` on PATH. Build the local image when needed with `docker build -t pi-oracle-platform-smoke:node24 -f scripts/platform-smoke/Dockerfile.ubuntu .`.
 - Windows native: by default, Parallels has stopped source VM `pi-extension-windows-template` and the configured power-off snapshot (`crabbox-ready` by default for this repo). The template must have OpenSSH, PowerShell, Git, Node/npm, `tar`, `zstd`, and `agent-browser` on PATH. Do not bake API keys, browser sessions, project checkouts, `.pi` state, artifacts, or secrets into the template.
 - Alternatively, set `PI_ORACLE_SMOKE_WINDOWS_HOST` to a native Windows SSH host, and set `PI_ORACLE_SMOKE_WINDOWS_USER`, `PI_ORACLE_SMOKE_WINDOWS_PORT` (default 22), and `PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT` for that target as needed. Crabbox uses its SSH provider instead of Parallels; the target needs the same tools on its SSH PATH. The `PLATFORM_SMOKE_WINDOWS_*` aliases also work.
@@ -48,7 +48,7 @@ Use the narrowest workflow that proves the change. Do not run the full platform 
 | Situation | Canonical command(s) | What it proves |
 | --- | --- | --- |
 | Everyday local iteration | `npm run verify:oracle` | Syntax, bundle, platform-smoke invariants, type checks, oracle sanity, and package dry-run pass locally. |
-| Platform-sensitive change | `npm run smoke:platform:doctor`, then `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` | Target setup is ready and the affected platform/suite works without paying for unrelated targets. |
+| Platform-sensitive change | `node scripts/platform-smoke.mjs doctor --target <target>`, then `node scripts/platform-smoke.mjs run --target <target> --suite <suite>` | Target setup is ready and the affected platform/suite works without paying for unrelated targets. |
 | Platform matrix proof | `npm run smoke:platform:all` | Doctor-first packed-install proof passes on every required target and suite. |
 | ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` | Fresh loaded-extension proof exists for every canonical ChatGPT preset. |
 | Publish/release gate | `npm run release:check` | Local verification (`verify:oracle`) passes, fresh ChatGPT preset proof exists, then the doctor-first platform matrix passes. |
@@ -66,12 +66,18 @@ npm run smoke:platform:all
 Focused commands:
 
 ```bash
-npm run smoke:platform:doctor
+node scripts/platform-smoke.mjs doctor --target macos
 npm run smoke:platform:macos
+node scripts/platform-smoke.mjs doctor --target ubuntu
 npm run smoke:platform:ubuntu
+node scripts/platform-smoke.mjs doctor --target windows-native
 npm run smoke:platform:windows-native
 node scripts/platform-smoke.mjs run --target windows-native --suite real-extension
 ```
+
+`doctor --target` checks the selected targets' providers and tools; without it,
+doctor still checks every required target. In split hosted jobs, run a scoped
+doctor on each target before its suites.
 
 Full release gate:
 

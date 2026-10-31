@@ -1,8 +1,8 @@
 // Preflight checks for the pi-oracle Crabbox platform smoke gate.
 
 import { execFileSync, execSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { accessSync, constants, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { buildTargetBaseArgs } from "./crabbox-runner.mjs";
 
 let failures = 0;
@@ -131,32 +131,50 @@ function verifyPackageExclusions() {
   forbidden.length ? fail(`forbidden files in package: ${forbidden.join(", ")}`) : ok("package excludes local env/artifact/debug state");
 }
 
+function findForbiddenFiles(dir, depth = 0) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    const matches = entry.name === ".env" || entry.name.startsWith(".env.") || entry.name.endsWith(".tgz");
+    return [
+      ...(matches ? [relative(process.cwd(), path)] : []),
+      ...(entry.isDirectory() && depth < 2 ? findForbiddenFiles(path, depth + 1) : []),
+    ];
+  });
+}
+
 function verifyRepoForbiddenFiles() {
-  const forbidden = shell("find . -maxdepth 3 \\( -name '.env' -o -name '.env.*' -o -name '*.tgz' \\) -print 2>/dev/null");
-  forbidden ? fail(`forbidden local secret/package artifact(s): ${forbidden}`) : ok("no .env/.env.* or package tarballs at repo root depth");
+  const forbidden = findForbiddenFiles(process.cwd());
+  forbidden.length ? fail(`forbidden local secret/package artifact(s): ${forbidden.join(", ")}`) : ok("no .env/.env.* or package tarballs at repo root depth");
   for (const dir of [".artifacts", ".crabbox", ".debug", ".platform-smoke-runs"]) {
-    const ignored = shell(`git check-ignore -q ${dir}/probe && echo ignored`);
+    const ignored = silent("git", ["check-ignore", "-q", `${dir}/probe`]) !== null;
     ignored ? ok(`${dir}/ is gitignored`) : fail(`${dir}/ must be gitignored`);
   }
-  const trackedForbidden = shell("git ls-files '.env*' '*.tgz' '.artifacts/*' '.crabbox/*' '.debug/*' '.platform-smoke-runs/*'");
+  const trackedForbidden = silent("git", ["ls-files", ".env*", "*.tgz", ".artifacts/*", ".crabbox/*", ".debug/*", ".platform-smoke-runs/*"]);
   trackedForbidden ? fail(`forbidden tracked local state: ${trackedForbidden}`) : ok("no forbidden local state is tracked");
   verifyPackageExclusions();
 }
 
 export async function runDoctor(config) {
   failures = 0;
-  const windowsArgs = buildTargetBaseArgs("windows-native", config);
+  const targets = config.requiredTargets ?? [];
+  const hasMac = targets.includes("macos");
+  const hasUbuntu = targets.includes("ubuntu");
+  const hasWindows = targets.includes("windows-native");
+  const windowsArgs = hasWindows ? buildTargetBaseArgs("windows-native", config) : [];
   const windowsStatic = windowsArgs.includes("--static-host");
   console.log("\n── Environment ──");
   const cbox = env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") || "crabbox";
   ok(`Crabbox binary = ${resolveCommand(cbox) ?? cbox}${env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") ? " (env override)" : " (PATH)"}`);
-  ok(`PI_ORACLE_SMOKE_MAC_HOST = ${env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost"}`);
-  ok(`PI_ORACLE_SMOKE_MAC_USER = ${env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER")}`);
-  ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24"}`);
-  if (windowsStatic) {
+  if (hasMac) {
+    ok(`PI_ORACLE_SMOKE_MAC_HOST = ${env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost"}`);
+    ok(`PI_ORACLE_SMOKE_MAC_PORT = ${env("PI_ORACLE_SMOKE_MAC_PORT") || env("PLATFORM_SMOKE_MAC_PORT") || "22"}`);
+    ok(`PI_ORACLE_SMOKE_MAC_USER = ${env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER")}`);
+  }
+  if (hasUbuntu) ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24"}`);
+  if (hasWindows && windowsStatic) {
     ok(`Windows SSH host = ${windowsArgs[windowsArgs.indexOf("--static-host") + 1]}`);
     ok(`Windows SSH port = ${windowsArgs[windowsArgs.indexOf("--static-port") + 1]}`);
-  } else {
+  } else if (hasWindows) {
     ok(`PI_ORACLE_SMOKE_WINDOWS_VM = ${windowsVmName(config)}`);
     ok(`PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT = ${windowsSnapshotName(config)}`);
   }
@@ -173,15 +191,22 @@ export async function runDoctor(config) {
     compareVersions(versionLine, requiredVersion) >= 0 ? ok(`required version: ${requiredVersion}+`) : fail(`Crabbox version mismatch: need ${requiredVersion}+, got ${versionLine}`);
   }
   const providers = silent(cbox, ["providers"], { timeout: 30_000 }) ?? "";
-  for (const provider of ["ssh", "local-container", ...(windowsStatic ? [] : ["parallels"])]) {
+  const neededProviders = new Set([
+    ...(hasMac || (hasWindows && windowsStatic) ? ["ssh"] : []),
+    ...(hasUbuntu ? ["local-container"] : []),
+    ...(hasWindows && !windowsStatic ? ["parallels"] : []),
+  ]);
+  for (const provider of neededProviders) {
     new RegExp(`^${provider}$`, "m").test(providers) ? ok(`provider available: ${provider}`) : fail(`crabbox providers missing ${provider}`);
   }
-  runCrabboxDoctor(cbox, "macOS static SSH", buildTargetBaseArgs("macos", config), 120_000);
-  runCrabboxDoctor(cbox, windowsStatic ? "Windows native SSH" : "Windows native Parallels", windowsArgs, 180_000);
-  runCrabboxDoctor(cbox, "local-container", buildTargetBaseArgs("ubuntu", config), 120_000);
+  if (hasMac) runCrabboxDoctor(cbox, "macOS static SSH", buildTargetBaseArgs("macos", config), 120_000);
+  if (hasWindows) runCrabboxDoctor(cbox, windowsStatic ? "Windows native SSH" : "Windows native Parallels", windowsArgs, 180_000);
+  if (hasUbuntu) runCrabboxDoctor(cbox, "local-container", buildTargetBaseArgs("ubuntu", config), 120_000);
 
   console.log("\n── Host tools ──");
-  for (const [name, command] of [["Docker", "docker info --format '{{.ServerVersion}}'"], ["Node", "node --version"], ["npm", "npm --version"], ["git", "git --version"], ["tar", "tar --version"], ["rsync", "rsync --version"]]) {
+  const hostTools = [["Node", "node --version"], ["npm", "npm --version"], ["git", "git --version"], ["tar", "tar --version"], ["rsync", "rsync --version"]];
+  if (hasUbuntu) hostTools.unshift(["Docker", "docker info --format '{{.ServerVersion}}'"]);
+  for (const [name, command] of hostTools) {
     const output = shell(command);
     output ? ok(`${name}: ${output.split("\n")[0]}`) : fail(`${name} not found or unavailable`);
   }
@@ -190,7 +215,7 @@ export async function runDoctor(config) {
     const major = Number(nodeVersion.replace(/^v/, "").split(".")[0]);
     if (major < (config.nodeValidationMajor ?? 24)) fail(`Node ${nodeVersion}; need ${config.nodeValidationMajor ?? 24}+ for smoke validation`);
   }
-  if (!windowsStatic) verifyWindowsTemplate(config);
+  if (hasWindows && !windowsStatic) verifyWindowsTemplate(config);
 
   console.log("\n── Auth environment ──");
   const requiredAuth = requiredRealSmokeAuthEnv(config);
@@ -200,7 +225,7 @@ export async function runDoctor(config) {
   }
 
   console.log("\n── Target tools ──");
-  for (const target of config.requiredTargets ?? []) runTargetToolProbe(cbox, target, config);
+  for (const target of targets) runTargetToolProbe(cbox, target, config);
 
   console.log("\n── Artifact root ──");
   const artifactRoot = resolve(process.cwd(), config.artifactRoot ?? ".artifacts/platform-smoke");
@@ -224,8 +249,8 @@ export async function runDoctor(config) {
   console.log(`\n=== Results: ${failures} failure(s) ===`);
   if (failures > 0) {
     process.exitCode = 1;
-    console.log("Fix the failures above before running npm run smoke:platform:all.");
+    console.log("Fix the failures above before running the selected platform suites.");
   } else {
-    console.log("Ready for npm run smoke:platform:all.");
+    console.log(`Ready for platform suites on ${targets.join(", ")}.`);
   }
 }
