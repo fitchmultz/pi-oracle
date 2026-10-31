@@ -1,0 +1,33 @@
+name: Retained Oracle platform gate probe
+
+on:
+  push:
+    branches: [probe/oracle-hosted-platform]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  hosts:
+    uses: fitchmultz/.github/.github/workflows/resolve-hosts.yml@1d0ea18ce141ceee410030075120c910a7212a1b
+    with:
+      automation-ref: 1d0ea18ce141ceee410030075120c910a7212a1b
+  prepare:
+    needs: hosts
+    uses: fitchmultz/.github/.github/workflows/npm-release-prepare.yml@1d0ea18ce141ceee410030075120c910a7212a1b
+    with:
+      automation-ref: 1d0ea18ce141ceee410030075120c910a7212a1b
+      source-ref: ${{ github.sha }}
+      release-source: ${{ github.sha }}
+      official-version: ${{ needs.hosts.outputs.official-version }}
+      fork-ref: ${{ needs.hosts.outputs.fork-ref }}
+  gates:
+    needs: [hosts, prepare]
+    uses: ./.github/workflows/release-platform.yml
+    with:
+      automation-ref: 1d0ea18ce141ceee410030075120c910a7212a1b
+      source-ref: ${{ github.sha }}
+      release-source: ${{ github.sha }}
+      official-version: ${{ needs.hosts.outputs.official-version }}
+      fork-ref: ${{ needs.hosts.outputs.fork-ref }}
