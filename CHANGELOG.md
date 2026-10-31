@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.23 - 2026-10-31
+
+### Changed
+- update the `basic-ftp` dependency override to the patched stable release
+- publish versioned npm candidates automatically after reviewed changes merge to `main` and pass Pi compatibility checks
+
 ## 0.7.22 - 2026-10-12
 
 ### Documentation
