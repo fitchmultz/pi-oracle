@@ -89,6 +89,8 @@ npm run release:check
 
 For an already prepared release candidate, set `PI_ORACLE_RELEASE_TARBALL` to its local tarball before running the matrix. Set `PI_ORACLE_RELEASE_SHA256` to the prepared candidate's SHA-256 when one is available; the runner checks it before transfer. Each suite still checks that the source packs, but installs the retained candidate. Crabbox transfers a temporary copy and each target verifies its SHA-256 before use; the suite evidence records the verified hash.
 
+The reusable [hosted platform qualification](../.github/workflows/release-platform.yml) runs each target on its native GitHub-hosted OS. It verifies the shared candidate receipt and source before and after both suites, and retains the per-target evidence. This is the platform portion of release qualification; the live ChatGPT preset proof is a separate required gate.
+
 ## What `platform-build` proves
 
 On each required target, `platform-build`:

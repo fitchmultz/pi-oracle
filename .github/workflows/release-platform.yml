@@ -1,0 +1,178 @@
+name: Oracle platform release qualification
+
+on:
+  workflow_call:
+    inputs:
+      automation-ref:
+        description: Exact reviewed shared automation revision
+        required: true
+        type: string
+      source-ref:
+        description: Exact candidate commit
+        required: true
+        type: string
+      release-source:
+        description: Original main commit represented by the candidate
+        required: true
+        type: string
+      official-version:
+        description: Official Pi version selected for the candidate
+        required: true
+        type: string
+      fork-ref:
+        description: Maintained Pi fork commit selected for the candidate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  platform:
+    name: Retained Oracle on ${{ matrix.target }} Crabbox
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos
+            os: macos-15-intel
+          - target: ubuntu
+            os: ubuntu-latest
+          - target: windows-native
+            os: windows-latest
+    env:
+      SOURCE_REF: ${{ inputs.source-ref }}
+      RELEASE_SOURCE: ${{ inputs.release-source }}
+      OFFICIAL_VERSION: ${{ inputs.official-version }}
+      FORK_REF: ${{ inputs.fork-ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source-ref }}
+          path: extension
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fitchmultz/.github
+          ref: ${{ inputs.automation-ref }}
+          path: automation
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          check-latest: true
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-candidate-${{ inputs.source-ref }}
+          path: ${{ runner.temp }}/npm-candidate
+      - name: Verify the retained candidate
+        shell: bash
+        run: |
+          test "$(git -C extension rev-parse HEAD)" = "$SOURCE_REF"
+          test -z "$(git -C extension status --porcelain)"
+          node automation/scripts/npm-release.mjs verify \
+            --repository "$GITHUB_REPOSITORY" --artifact "$RUNNER_TEMP/npm-candidate" \
+            --source-ref "$SOURCE_REF" --release-source "$RELEASE_SOURCE" \
+            --official-version "$OFFICIAL_VERSION" --fork-ref "$FORK_REF"
+          node --input-type=module - "$RUNNER_TEMP/npm-candidate" <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { join, resolve } from 'node:path';
+          const directory = resolve(process.argv[2]);
+          const candidate = JSON.parse(readFileSync(join(directory, 'release.json'), 'utf8'));
+          appendFileSync(process.env.GITHUB_ENV,
+            `PI_ORACLE_RELEASE_TARBALL=${join(directory, candidate.filename)}\nPI_ORACLE_RELEASE_SHA256=${candidate.sha256}\n`);
+          NODE
+      - name: Install Crabbox and zstd on macOS
+        if: matrix.target == 'macos'
+        run: brew install openclaw/tap/crabbox zstd
+      - name: Install the current verified Crabbox on Ubuntu
+        if: matrix.target == 'ubuntu'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="$RUNNER_TEMP/crabbox-install"
+          mkdir -p "$dir" "$RUNNER_TEMP/crabbox-bin"
+          tag=$(gh release view -R openclaw/crabbox --json tagName --jq .tagName)
+          gh release download "$tag" -R openclaw/crabbox -D "$dir" \
+            -p 'crabbox_*_linux_amd64.tar.gz' -p checksums.txt
+          archive=$(find "$dir" -name 'crabbox_*_linux_amd64.tar.gz' -maxdepth 1 -print)
+          (cd "$dir" && grep "$(basename "$archive")$" checksums.txt | sha256sum -c -)
+          tar -xzf "$archive" -C "$dir"
+          install -m 755 "$dir/crabbox" "$RUNNER_TEMP/crabbox-bin/crabbox"
+          cp -R "$dir/crabbox-runtime" "$RUNNER_TEMP/crabbox-bin/crabbox-runtime"
+          echo "$RUNNER_TEMP/crabbox-bin" >> "$GITHUB_PATH"
+      - name: Create isolated Unix run state
+        if: matrix.target != 'windows-native'
+        run: |
+          root=$(mktemp -d "$RUNNER_TEMP/oracle.XXXXXX")
+          mkdir -m 700 "$root/home" "$root/tmp" "$root/npm-cache"
+          touch "$root/npmrc" "$root/npm-globalrc"
+          {
+            echo "ORACLE_HOST_ROOT=$root"
+            echo "HOME=$root/home"
+            echo "TMPDIR=$root/tmp"
+            echo "NPM_CONFIG_USERCONFIG=$root/npmrc"
+            echo "NPM_CONFIG_GLOBALCONFIG=$root/npm-globalrc"
+            echo "NPM_CONFIG_CACHE=$root/npm-cache"
+            echo 'NPM_CONFIG_REGISTRY=https://registry.npmjs.org/'
+          } >> "$GITHUB_ENV"
+      - name: Install the reviewed npm
+        if: matrix.target != 'windows-native'
+        working-directory: extension
+        run: |
+          PM="$(node -p 'require("./package.json").packageManager')"
+          npm exec --yes --package="$PM" -- npm install --global "$PM"
+      - name: Install macOS target tools and start task-owned SSH
+        if: matrix.target == 'macos'
+        working-directory: extension
+        run: |
+          npm install --global --allow-scripts=agent-browser agent-browser
+          bash scripts/ci-release-hosted.sh start-ssh
+      - name: Build the Ubuntu Crabbox image
+        if: matrix.target == 'ubuntu'
+        working-directory: extension
+        run: |
+          docker info
+          docker build -t pi-oracle-platform-smoke:node24 -f scripts/platform-smoke/Dockerfile.ubuntu .
+      - name: Run both required Unix suites on the retained candidate
+        if: matrix.target != 'windows-native'
+        working-directory: extension
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          npm run check:platform-smoke
+          node scripts/platform-smoke.mjs doctor --target "$TARGET"
+          node scripts/platform-smoke.mjs run --target "$TARGET"
+      - name: Run both required native Windows suites on the retained candidate
+        if: matrix.target == 'windows-native'
+        working-directory: extension
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci-release-windows.ps1
+      - name: Recheck the retained candidate and source
+        shell: bash
+        run: |
+          test "$(git -C extension rev-parse HEAD)" = "$SOURCE_REF"
+          test -z "$(git -C extension status --porcelain)"
+          node automation/scripts/npm-release.mjs verify \
+            --repository "$GITHUB_REPOSITORY" --artifact "$RUNNER_TEMP/npm-candidate" \
+            --source-ref "$SOURCE_REF" --release-source "$RELEASE_SOURCE" \
+            --official-version "$OFFICIAL_VERSION" --fork-ref "$FORK_REF"
+      - name: Retain platform evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-release-platform-${{ matrix.target }}-${{ inputs.source-ref }}
+          path: |
+            extension/.artifacts/platform-smoke
+            ${{ runner.temp }}/oracle.*/ssh/sshd.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stop task-owned macOS SSH
+        if: always() && matrix.target == 'macos' && env.ORACLE_HOST_ROOT != ''
+        working-directory: extension
+        run: bash scripts/ci-release-hosted.sh stop-ssh
