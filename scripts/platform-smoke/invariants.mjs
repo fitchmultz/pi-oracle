@@ -28,17 +28,23 @@ function testHelpTextIncludesTargetsAndExamples() {
 }
 
 function testTargetSelection() {
-  const result = runNode(["scripts/platform-smoke.mjs", "run", "--target", "not-a-target", "--suite", "platform-build"]);
-  assert.notEqual(result.status, 0, "unsupported targets should fail before Crabbox runs");
-  assert.ifError(result.error);
-  assert.match(`${result.stdout ?? ""}\n${result.stderr ?? ""}`, /unsupported target: not-a-target/);
+  for (const command of ["doctor", "run"]) {
+    const result = withEnv({ PI_ORACLE_SMOKE_CRABBOX: "/nonexistent/crabbox" }, () =>
+      runNode(["scripts/platform-smoke.mjs", command, "--target", "not-a-target"]));
+    assert.notEqual(result.status, 0, `${command}: unsupported targets should fail before Crabbox runs`);
+    assert.ifError(result.error);
+    assert.match(`${result.stdout ?? ""}\n${result.stderr ?? ""}`, /unsupported target: not-a-target/);
+  }
 }
 
 function testEmptyTargetSelectionRejected() {
-  const result = runNode(["scripts/platform-smoke.mjs", "run", "--target", ",,", "--suite", "platform-build"]);
-  assert.notEqual(result.status, 0, "an --target value that resolves to zero targets must fail instead of running nothing");
-  assert.ifError(result.error);
-  assert.match(`${result.stdout ?? ""}\n${result.stderr ?? ""}`, /--target did not resolve to any targets/);
+  for (const command of ["doctor", "run"]) {
+    const result = withEnv({ PI_ORACLE_SMOKE_CRABBOX: "/nonexistent/crabbox" }, () =>
+      runNode(["scripts/platform-smoke.mjs", command, "--target", ",,"]));
+    assert.notEqual(result.status, 0, `${command}: an empty target selection must fail instead of running nothing`);
+    assert.ifError(result.error);
+    assert.match(`${result.stdout ?? ""}\n${result.stderr ?? ""}`, /--target did not resolve to any targets/);
+  }
 }
 
 function testPackedInstallCommandRendering() {

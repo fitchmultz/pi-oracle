@@ -5,6 +5,7 @@
 ### Changed
 - update the `basic-ftp` dependency override to the patched stable release
 - publish versioned npm candidates automatically after reviewed changes merge to `main` and pass Pi compatibility checks
+- support target-specific platform preflight for distributed release checks
 
 ### Fixed
 - recognize ChatGPT's current model selector, send button, and completed response state

@@ -23,7 +23,7 @@ function printHelp() {
   console.log(`Usage: node scripts/platform-smoke.mjs <command> [options]
 
 Commands:
-  doctor                     Run mandatory Crabbox, host, target-tool, auth, and package preflight checks
+  doctor [--target <names>]   Run preflight checks for required or selected targets
   run --target <names>       Run one or more comma-separated targets concurrently
   run --suite <name>         Run one suite on the configured target(s)
 
@@ -110,9 +110,9 @@ function validateSelection(targets, suites) {
   }
 }
 
-async function runDoctor() {
+async function runDoctor(targets) {
   const { runDoctor } = await import("./platform-smoke/doctor.mjs");
-  await runDoctor(config);
+  await runDoctor({ ...config, requiredTargets: targets });
 }
 
 async function runTarget(targetName, suites, singleSuite) {
@@ -130,7 +130,10 @@ async function main() {
   if (!config) throw new Error("platform-smoke.config.mjs not found or failed to load");
 
   if (args.command === "doctor") {
-    await runDoctor();
+    const targets = args.target ? splitCsv(args.target) : config.requiredTargets;
+    if (targets.length === 0) throw new Error("--target did not resolve to any targets");
+    validateSelection(targets, config.requiredSuites);
+    await runDoctor(targets);
     return;
   }
 
