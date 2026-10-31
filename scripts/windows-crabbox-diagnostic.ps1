@@ -149,12 +149,12 @@ try {
   if (-not $leaseId) { $leaseId = 'oracle-windows-diagnostic' }
   $platformCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildPlatformBuildCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildPlatformBuildCommand("windows-native", config.packageName, config.nodeValidationMajor));'
   Assert-NativeSuccess 'generate platform-build command'
-  & $crabbox run @base --id $leaseId --fresh-sync --shell $platformCommand
+  & $crabbox run @base --id $leaseId --allow-env PATH --fresh-sync --shell $platformCommand
   Assert-NativeSuccess 'Windows platform-build suite'
 
   $realCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildRealExtensionCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildRealExtensionCommand("windows-native", config));'
   Assert-NativeSuccess 'generate real-extension command'
-  & $crabbox run @base --id $leaseId --no-sync --shell $realCommand
+  & $crabbox run @base --id $leaseId --allow-env PATH --no-sync --shell $realCommand
   Assert-NativeSuccess 'Windows real-extension suite'
   Write-Host 'STATIC_SSH_DIAGNOSTIC_AND_SUITES_OK'
 } finally {
