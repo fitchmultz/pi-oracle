@@ -147,14 +147,17 @@ try {
   $leaseMatch = ([string]::Join("`n", $warmup)) -match '\bleased\s+(\S+)|\blease=(\S+)'
   if ($leaseMatch) { $leaseId = if ($Matches[1]) { $Matches[1] } else { $Matches[2] } }
   if (-not $leaseId) { $leaseId = 'oracle-windows-diagnostic' }
+  $toolsCommand = '$node = (node.exe --version).Trim(); Write-Host "REMOTE_NODE=$node"; if ([int]($node.TrimStart("v").Split(".")[0]) -lt 24) { exit 1 }; if (-not (Get-Command agent-browser.cmd -ErrorAction SilentlyContinue)) { exit 1 }; agent-browser.cmd --version; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; pi.cmd --version; exit $LASTEXITCODE'
+  & $crabbox run @base --id $leaseId --allow-env PATH --allow-env Path --fresh-sync --shell $toolsCommand
+  Assert-NativeSuccess 'Windows target tools'
   $platformCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildPlatformBuildCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildPlatformBuildCommand("windows-native", config.packageName, config.nodeValidationMajor));'
   Assert-NativeSuccess 'generate platform-build command'
-  & $crabbox run @base --id $leaseId --allow-env PATH --fresh-sync --shell $platformCommand
+  & $crabbox run @base --id $leaseId --allow-env PATH --allow-env Path --fresh-sync --shell $platformCommand
   Assert-NativeSuccess 'Windows platform-build suite'
 
   $realCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildRealExtensionCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildRealExtensionCommand("windows-native", config));'
   Assert-NativeSuccess 'generate real-extension command'
-  & $crabbox run @base --id $leaseId --allow-env PATH --no-sync --shell $realCommand
+  & $crabbox run @base --id $leaseId --allow-env PATH --allow-env Path --no-sync --shell $realCommand
   Assert-NativeSuccess 'Windows real-extension suite'
   Write-Host 'STATIC_SSH_DIAGNOSTIC_AND_SUITES_OK'
 } finally {
