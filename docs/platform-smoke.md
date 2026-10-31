@@ -31,7 +31,8 @@ Target setup:
 
 - macOS: Remote Login enabled; noninteractive `ssh $USER@localhost` works; `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` are on the SSH PATH.
 - Ubuntu: Docker is running and the configured image (`PI_ORACLE_SMOKE_UBUNTU_IMAGE`, default `pi-oracle-platform-smoke:node24`) has `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` on PATH. Build the local image when needed with `docker build -t pi-oracle-platform-smoke:node24 -f scripts/platform-smoke/Dockerfile.ubuntu .`.
-- Windows native: Parallels has stopped source VM `pi-extension-windows-template` and the configured power-off snapshot (`crabbox-ready` by default for this repo). The template must have OpenSSH, PowerShell, Git, Node/npm, `tar`, `zstd`, and `agent-browser` on PATH. Do not bake API keys, browser sessions, project checkouts, `.pi` state, artifacts, or secrets into the template.
+- Windows native: by default, Parallels has stopped source VM `pi-extension-windows-template` and the configured power-off snapshot (`crabbox-ready` by default for this repo). The template must have OpenSSH, PowerShell, Git, Node/npm, `tar`, `zstd`, and `agent-browser` on PATH. Do not bake API keys, browser sessions, project checkouts, `.pi` state, artifacts, or secrets into the template.
+- Alternatively, set `PI_ORACLE_SMOKE_WINDOWS_HOST` to a native Windows SSH host, and set `PI_ORACLE_SMOKE_WINDOWS_USER`, `PI_ORACLE_SMOKE_WINDOWS_PORT` (default 22), and `PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT` for that target as needed. Crabbox uses its SSH provider instead of Parallels; the target needs the same tools on its SSH PATH. The `PLATFORM_SMOKE_WINDOWS_*` aliases also work.
 
 Real runtime suite auth:
 
@@ -79,6 +80,8 @@ npm run release:check
 ```
 
 `release:check` runs `verify:oracle`, then `release:proof:chatgpt-presets`, then `smoke:platform:all`, matching the release order: cheap harness checks, fresh live ChatGPT preset proof, doctor, full matrix, then artifact review. `prepublishOnly` runs `npm run release:check`.
+
+For an already prepared release candidate, set `PI_ORACLE_RELEASE_TARBALL` to its local tarball before running the matrix. Set `PI_ORACLE_RELEASE_SHA256` to the prepared candidate's SHA-256 when one is available; the runner checks it before transfer. Each suite still checks that the source packs, but installs the retained candidate. Crabbox transfers a temporary copy and each target verifies its SHA-256 before use; the suite evidence records the verified hash.
 
 ## What `platform-build` proves
 

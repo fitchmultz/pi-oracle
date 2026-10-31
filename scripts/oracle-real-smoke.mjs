@@ -3,7 +3,8 @@
 // Default mode is packed-install release proof. Source mode is inner-loop/debug only.
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -25,6 +26,8 @@ Modes:
 Environment:
   PI_HOST_CLI                  selected Pi manifest bin entry, invoked with this Node executable (default: pi on PATH)
   PI_COMPAT_EXPECTED_VERSION   expected Pi version (default: package development baseline)
+  PI_ORACLE_RELEASE_TARBALL   retained tarball to install instead of the newly packed archive
+  PI_ORACLE_RELEASE_SHA256    expected retained tarball SHA-256, when supplied
   PI_ORACLE_REAL_TEST_PROVIDER   pi provider for the test agent (default: ${DEFAULT_PROVIDER})
   PI_ORACLE_REAL_TEST_MODEL      pi model for the test agent (default: ${DEFAULT_MODEL})
   PI_ORACLE_REAL_TEST_TIMEOUT_MS per-agent timeout in ms (default: ${DEFAULT_TIMEOUT_MS})
@@ -262,8 +265,16 @@ async function preparePackedProject({ runDir, provider, model, timeoutMs }) {
     timeoutMs: 120_000,
   });
   const tarballName = pack.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
-  const tarballPath = tarballName ? join(packDir, tarballName) : undefined;
+  let tarballPath = tarballName ? join(packDir, tarballName) : undefined;
   if (!tarballPath || !existsSync(tarballPath)) throw new Error(`npm pack did not produce a tarball in ${packDir}`);
+  if (env("PI_ORACLE_RELEASE_TARBALL")) {
+    tarballPath = join(packDir, "release-candidate.tgz");
+    copyFileSync(resolve(env("PI_ORACLE_RELEASE_TARBALL")), tarballPath);
+    const hash = createHash("sha256").update(readFileSync(tarballPath)).digest("hex");
+    const expected = env("PI_ORACLE_RELEASE_SHA256");
+    if (expected && hash !== expected) throw new Error("Retained release candidate checksum changed");
+    console.log(`ORACLE_RELEASE_CANDIDATE_SHA256=${hash}`);
+  }
   writeFileSync(join(installDir, "packed-tarball.txt"), `${tarballPath}\n`);
 
   await mustRun(installDir, "npm-init", npm, ["init", "-y"], { cwd: piProject, env: process.env, timeoutMs: 60_000 });

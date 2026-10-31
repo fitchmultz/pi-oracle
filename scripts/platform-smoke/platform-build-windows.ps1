@@ -1,6 +1,8 @@
 param(
   [string]$PackageName = "pi-oracle",
-  [int]$NodeValidationMajor = 24
+  [int]$NodeValidationMajor = 24,
+  [string]$CandidatePath = "",
+  [string]$CandidateSha256 = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -76,6 +78,20 @@ if ($PackTarball) { $PackTarball = $PackTarball.Trim() }
 Write-Output "PLATFORM_NPM_PACK_EXIT=$PACK_EXIT"
 if ($PackTarball -and (Test-Path -LiteralPath $PackTarball)) {
   Move-Item -LiteralPath $PackTarball -Destination (Join-Path $PackDir $PackTarball) -Force
+}
+if ($CandidatePath) {
+  if (-not (Test-Path -LiteralPath $CandidatePath)) {
+    Write-Output "Retained release candidate is missing"
+    exit 1
+  }
+  $CandidateHash = (Get-FileHash -LiteralPath $CandidatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+  Write-Output "PLATFORM_CANDIDATE_SHA256=$CandidateHash"
+  if ($CandidateHash -ne $CandidateSha256.ToLowerInvariant()) {
+    Write-Output "Retained release candidate checksum changed"
+    exit 1
+  }
+  Copy-Item -LiteralPath $CandidatePath -Destination (Join-Path $PackDir "release-candidate.tgz") -ErrorAction Stop
+  $PackTarball = "release-candidate.tgz"
 }
 Write-Output "PLATFORM_PACKED_TARBALL=$PackTarball"
 Set-Content -Path (Join-Path $PackDir "packed-tarball.txt") -Value $PackTarball
