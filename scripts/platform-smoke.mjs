@@ -50,6 +50,7 @@ Environment:
   PLATFORM_SMOKE_CRABBOX         Reusable Crabbox binary override (defaults to PATH)
   PI_ORACLE_SMOKE_CRABBOX        Project-specific Crabbox binary override (wins over PLATFORM_SMOKE_CRABBOX)
   PLATFORM_SMOKE_MAC_HOST        macOS SSH host (default: localhost)
+  PLATFORM_SMOKE_MAC_PORT        macOS SSH port (default: 22)
   PLATFORM_SMOKE_MAC_USER        macOS SSH user (default: $USER)
   PLATFORM_SMOKE_MAC_WORK_ROOT   macOS Crabbox work root
   PLATFORM_SMOKE_UBUNTU_IMAGE    Optional local-container image override

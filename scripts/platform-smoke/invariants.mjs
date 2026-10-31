@@ -99,6 +99,8 @@ function testTargetBaseArgsEnvPrecedence() {
     PLATFORM_SMOKE_UBUNTU_IMAGE: undefined,
     PI_ORACLE_SMOKE_MAC_WORK_ROOT: undefined,
     PLATFORM_SMOKE_MAC_WORK_ROOT: undefined,
+    PI_ORACLE_SMOKE_MAC_PORT: undefined,
+    PLATFORM_SMOKE_MAC_PORT: undefined,
     PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT: undefined,
     PLATFORM_SMOKE_WINDOWS_WORK_ROOT: undefined,
   }, () => {
@@ -127,6 +129,14 @@ function testTargetBaseArgsEnvPrecedence() {
     process.env.PI_ORACLE_SMOKE_MAC_WORK_ROOT = "/invariants/private-work";
     args = buildTargetBaseArgs("macos", {});
     assert(args.includes("/invariants/private-work") && !args.includes("/invariants/shared-work"), "private PI_ORACLE_SMOKE_MAC_WORK_ROOT alias should win over the shared alias");
+
+    assert.equal(args[args.indexOf("--static-port") + 1], "22", "macOS SSH defaults to port 22");
+    process.env.PLATFORM_SMOKE_MAC_PORT = "2200";
+    args = buildTargetBaseArgs("macos", {});
+    assert.equal(args[args.indexOf("--static-port") + 1], "2200", "shared macOS port reaches Crabbox");
+    process.env.PI_ORACLE_SMOKE_MAC_PORT = "2201";
+    args = buildTargetBaseArgs("macos", {});
+    assert.equal(args[args.indexOf("--static-port") + 1], "2201", "project macOS port takes precedence");
 
     process.env.PLATFORM_SMOKE_WINDOWS_WORK_ROOT = "C:\\invariants\\shared-work";
     args = buildTargetBaseArgs("windows-native", {});

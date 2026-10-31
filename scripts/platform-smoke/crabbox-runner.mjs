@@ -58,6 +58,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
   switch (targetName) {
     case "macos": {
       const host = env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost";
+      const port = env("PI_ORACLE_SMOKE_MAC_PORT") || env("PLATFORM_SMOKE_MAC_PORT") || "22";
       const user = env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER");
       const workRoot = env("PI_ORACLE_SMOKE_MAC_WORK_ROOT") || env("PLATFORM_SMOKE_MAC_WORK_ROOT") || `/Users/${env("USER")}/crabbox/${config.packageName ?? "pi-oracle"}`;
       return [
@@ -65,7 +66,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
         "--target", "macos",
         "--static-host", host,
         "--static-user", user,
-        "--static-port", "22",
+        "--static-port", port,
         "--static-work-root", workRoot,
       ];
     }
