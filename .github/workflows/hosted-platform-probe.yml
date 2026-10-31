@@ -26,7 +26,7 @@ jobs:
     needs: [hosts, prepare]
     uses: ./.github/workflows/release-platform.yml
     with:
-      automation-ref: 1d0ea18ce141ceee410030075120c910a7212a1b
+      automation-ref: 5d3eebb4aad77a75b28e64f97d70cca656a37bbf
       source-ref: ${{ github.sha }}
       release-source: ${{ github.sha }}
       official-version: ${{ needs.hosts.outputs.official-version }}
