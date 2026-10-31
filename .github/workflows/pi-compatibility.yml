@@ -1,32 +1,26 @@
-name: Pi compatibility
+name: Windows Crabbox diagnostic
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      official-version:
-        description: Official stable version resolved for this run; blank resolves latest
-        type: string
-        default: ''
-      fork-ref:
-        description: Maintained fork commit resolved for this run; blank resolves main
-        type: string
-        default: ''
 
 permissions:
   contents: read
 
-concurrency:
-  group: pi-compatibility-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  compatibility:
-    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@3d1b323fd602274c55e5f44692f24c8605e52b60 # main
-    with:
-      automation-ref: 3d1b323fd602274c55e5f44692f24c8605e52b60 # main
-      official-version: ${{ inputs.official-version }}
-      fork-ref: ${{ inputs.fork-ref }}
+  windows-static-ssh:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          check-latest: true
+          package-manager-cache: false
+      - name: Exercise a task-owned non-admin Windows SSH target
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/windows-crabbox-diagnostic.ps1
