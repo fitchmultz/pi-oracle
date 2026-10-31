@@ -80,6 +80,8 @@ try {
   foreach ($path in @($hostKey, $authorizedKeys)) {
     & icacls.exe $path /inheritance:r /grant:r "${accountName}:(F)" 'SYSTEM:(F)' 'BUILTIN\Administrators:(F)' | Out-Null
     Assert-NativeSuccess "restrict $path"
+    & icacls.exe $path /remove:g $caller | Out-Null
+    Assert-NativeSuccess "remove creator access from $path"
     & icacls.exe $path /setowner $accountName | Out-Null
     Assert-NativeSuccess "set owner for $path"
   }
