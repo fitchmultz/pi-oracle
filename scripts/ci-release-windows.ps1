@@ -34,7 +34,7 @@ try {
   $zstdZip = Join-Path $root 'zstd.zip'
   Download-ReleaseAsset 'PowerShell/Win32-OpenSSH' '^OpenSSH-Win64\.zip$' $sshZip
   Download-ReleaseAsset 'openclaw/crabbox' '^crabbox_.*_windows_amd64\.zip$' $crabboxZip
-  Download-ReleaseAsset 'facebook/zstd' '^zstd-.*-win64\.zip$' $zstdZip
+  Download-ReleaseAsset 'meta/zstd' '^zstd-.*-win64\.zip$' $zstdZip
   $sshDir = Join-Path $root 'openssh'
   $crabboxDir = Join-Path $root 'crabbox-bin'
   $zstdDir = Join-Path $root 'zstd'
