@@ -7,7 +7,6 @@ $account = 'oracle_' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $accountName = "$env:COMPUTERNAME\$account"
 $server = $null
 $createdAccount = $false
-$leaseId = $null
 New-Item -ItemType Directory -Path $root | Out-Null
 
 function Download-ReleaseAsset([string]$repository, [string]$pattern, [string]$destination) {
@@ -141,27 +140,25 @@ try {
   $base = @('--provider', 'static-ssh', '--target', 'windows', '--windows-mode', 'normal', '--static-host', '127.0.0.1', '--static-port', "$port", '--static-user', $account, '--static-work-root', $workRoot)
   & $crabbox doctor @base --doctor-probe-ssh
   Assert-NativeSuccess 'crabbox doctor'
-  $warmup = & $crabbox warmup @base --slug oracle-windows-diagnostic --keep
-  Assert-NativeSuccess 'crabbox warmup'
-  $warmup | ForEach-Object { Write-Host $_ }
-  $leaseMatch = ([string]::Join("`n", $warmup)) -match '\bleased\s+(\S+)|\blease=(\S+)'
-  if ($leaseMatch) { $leaseId = if ($Matches[1]) { $Matches[1] } else { $Matches[2] } }
-  if (-not $leaseId) { $leaseId = 'oracle-windows-diagnostic' }
-  $toolsCommand = '$node = (node.exe --version).Trim(); Write-Host "REMOTE_NODE=$node"; if ([int]($node.TrimStart("v").Split(".")[0]) -lt 24) { exit 1 }; if (-not (Get-Command agent-browser.cmd -ErrorAction SilentlyContinue)) { exit 1 }; agent-browser.cmd --version; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; pi.cmd --version; exit $LASTEXITCODE'
-  & $crabbox run @base --id $leaseId --allow-env PATH --allow-env Path --fresh-sync --shell $toolsCommand
-  Assert-NativeSuccess 'Windows target tools'
-  $platformCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildPlatformBuildCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildPlatformBuildCommand("windows-native", config.packageName, config.nodeValidationMajor));'
-  Assert-NativeSuccess 'generate platform-build command'
-  & $crabbox run @base --id $leaseId --allow-env PATH --allow-env Path --fresh-sync --shell $platformCommand
-  Assert-NativeSuccess 'Windows platform-build suite'
-
-  $realCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildRealExtensionCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildRealExtensionCommand("windows-native", config));'
-  Assert-NativeSuccess 'generate real-extension command'
-  & $crabbox run @base --id $leaseId --allow-env PATH --allow-env Path --no-sync --shell $realCommand
-  Assert-NativeSuccess 'Windows real-extension suite'
+  $candidate = Join-Path (Join-Path $env:RUNNER_TEMP 'npm-candidate') $env:CANDIDATE_FILENAME
+  if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:CANDIDATE_SHA256) {
+    throw 'Downloaded Linux candidate checksum changed'
+  }
+  $env:PI_ORACLE_RELEASE_TARBALL = $candidate
+  $env:PI_ORACLE_RELEASE_SHA256 = $env:CANDIDATE_SHA256
+  $env:PI_ORACLE_SMOKE_CRABBOX = $crabbox
+  $env:PI_ORACLE_SMOKE_WINDOWS_HOST = '127.0.0.1'
+  $env:PI_ORACLE_SMOKE_WINDOWS_PORT = "$port"
+  $env:PI_ORACLE_SMOKE_WINDOWS_USER = $account
+  $env:PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT = $workRoot
+  $env:CRABBOX_ENV_ALLOW = 'PATH,Path'
+  & node.exe scripts/platform-smoke.mjs run --target windows-native
+  Assert-NativeSuccess 'retained-candidate Windows platform suites'
+  if (Get-ChildItem -Force -Directory -Filter '.oracle-release-input-*') {
+    throw 'Candidate staging directory was not cleaned'
+  }
   Write-Host 'STATIC_SSH_DIAGNOSTIC_AND_SUITES_OK'
 } finally {
-  if ($leaseId) { & $crabbox stop @base --id $leaseId; if ($LASTEXITCODE -ne 0) { Write-Warning "Crabbox stop exited $LASTEXITCODE" } }
   if ($server) { $server.Refresh(); if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force } }
   if (Test-Path -LiteralPath $serverLog -ErrorAction SilentlyContinue) {
     Write-Host '--- task-owned sshd log ---'

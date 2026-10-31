@@ -12,7 +12,50 @@ permissions:
   contents: read
 
 jobs:
+  pack:
+    runs-on: ubuntu-latest
+    outputs:
+      filename: ${{ steps.pack.outputs.filename }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          check-latest: true
+          package-manager-cache: false
+      - name: Pack the source once on Linux
+        id: pack
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_REF"
+          mkdir "$RUNNER_TEMP/npm-candidate"
+          PM="$(node -p 'require("./package.json").packageManager')"
+          npm exec --yes --package="$PM" -- npm pack --ignore-scripts --json \
+            --pack-destination "$RUNNER_TEMP/npm-candidate" > "$RUNNER_TEMP/pack.json"
+          node - "$RUNNER_TEMP/pack.json" "$RUNNER_TEMP/npm-candidate" >> "$GITHUB_OUTPUT" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const entries = Object.values(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')));
+          if (entries.length !== 1) throw new Error('Expected one packed candidate');
+          const filename = entries[0].filename;
+          if (path.basename(filename) !== filename) throw new Error('Invalid candidate filename');
+          const sha256 = crypto.createHash('sha256').update(fs.readFileSync(path.join(process.argv[3], filename))).digest('hex');
+          console.log(`filename=${filename}\nsha256=${sha256}`);
+          NODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-linux-candidate
+          path: ${{ runner.temp }}/npm-candidate
+          if-no-files-found: error
+
   windows-static-ssh:
+    needs: pack
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -30,10 +73,22 @@ jobs:
           node-version: '24'
           check-latest: true
           package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oracle-linux-candidate
+          path: ${{ runner.temp }}/npm-candidate
       - name: Exercise a task-owned non-admin Windows SSH target
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          CANDIDATE_FILENAME: ${{ needs.pack.outputs.filename }}
+          CANDIDATE_SHA256: ${{ needs.pack.outputs.sha256 }}
         run: |
           Set-Location candidate
           & ../scripts/windows-crabbox-diagnostic.ps1
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-windows-platform-evidence
+          path: candidate/.artifacts/platform-smoke
+          if-no-files-found: warn
