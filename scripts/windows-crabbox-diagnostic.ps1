@@ -51,12 +51,7 @@ try {
   if (-not ($sshd -and $ssh -and $keygen -and $sftp -and $crabbox -and $zstd)) { throw 'A required downloaded executable is absent' }
 
   $toolDir = Join-Path $root 'tools'
-  $npmMajor = [int]((npm.cmd --version).Split('.')[0])
-  if ($npmMajor -ge 12) {
-    & npm.cmd install -g --prefix $toolDir --allow-scripts=agent-browser agent-browser
-  } else {
-    & npm.cmd install -g --prefix $toolDir agent-browser
-  }
+  & npm.cmd install -g --prefix $toolDir --allow-scripts=agent-browser agent-browser
   Assert-NativeSuccess 'agent-browser install'
   $env:PATH = "$toolDir;$([IO.Path]::GetDirectoryName($zstd));$env:PATH"
   Write-Host "Tool versions: node=$(node.exe --version) npm=$(npm.cmd --version) browser=$(agent-browser.cmd --version)"
@@ -112,8 +107,8 @@ try {
     'LogLevel DEBUG2'
   ) -join "`n"
   Set-Content -LiteralPath $serverConfig -Value $config -Encoding ascii
-  & $sshd -t -f $serverConfig
-  Assert-NativeSuccess 'sshd configuration'
+  $configuration = Start-Process -FilePath $sshd -ArgumentList @('-t', '-f', $serverConfig, '-E', $serverLog) -Credential $credential -LoadUserProfile -WindowStyle Hidden -Wait -PassThru
+  if ($configuration.ExitCode -ne 0) { throw "sshd configuration exited $($configuration.ExitCode)" }
   $server = Start-Process -FilePath $sshd -ArgumentList @('-D', '-f', $serverConfig, '-E', $serverLog) -Credential $credential -LoadUserProfile -WindowStyle Hidden -PassThru
   $listening = $false
   for ($i = 0; $i -lt 100 -and -not $listening; $i++) {
