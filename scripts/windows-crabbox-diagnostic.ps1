@@ -152,6 +152,8 @@ try {
   $env:PI_ORACLE_SMOKE_WINDOWS_USER = $account
   $env:PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT = $workRoot
   $env:CRABBOX_ENV_ALLOW = 'PATH,Path'
+  & node.exe scripts/platform-smoke.mjs doctor --target windows-native
+  Assert-NativeSuccess 'target-scoped Windows platform doctor'
   & node.exe scripts/platform-smoke.mjs run --target windows-native
   Assert-NativeSuccess 'retained-candidate Windows platform suites'
   if (Get-ChildItem -Force -Directory -Filter '.oracle-release-input-*') {
