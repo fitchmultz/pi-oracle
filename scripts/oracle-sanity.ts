@@ -3697,7 +3697,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(referenceSource.includes("## Available providers and presets"), "Oracle reference should document available oracle preset ids");
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
   assert(referenceSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "Reference/design/prompts should use MiB wording for ChatGPT upload ceiling");
-  assert(readmeSource.includes("Node.js 22.19.0 or newer") && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README and development guide should distinguish package Node floor from Node 24 platform validation");
+  const packageNodeFloor = pkg.engines?.node?.replace(/^>=/, "");
+  assert(Boolean(packageNodeFloor) && readmeSource.includes("docs/reference.md#requirements") && referenceSource.includes(`Node.js ${packageNodeFloor} or newer`) && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should link to the documented package Node minimum, and the development guide should distinguish platform validation");
   assert(developmentSource.includes("npm run check:platform-smoke") && developmentSource.includes("npm run sanity:oracle:platform"), "Development guide verification table should include the cheap platform-focused validation commands");
   assert(referenceSource.includes("Grok uploads now use `.tar.gz` archives"), "Oracle reference should document Grok's gzip archive format because Grok lacks zstd extraction tools");
   assert(referenceSource.includes("defaults.preset"), "Oracle reference should document defaults.preset");
@@ -3996,7 +3997,6 @@ async function testResponseTimeoutGuard(): Promise<void> {
   assert(workerSource.includes('["button", "radio", "menuitemradio"].includes(candidate.kind || "")'), "worker should accept radio-style model family controls in addition to button controls");
   assert(workerSource.includes('["button", "switch"].includes(candidate.kind || "")'), "worker should treat the auto-switch control as a switch in the current ChatGPT configure modal");
   assert(workerSource.includes("Could not find model family control"), "worker should describe missing family selectors generically instead of assuming button-only controls");
-  assert(workerSource.includes('candidate.label === "Model"'), "worker should recognize the current ChatGPT Model button as the configuration opener");
   assert(workerSource.includes("canUseOpenModelMenuForSelection"), "worker should fall back to the top-level model menu for plain Instant when ChatGPT's configure sheet is unavailable");
   assert(workerSource.includes("snapshotHasUsableComposerControls"), "worker readiness should accept authenticated usable composer shells even when model labels drift");
   assert(workerSource.includes("public Log in/Sign up controls"), "worker readiness should not accept ChatGPT's public logged-out composer shell as authenticated");

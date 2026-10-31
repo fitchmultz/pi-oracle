@@ -523,23 +523,28 @@ export function snapshotHasUsableComposerControls(snapshot) {
 }
 
 /**
+ * @param {SnapshotEntry} entry
+ * @returns {boolean}
+ */
+export function matchesModelConfigurationOpener(entry) {
+  if (entry.disabled || entry.kind !== "button" || typeof entry.label !== "string") return false;
+  const label = normalizeChipLabel(entry.label);
+  return label === "Model"
+    || label === "Model selector"
+    || label === "Select ChatGPT model"
+    || matchesCompactIntelligenceOpenerLabel(label)
+    || BARE_EFFORT_PATTERN.test(label)
+    || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {OracleUiModelFamily} */ (family)))
+    || THINKING_CHIP_PATTERN.test(label)
+    || PRO_CHIP_PATTERN.test(label);
+}
+
+/**
  * @param {string} snapshot
  * @returns {boolean}
  */
 export function snapshotHasModelOpener(snapshot) {
-  /** @type {SnapshotEntry[]} */
-  const entries = parseSnapshotEntries(snapshot);
-  return entries.some((entry) => {
-    if (entry.disabled || entry.kind !== "button" || typeof entry.label !== "string") return false;
-    const label = normalizeChipLabel(entry.label);
-    return label === "Model"
-      || label === "Model selector"
-      || COMPACT_INTELLIGENCE_OPENER_PATTERN.test(label)
-      || EFFORT_LABELS.has(label)
-      || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {OracleUiModelFamily} */ (family)))
-      || THINKING_CHIP_PATTERN.test(label)
-      || PRO_CHIP_PATTERN.test(label);
-  });
+  return parseSnapshotEntries(snapshot).some(matchesModelConfigurationOpener);
 }
 
 /**

@@ -26,6 +26,13 @@ You need:
 - a normal persisted `pi` session, not `pi --no-session`
 - on Linux, encrypted Chromium cookies may also require `secret-tool` (GNOME/libsecret) or `kwallet-query` + `dbus-send` (KDE), unless a Chrome/Brave safe-storage password override is set for the auth run
 
+`agent-browser` has its own Node.js requirements, which may be newer than Oracle's package minimum.
+If npm blocks `agent-browser`'s install script, allow it when installing the global package:
+
+```bash
+npm install -g --allow-scripts=agent-browser agent-browser
+```
+
 ## What a successful run looks like
 
 ```text

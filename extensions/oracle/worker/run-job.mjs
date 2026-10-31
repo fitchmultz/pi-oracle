@@ -26,7 +26,7 @@ import {
   CHATGPT_COMPOSER_LABELS,
   deriveAssistantCompletionSignature,
   matchesCompactIntelligenceControlLabel,
-  matchesCompactIntelligenceOpenerLabel,
+  matchesModelConfigurationOpener,
   matchesModelFamilyLabel,
   matchesRequestedModelControlLabel,
   requestedEffortLabel,
@@ -58,7 +58,7 @@ const jobPath = `${jobDir}/job.json`;
 const CHATGPT_LABELS = {
   composer: "Chat with ChatGPT",
   addFiles: "Add files and more",
-  send: "Send prompt",
+  send: ["Send prompt", "Send"],
   close: "Close",
   autoSwitchToThinking: "Auto-switch to Thinking",
   configure: "Configure...",
@@ -66,7 +66,7 @@ const CHATGPT_LABELS = {
 const GROK_LABELS = {
   composer: "Ask Grok anything",
   addFiles: "Attach",
-  send: "Submit",
+  send: ["Submit"],
   modelSelect: "Model select",
   stop: "Stop model response",
 };
@@ -916,18 +916,6 @@ function matchesRequestedModelControl(candidate, selection, options = {}) {
   return matchesRequestedModelControlLabel(candidate.label, selection);
 }
 
-function matchesModelConfigurationOpener(candidate) {
-  if (candidate.kind !== "button" || typeof candidate.label !== "string" || candidate.disabled) return false;
-  const label = String(candidate.label || "");
-  return candidate.label === "Model"
-    || candidate.label === "Model selector"
-    || matchesCompactIntelligenceOpenerLabel(label)
-    || /^(?:Light|Standard|Extended|Heavy)(?:, click to remove)?$/i.test(label)
-    || ["instant", "thinking", "pro"].some((family) => matchesModelFamilyLabel(label, /** @type {import("./chatgpt-ui-helpers.d.mts").OracleUiModelFamily} */ (family)))
-    || /^(?:(?:Light|Standard|Extended|Heavy) )?Thinking(?:, click to remove)?$/i.test(label)
-    || /^(?:(?:Light|Standard|Extended|Heavy) )?Pro(?:, click to remove)?$/i.test(label);
-}
-
 function canUseOpenModelMenuForSelection(snapshot, selection) {
   if (selection.modelFamily !== "instant" || selection.autoSwitchToThinking === true) return false;
   return Boolean(findEntry(
@@ -1312,7 +1300,7 @@ async function waitForUploadConfirmed(job, fileLabel, baselineCount) {
     const labels = labelsForJob(job);
     const sendEntry = findEntry(
       snapshot,
-      (candidate) => candidate.kind === "button" && candidate.label === labels.send && !candidate.disabled,
+      (candidate) => candidate.kind === "button" && labels.send.includes(candidate.label || "") && !candidate.disabled,
     );
     const fileCount = isGrokJob(job) && snapshot.includes(fileLabel)
       ? baselineCount + 1
@@ -1346,12 +1334,12 @@ async function waitForSendReady(job) {
     const labels = labelsForJob(job);
     const entry = findEntry(
       snapshot,
-      (candidate) => candidate.kind === "button" && candidate.label === labels.send && !candidate.disabled,
+      (candidate) => candidate.kind === "button" && labels.send.includes(candidate.label || "") && !candidate.disabled,
     );
     if (entry) return entry;
     await sleep(1000);
   }
-  throw new Error(`Timed out waiting for ${labelsForJob(job).send} to become enabled`);
+  throw new Error(`Timed out waiting for ${labelsForJob(job).send.join(" or ")} to become enabled`);
 }
 
 async function activateSendButton(job) {
@@ -1360,12 +1348,12 @@ async function activateSendButton(job) {
     const buttons = Array.from(document.querySelectorAll('button'));
     const button = buttons.find((candidate) => {
       const label = (candidate.getAttribute('aria-label') || candidate.textContent || '').trim();
-      return label === labels.send;
+      return labels.send.includes(label);
     });
     if (!button) return { ok: false, reason: 'send button not found' };
     if (button.disabled || button.getAttribute('aria-disabled') === 'true') return { ok: false, reason: 'send button disabled' };
     button.click();
-    return { ok: true };
+    return { ok: true, label: (button.getAttribute('aria-label') || button.textContent || '').trim() };
   `));
   return result;
 }
@@ -1380,7 +1368,7 @@ async function sendAcceptanceState(job, baselineAssistantCount) {
     url: urlResult.url,
     urlKnown: urlResult.ok,
     assistantCount: Math.max(baselineAssistantCount, messages.length),
-    stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming"),
+    stopStreaming: isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming") || snapshot.includes('button "Stop"'),
     transientErrorText: detectProviderVisibleBlockerText(snapshot) || "",
   };
 }
@@ -1389,12 +1377,13 @@ async function clickSend(job, baselineAssistantCount) {
   await waitForSendReady(job);
   const beforeSend = await sendAcceptanceState(job, baselineAssistantCount);
   const activation = await activateSendButton(job);
-  if (!activation?.ok) throw new Error(`Could not activate ${labelsForJob(job).send}: ${activation?.reason || "DOM activation failed"}`);
-  await log(`Activated ${labelsForJob(job).send}; waiting for provider acceptance evidence`);
+  const sendLabel = activation?.label || labelsForJob(job).send.join(" or ");
+  if (!activation?.ok) throw new Error(`Could not activate ${sendLabel}: ${activation?.reason || "DOM activation failed"}`);
+  await log(`Activated ${sendLabel}; waiting for provider acceptance evidence`);
   if (await waitForSendAccepted(job, beforeSend, { timeoutMs: 20_000 })) return;
 
   await captureDiagnostics(job, "send-not-accepted");
-  throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} message did not leave the composer after activating ${labelsForJob(job).send}`);
+  throw new Error(`${isGrokJob(job) ? "Grok" : "ChatGPT"} message did not leave the composer after activating ${sendLabel}`);
 }
 
 async function waitForSendAccepted(job, beforeSend, options = {}) {
@@ -1781,7 +1770,7 @@ async function assistantMessages(job) {
     job,
     toJsonScript(`
       const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]'))
-        .filter((el) => (el.textContent || '').trim() === 'ChatGPT said:');
+        .filter((el) => el.getAttribute('data-conversation-role') === 'assistant' || (el.textContent || '').trim() === 'ChatGPT said:');
       const renderText = (node) => {
         if (!node) return '';
         const clone = node.cloneNode(true);
@@ -1807,7 +1796,10 @@ async function assistantMessages(job) {
           .trim();
         return text;
       };
-      const headingMessages = headings.map((heading) => ({ text: renderText(heading.nextElementSibling) }));
+      const headingMessages = headings.map((heading) => ({
+        text: renderText(heading.nextElementSibling),
+        turnComplete: heading.closest('[data-talvt-turn-state]')?.getAttribute('data-talvt-turn-state') === 'complete',
+      }));
       const messageNodes = Array.from(document.querySelectorAll('[data-testid="assistant-message"], [data-message-author-role="assistant"]'));
       const nodeMessages = messageNodes.map((node) => ({ text: renderText(node) }));
       return {
@@ -1817,7 +1809,10 @@ async function assistantMessages(job) {
   );
 
   if (!Array.isArray(result?.messages)) return [];
-  return result.messages.map((message) => ({ text: typeof message?.text === "string" ? message.text : "" }));
+  return result.messages.map((message) => ({
+    text: typeof message?.text === "string" ? message.text : "",
+    turnComplete: message?.turnComplete === true,
+  }));
 }
 
 async function grokAssistantMessages(job) {
@@ -1886,7 +1881,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
   while (Date.now() < timeoutAt) {
     await heartbeat();
     const [snapshot, body] = await Promise.all([snapshotText(job), pageText(job).catch(() => "")]);
-    const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming");
+    const hasStopStreaming = isGrokJob(job) ? snapshot.includes(GROK_LABELS.stop) : snapshot.includes("Stop streaming") || snapshot.includes('button "Stop"');
     const hasRetryButton = snapshot.includes('button "Retry"');
     const copyResponseCount = isGrokJob(job) ? (snapshot.match(/button "Copy"/g) || []).length : (snapshot.match(/Copy response/g) || []).length;
     throwIfProviderTransientError(job, snapshot, "waiting for response completion");
@@ -1894,7 +1889,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
     const messages = await assistantMessages(job);
     const targetMessage = messages[baselineAssistantCount];
     const targetText = targetMessage?.text || "";
-    const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount;
+    const hasTargetCopyResponse = copyResponseCount > baselineAssistantCount || targetMessage?.turnComplete === true;
 
     if (!hasStopStreaming && hasRetryButton && responseFailureText) {
       if (!retriedAfterFailure) {

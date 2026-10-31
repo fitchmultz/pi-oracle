@@ -6,9 +6,9 @@ pi-oracle sends project files and questions from [Pi](https://github.com/earendi
 
 ## Install
 
-Use Node.js 22.19.0 or newer on macOS, Linux, or Windows native. Use a current Pi release and a Chromium-family browser.
+Use a supported Node.js release on macOS, Linux, or Windows native. Use a current Pi release and a Chromium-family browser.
 
-Install `agent-browser` and `tar`. Install `zstd` for ChatGPT jobs. Check the [platform requirements](docs/reference.md#requirements) for profile copies and encrypted cookies.
+Install `agent-browser` and `tar`. Install `zstd` for ChatGPT jobs. Check the [platform requirements](docs/reference.md#requirements) for the Node.js minimum, profile copies, and encrypted cookies.
 
 Install Oracle:
 

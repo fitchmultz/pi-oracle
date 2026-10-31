@@ -15,20 +15,21 @@ const functions = names.flatMap((name) => {
   return `${worker.slice(start - 6, start) === "async " ? "async " : ""}${worker.slice(start, end)}`;
 }).join("\n");
 
-function harness({ initial = 3, max = "4", wrongLabel = false, stuck = false, mountingReads = 0 } = {}) {
+function harness({ initial = 3, max = "4", wrongLabel = false, stuck = false, mountingReads = 0, openerLabel } = {}) {
   const labels = ["Instant", "Medium", "High", "Extra High", "Pro"];
   let value = initial;
   let open = false;
   let verified = false;
+  let now = 0;
   const snapshot = () => open
     ? '- button "Thinking effort" [expanded=true, ref=e1]\n- menu "Thinking effort" [ref=e2]\n- menuitem "Select model" [ref=e3]\n- menuitem "Power" [ref=e4]'
-    : `- button "${value === 4 ? "6 Pro" : labels[value]}" [expanded=false, ref=e1]\n- textbox "Ask ChatGPT" [ref=e5]\n- button "Add files and more" [ref=e6]`;
+    : `- button "${openerLabel ?? (value === 4 ? "6 Pro" : labels[value])}" [expanded=false, ref=e1]\n- textbox "Ask ChatGPT" [ref=e5]\n- button "Add files and more" [ref=e6]`;
   const control = {
     closest: () => null,
     getAttribute: () => "description",
     querySelector: () => mountingReads-- > 0 ? null : ({ getAttribute: (name) => ({ "aria-valuemin": "0", "aria-valuemax": max, "aria-valuenow": String(value) })[name] }),
   };
-  const context = vm.createContext({ ...ui, parseSnapshotEntries, Date, Error, JSON, Number,
+  const context = vm.createContext({ ...ui, parseSnapshotEntries, Date: { now: () => now++ }, Error, JSON, Number,
     CHATGPT_LABELS: { configure: "Configure..." },
     MODEL_CONFIGURATION_OPEN_TIMEOUT_MS: 30, MODEL_CONFIGURATION_SETTLE_TIMEOUT_MS: 30,
     MODEL_CONFIGURATION_CLOSE_RETRY_MS: 1, MODEL_CONFIGURATION_SETTLE_POLL_MS: 0,
@@ -58,19 +59,21 @@ function harness({ initial = 3, max = "4", wrongLabel = false, stuck = false, mo
 }
 
 test("worker configures every preset through the current Power picker and closes it", async () => {
-  for (const [selection, expected] of [
-    [{ modelFamily: "instant", autoSwitchToThinking: false }, 0],
-    [{ modelFamily: "instant", autoSwitchToThinking: true }, 0],
-    [{ modelFamily: "thinking", effort: "light" }, 1],
-    [{ modelFamily: "thinking", effort: "standard" }, 1],
-    [{ modelFamily: "thinking", effort: "extended" }, 2],
-    [{ modelFamily: "thinking", effort: "heavy" }, 3],
-    [{ modelFamily: "pro", effort: "standard" }, 4],
-    [{ modelFamily: "pro", effort: "extended" }, 4],
-  ]) {
-    const h = harness({ initial: expected === 4 ? 0 : 4, mountingReads: 2 });
-    await h.configure(selection);
-    assert.deepEqual(h.state, { value: expected, open: false, verified: true });
+  for (const openerLabel of [undefined, "Select ChatGPT model"]) {
+    for (const [selection, expected] of [
+      [{ modelFamily: "instant", autoSwitchToThinking: false }, 0],
+      [{ modelFamily: "instant", autoSwitchToThinking: true }, 0],
+      [{ modelFamily: "thinking", effort: "light" }, 1],
+      [{ modelFamily: "thinking", effort: "standard" }, 1],
+      [{ modelFamily: "thinking", effort: "extended" }, 2],
+      [{ modelFamily: "thinking", effort: "heavy" }, 3],
+      [{ modelFamily: "pro", effort: "standard" }, 4],
+      [{ modelFamily: "pro", effort: "extended" }, 4],
+    ]) {
+      const h = harness({ initial: expected === 4 ? 0 : 4, mountingReads: 2, openerLabel });
+      await h.configure(selection);
+      assert.deepEqual(h.state, { value: expected, open: false, verified: true });
+    }
   }
 });
 
