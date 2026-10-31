@@ -95,6 +95,10 @@ export function buildRealExtensionCommand(targetName = "ubuntu", config = {}) {
       `$env:PI_ORACLE_REAL_TEST_PROVIDER = ${powershellSingleQuote(provider)}`,
       `$env:PI_ORACLE_REAL_TEST_MODEL = ${powershellSingleQuote(model)}`,
       `$env:PI_ORACLE_REAL_TEST_MODEL_AGENT = ${powershellSingleQuote(useModelAgent ? "1" : "")}`,
+      ...(config.releaseCandidate ? [
+        `$env:PI_ORACLE_RELEASE_TARBALL = Join-Path (Get-Location) ${powershellSingleQuote(config.releaseCandidate.path)}`,
+        `$env:PI_ORACLE_RELEASE_SHA256 = ${powershellSingleQuote(config.releaseCandidate.sha256)}`,
+      ] : []),
       "$env:PI_ORACLE_REAL_TEST_TIMEOUT_MS = '360000'",
       "if (-not (Test-Path -LiteralPath 'node_modules')) { npm.cmd ci; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }",
       "npm.cmd run smoke:real:doctor",
@@ -108,15 +112,22 @@ export function buildRealExtensionCommand(targetName = "ubuntu", config = {}) {
     `export PI_ORACLE_REAL_TEST_PROVIDER=${shellQuote(provider)}`,
     `export PI_ORACLE_REAL_TEST_MODEL=${shellQuote(model)}`,
     `export PI_ORACLE_REAL_TEST_MODEL_AGENT=${shellQuote(useModelAgent ? "1" : "")}`,
+    ...(config.releaseCandidate ? [
+      `export PI_ORACLE_RELEASE_TARBALL="$PWD"/${shellQuote(config.releaseCandidate.path)}`,
+      `export PI_ORACLE_RELEASE_SHA256=${shellQuote(config.releaseCandidate.sha256)}`,
+    ] : []),
     'if [ ! -d node_modules ]; then npm ci; fi',
     "npm run smoke:real:doctor",
     "npm run smoke:real:packed",
   ].join("\n");
 }
 
-export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "pi-oracle", nodeValidationMajor = 24) {
+export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "pi-oracle", nodeValidationMajor = 24, releaseCandidate) {
   if (targetName === "windows-native") {
-    return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\platform-smoke\\platform-build-windows.ps1 -PackageName ${packageName} -NodeValidationMajor ${nodeValidationMajor}`;
+    const candidate = releaseCandidate
+      ? ` -CandidatePath ${powershellSingleQuote(releaseCandidate.path)} -CandidateSha256 ${powershellSingleQuote(releaseCandidate.sha256)}`
+      : "";
+    return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\platform-smoke\\platform-build-windows.ps1 -PackageName ${packageName} -NodeValidationMajor ${nodeValidationMajor}${candidate}`;
   }
   const lines = [];
   lines.push("set -o pipefail");
@@ -172,6 +183,12 @@ export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "
   lines.push('cat "$PACK_DIR/npm-pack.stderr.txt"');
   lines.push('echo "PLATFORM_NPM_PACK_EXIT=$PACK_EXIT"');
   lines.push('if [ -n "$PACK_TARBALL" ] && [ -f "$PACK_TARBALL" ]; then mv "$PACK_TARBALL" "$PACK_DIR/$PACK_TARBALL"; fi');
+  if (releaseCandidate) {
+    lines.push(`CANDIDATE="$SOURCE_ROOT"/${shellQuote(releaseCandidate.path)}`);
+    lines.push('CANDIDATE_SHA256=$(node -e \'const {createHash}=require("node:crypto");const {readFileSync}=require("node:fs");console.log(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"))\' "$CANDIDATE")');
+    lines.push('echo "PLATFORM_CANDIDATE_SHA256=$CANDIDATE_SHA256"');
+    lines.push(`if [ "$CANDIDATE_SHA256" = ${shellQuote(releaseCandidate.sha256)} ]; then cp "$CANDIDATE" "$PACK_DIR/release-candidate.tgz" || exit 1; PACK_TARBALL=release-candidate.tgz; else echo "Retained release candidate checksum changed"; exit 1; fi`);
+  }
   lines.push('echo "PLATFORM_PACKED_TARBALL=$PACK_TARBALL"');
   lines.push('printf "%s\\n" "$PACK_TARBALL" > "$PACK_DIR/packed-tarball.txt"');
   lines.push("");
@@ -213,7 +230,7 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
   writeFileSync(resolve(suiteDir, "suite.json"), JSON.stringify({ suiteName, writtenAt: new Date().toISOString() }, null, 2));
 
   const command = suiteName === "platform-build"
-    ? buildPlatformBuildCommand(targetName, config.packageName ?? "pi-oracle", config.nodeValidationMajor ?? 24)
+    ? buildPlatformBuildCommand(targetName, config.packageName ?? "pi-oracle", config.nodeValidationMajor ?? 24, config.releaseCandidate)
     : buildRealExtensionCommand(targetName, config);
   writeCommand(suiteDir, command);
 
@@ -269,6 +286,8 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
       { id: "platform-dependencies", fn: () => /PLATFORM_DEPS_EXIT=0/.test(stdout) },
       { id: "platform-verification", fn: () => /PLATFORM_NPM_TEST_EXIT=0/.test(stdout) },
       { id: "npm-pack", fn: () => /PLATFORM_NPM_PACK_EXIT=0/.test(stdout) && /PLATFORM_PACKED_TARBALL=\S+/.test(stdout) },
+      ...(config.releaseCandidate ? [{ id: "release-candidate-sha256",
+        fn: () => markerValue(stdout, "PLATFORM_CANDIDATE_SHA256") === config.releaseCandidate.sha256 }] : []),
       { id: "packed-node-install", fn: () => /PLATFORM_PACKED_NODE_INSTALL_EXIT=0/.test(stdout) },
       { id: "pi-install", fn: () => /PLATFORM_PI_INSTALL_EXIT=0/.test(stdout) },
       { id: "pi-list", fn: () => /PLATFORM_PI_LIST_EXIT=0/.test(stdout) && listOutput.includes(packageName) && packageInstallPattern.test(listOutput) },
@@ -289,6 +308,8 @@ export async function runTargetSuite(config, targetName, suiteName, leaseSession
       { id: "real-smoke-doctor", fn: () => stdout.includes("Oracle real smoke doctor") && stdout.includes(`provider: ${provider}`) },
       { id: "real-smoke-marker", fn: () => stdout.includes("Oracle real smoke passed:") },
       { id: "real-smoke-packed-install", fn: () => stdout.includes("mode=packed") && stdout.includes("extension=./node_modules/pi-oracle") },
+      ...(config.releaseCandidate ? [{ id: "release-candidate-sha256",
+        fn: () => markerValue(stdout, "ORACLE_RELEASE_CANDIDATE_SHA256") === config.releaseCandidate.sha256 }] : []),
       { id: "real-smoke-no-source-extension", fn: () => !command.includes("extensions/oracle/index.ts") && !/\bpi\s+(?:-e|--extension)\s+extensions\/oracle/.test(command) },
       { id: "no-secrets", fn: () => violations.length === 0, error: "redaction violations found" },
     ];

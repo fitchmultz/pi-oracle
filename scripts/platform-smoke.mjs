@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,9 +55,13 @@ Environment:
   PLATFORM_SMOKE_UBUNTU_IMAGE    Optional local-container image override
   PLATFORM_SMOKE_WINDOWS_VM      Parallels source VM (default from config)
   PLATFORM_SMOKE_WINDOWS_SNAPSHOT Parallels snapshot (default from config)
+  PLATFORM_SMOKE_WINDOWS_HOST    Use a native Windows SSH target instead of Parallels
+  PLATFORM_SMOKE_WINDOWS_PORT    Windows SSH port (default: 22)
   PLATFORM_SMOKE_WINDOWS_USER    Windows SSH user (default: $USER)
   PLATFORM_SMOKE_WINDOWS_WORK_ROOT Windows work root
   PI_ORACLE_SMOKE_*              Project-specific aliases for the PLATFORM_SMOKE_* knobs above
+  PI_ORACLE_RELEASE_TARBALL      Use this retained tarball for the packed platform suites
+  PI_ORACLE_RELEASE_SHA256       Expected SHA-256 of the retained tarball, when supplied
   PI_ORACLE_REAL_TEST_PROVIDER   Real smoke provider (default: zai)
   PI_ORACLE_REAL_TEST_MODEL      Real smoke model (default: glm-5.2)
   ZAI_API_KEY                    Default real-smoke provider API key for optional model-agent debugging
@@ -134,13 +140,36 @@ async function main() {
     if (targets.length === 0) throw new Error("--target did not resolve to any targets");
     if (suites.length === 0) throw new Error("--suite did not resolve to any suites");
     validateSelection(targets, suites);
-    const results = await Promise.all(targets.map(async (target) => {
-      console.log(`\n=== Target: ${target} ===`);
-      return { target, result: await runTarget(target, suites, Boolean(args.suite)) };
-    }));
-    if (results.some(({ result }) => !result.ok)) {
-      console.log("\nOne or more platform smoke suites failed. Check .artifacts/platform-smoke/ for details.");
-      process.exit(1);
+    let inputDir;
+    try {
+      if (process.env.PI_ORACLE_RELEASE_TARBALL) {
+        // Crabbox syncs nonignored files, but this repository ignores *.tgz.
+        inputDir = mkdtempSync(resolve(repoRoot, ".oracle-release-input-"));
+        const candidate = resolve(inputDir, "candidate");
+        copyFileSync(resolve(process.env.PI_ORACLE_RELEASE_TARBALL), candidate);
+        const sha256 = createHash("sha256").update(readFileSync(candidate)).digest("hex");
+        if (process.env.PI_ORACLE_RELEASE_SHA256 && sha256 !== process.env.PI_ORACLE_RELEASE_SHA256) {
+          throw new Error("Retained release candidate checksum changed");
+        }
+        config.releaseCandidate = {
+          path: relative(repoRoot, candidate).split(sep).join("/"),
+          sha256,
+        };
+        console.log(`Retained release candidate SHA-256: ${config.releaseCandidate.sha256}`);
+      }
+      const outcomes = await Promise.allSettled(targets.map(async (target) => {
+        console.log(`\n=== Target: ${target} ===`);
+        return { target, result: await runTarget(target, suites, Boolean(args.suite)) };
+      }));
+      const failure = outcomes.find((outcome) => outcome.status === "rejected");
+      if (failure) throw failure.reason;
+      const results = outcomes.map((outcome) => outcome.value);
+      if (results.some(({ result }) => !result.ok)) {
+        console.log("\nOne or more platform smoke suites failed. Check .artifacts/platform-smoke/ for details.");
+        process.exitCode = 1;
+      }
+    } finally {
+      if (inputDir) rmSync(inputDir, { recursive: true, force: true });
     }
     return;
   }

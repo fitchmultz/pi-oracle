@@ -82,6 +82,19 @@ export function buildTargetBaseArgs(targetName, config = {}) {
       const snapshot = env("PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT") || env("PLATFORM_SMOKE_WINDOWS_SNAPSHOT") || config.windowsParallels?.snapshot || "crabbox-ready";
       const user = env("PI_ORACLE_SMOKE_WINDOWS_USER") || env("PLATFORM_SMOKE_WINDOWS_USER") || env("USER");
       const workRoot = env("PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT") || env("PLATFORM_SMOKE_WINDOWS_WORK_ROOT") || `C:\\crabbox\\${config.packageName ?? "pi-oracle"}`;
+      const host = env("PI_ORACLE_SMOKE_WINDOWS_HOST") || env("PLATFORM_SMOKE_WINDOWS_HOST");
+      if (host) {
+        const port = env("PI_ORACLE_SMOKE_WINDOWS_PORT") || env("PLATFORM_SMOKE_WINDOWS_PORT") || "22";
+        return [
+          "--provider", "ssh",
+          "--target", "windows",
+          "--windows-mode", "normal",
+          "--static-host", host,
+          "--static-user", user,
+          "--static-port", port,
+          "--static-work-root", workRoot,
+        ];
+      }
       return [
         "--provider", "parallels",
         "--target", "windows",

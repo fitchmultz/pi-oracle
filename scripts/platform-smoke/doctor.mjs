@@ -145,14 +145,21 @@ function verifyRepoForbiddenFiles() {
 
 export async function runDoctor(config) {
   failures = 0;
+  const windowsArgs = buildTargetBaseArgs("windows-native", config);
+  const windowsStatic = windowsArgs.includes("--static-host");
   console.log("\n── Environment ──");
   const cbox = env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") || "crabbox";
   ok(`Crabbox binary = ${resolveCommand(cbox) ?? cbox}${env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") ? " (env override)" : " (PATH)"}`);
   ok(`PI_ORACLE_SMOKE_MAC_HOST = ${env("PI_ORACLE_SMOKE_MAC_HOST") || env("PLATFORM_SMOKE_MAC_HOST") || "localhost"}`);
   ok(`PI_ORACLE_SMOKE_MAC_USER = ${env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER")}`);
   ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24"}`);
-  ok(`PI_ORACLE_SMOKE_WINDOWS_VM = ${windowsVmName(config)}`);
-  ok(`PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT = ${windowsSnapshotName(config)}`);
+  if (windowsStatic) {
+    ok(`Windows SSH host = ${windowsArgs[windowsArgs.indexOf("--static-host") + 1]}`);
+    ok(`Windows SSH port = ${windowsArgs[windowsArgs.indexOf("--static-port") + 1]}`);
+  } else {
+    ok(`PI_ORACLE_SMOKE_WINDOWS_VM = ${windowsVmName(config)}`);
+    ok(`PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT = ${windowsSnapshotName(config)}`);
+  }
 
   console.log("\n── Crabbox ──");
   const resolvedCbox = resolveCommand(cbox);
@@ -166,11 +173,11 @@ export async function runDoctor(config) {
     compareVersions(versionLine, requiredVersion) >= 0 ? ok(`required version: ${requiredVersion}+`) : fail(`Crabbox version mismatch: need ${requiredVersion}+, got ${versionLine}`);
   }
   const providers = silent(cbox, ["providers"], { timeout: 30_000 }) ?? "";
-  for (const provider of ["ssh", "local-container", "parallels"]) {
+  for (const provider of ["ssh", "local-container", ...(windowsStatic ? [] : ["parallels"])]) {
     new RegExp(`^${provider}$`, "m").test(providers) ? ok(`provider available: ${provider}`) : fail(`crabbox providers missing ${provider}`);
   }
   runCrabboxDoctor(cbox, "macOS static SSH", buildTargetBaseArgs("macos", config), 120_000);
-  runCrabboxDoctor(cbox, "Windows native Parallels", buildTargetBaseArgs("windows-native", config), 180_000);
+  runCrabboxDoctor(cbox, windowsStatic ? "Windows native SSH" : "Windows native Parallels", windowsArgs, 180_000);
   runCrabboxDoctor(cbox, "local-container", buildTargetBaseArgs("ubuntu", config), 120_000);
 
   console.log("\n── Host tools ──");
@@ -183,7 +190,7 @@ export async function runDoctor(config) {
     const major = Number(nodeVersion.replace(/^v/, "").split(".")[0]);
     if (major < (config.nodeValidationMajor ?? 24)) fail(`Node ${nodeVersion}; need ${config.nodeValidationMajor ?? 24}+ for smoke validation`);
   }
-  verifyWindowsTemplate(config);
+  if (!windowsStatic) verifyWindowsTemplate(config);
 
   console.log("\n── Auth environment ──");
   const requiredAuth = requiredRealSmokeAuthEnv(config);
