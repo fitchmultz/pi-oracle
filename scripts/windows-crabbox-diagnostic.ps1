@@ -51,10 +51,13 @@ try {
   if (-not ($sshd -and $ssh -and $keygen -and $sftp -and $crabbox -and $zstd)) { throw 'A required downloaded executable is absent' }
 
   $toolDir = Join-Path $root 'tools'
-  & npm.cmd install -g --prefix $toolDir --allow-scripts=agent-browser agent-browser
-  Assert-NativeSuccess 'agent-browser install'
-  $env:PATH = "$toolDir;$([IO.Path]::GetDirectoryName($zstd));$env:PATH"
-  Write-Host "Tool versions: node=$(node.exe --version) npm=$(npm.cmd --version) browser=$(agent-browser.cmd --version)"
+  $piVersion = (Get-Content -Raw package.json | ConvertFrom-Json).devDependencies.'@earendil-works/pi-coding-agent'
+  & npm.cmd install -g --prefix $toolDir --allow-scripts=agent-browser agent-browser "@earendil-works/pi-coding-agent@$piVersion"
+  Assert-NativeSuccess 'agent-browser and Pi install'
+  & C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed rsync
+  Assert-NativeSuccess 'rsync install'
+  $env:PATH = "$toolDir;$([IO.Path]::GetDirectoryName($zstd));$env:PATH;C:\msys64\usr\bin"
+  Write-Host "Candidate $(git rev-parse HEAD) tool versions: node=$(node.exe --version) npm=$(npm.cmd --version) browser=$(agent-browser.cmd --version) pi=$(pi.cmd --version)"
   & $crabbox --version
   Assert-NativeSuccess 'crabbox version'
 
@@ -144,9 +147,16 @@ try {
   $leaseMatch = ([string]::Join("`n", $warmup)) -match '\bleased\s+(\S+)|\blease=(\S+)'
   if ($leaseMatch) { $leaseId = if ($Matches[1]) { $Matches[1] } else { $Matches[2] } }
   if (-not $leaseId) { $leaseId = 'oracle-windows-diagnostic' }
-  & $crabbox run @base --id $leaseId --fresh-sync --shell 'whoami && whoami /groups'
-  Assert-NativeSuccess 'crabbox native Windows identity'
-  Write-Host 'STATIC_SSH_DIAGNOSTIC_OK'
+  $platformCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildPlatformBuildCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildPlatformBuildCommand("windows-native", config.packageName, config.nodeValidationMajor));'
+  Assert-NativeSuccess 'generate platform-build command'
+  & $crabbox run @base --id $leaseId --fresh-sync --shell $platformCommand
+  Assert-NativeSuccess 'Windows platform-build suite'
+
+  $realCommand = & node.exe --input-type=module -e 'import config from "./platform-smoke.config.mjs"; import { buildRealExtensionCommand } from "./scripts/platform-smoke/targets.mjs"; process.stdout.write(buildRealExtensionCommand("windows-native", config));'
+  Assert-NativeSuccess 'generate real-extension command'
+  & $crabbox run @base --id $leaseId --no-sync --shell $realCommand
+  Assert-NativeSuccess 'Windows real-extension suite'
+  Write-Host 'STATIC_SSH_DIAGNOSTIC_AND_SUITES_OK'
 } finally {
   if ($leaseId) { & $crabbox stop @base --id $leaseId; if ($LASTEXITCODE -ne 0) { Write-Warning "Crabbox stop exited $LASTEXITCODE" } }
   if ($server) { $server.Refresh(); if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force } }
