@@ -16,6 +16,7 @@ export declare function matchesModelFamilyLabel(label: string | undefined, famil
 export declare function matchesRequestedModelControlLabel(label: string | undefined, selection: OracleUiSelection): boolean;
 export declare function matchesCompactIntelligenceControlLabel(label: string | undefined): boolean;
 export declare function matchesCompactIntelligenceOpenerLabel(label: string | undefined): boolean;
+export declare function matchesModelConfigurationOpener(entry: import("./artifact-heuristics.mjs").SnapshotEntry): boolean;
 export declare function requestedEffortLabel(selection: OracleUiSelection): string | undefined;
 export declare function effortSelectionVisible(snapshot: string, effortLabel: string | undefined): boolean;
 export declare function thinkingChipVisible(snapshot: string): boolean;
