@@ -1727,6 +1727,9 @@ async function focusPowerSlider(job) {
 // close the picker after a step: on 2026-09-21 onto the target, which the earlier shell's pill
 // named; on 2026-10-18 one step off Pro onto High, behind a pill named only "Select ChatGPT model".
 // A closed picker is therefore reopened and stepping resumes from the stop the slider reports.
+// It can also swallow a press: on 2026-11-01 the first job in a fresh Chrome read High twice in a
+// row after an ArrowRight, one second into configuration. An unmoved stop therefore gets one
+// longer settle and one refocused press before the job fails; the step budget bounds both.
 const POWER_SLIDER_REOPEN_LIMIT = 2;
 
 async function configurePowerSlider(job) {
@@ -1750,7 +1753,19 @@ async function configurePowerSlider(job) {
     await agentBrowser(job, "press", key);
     await agentBrowser(job, "wait", "250");
     steps += 1;
-    const next = await readPowerSliderState(job);
+    let next = await readPowerSliderState(job);
+    if (next && next.index === before) {
+      await agentBrowser(job, "wait", "500");
+      next = await readPowerSliderState(job);
+      if (next && next.index === before) {
+        await log(`Thinking-effort slider still reads ${next.label} after ${key}; refocusing and pressing once more`);
+        if (!(await focusPowerSlider(job))) throw new Error("Could not focus the ChatGPT thinking-effort slider");
+        await agentBrowser(job, "press", key);
+        await agentBrowser(job, "wait", "500");
+        steps += 1;
+        next = await readPowerSliderState(job);
+      }
+    }
     if (next) {
       if (next.index === before) throw new Error(`Thinking-effort slider did not move toward ${target} from ${next.label}`);
       state = next;

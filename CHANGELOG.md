@@ -15,6 +15,7 @@ history is kept below the divider.
 
 - ChatGPT model configuration recognizes bare-effort buttons case-insensitively, including removable chips, and turn observation, capture, and recollection recognize assistant headings by `data-conversation-role="assistant"` as well as their existing text prefix (ported from upstream `pi-oracle` 0.7.23).
 - the offline capture proof injects the existing recollection and missing-turn helpers into its extracted worker harness, so the proof runs instead of failing with an unresolved helper.
+- the thinking-effort slider driver failed a job one second into configuration when ChatGPT swallowed an arrow-key press (2026-11-01: the first job in a fresh Chrome read `High` twice after an ArrowRight and threw `Thinking-effort slider did not move toward Pro from High`). An unmoved stop now gets one longer settle and one refocused press before the job fails; the existing step budget bounds the retry
 
 ## 0.4.11 - 2026-10-31
 
