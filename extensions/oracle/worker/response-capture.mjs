@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 export function archiveTurns(fileName) {
   const assistantSelector = '[data-message-author-role="assistant"], [data-testid="assistant-message"]';
   const replies = [...document.querySelectorAll(assistantSelector),
-    ...[...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')].filter((node) => /^ChatGPT said:/.test(node.textContent?.trim() || '')).map((node) => node.nextElementSibling)]
+    ...[...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')].filter((node) => /^ChatGPT said:/.test(node.textContent?.trim() || '') || node.getAttribute('data-conversation-role') === 'assistant').map((node) => node.nextElementSibling)]
     .filter(Boolean);
   const named = [...document.querySelectorAll('body *')].filter((node) => ((!node.firstElementChild && (node.textContent || '').trim() === fileName)
     || node.getAttribute('aria-label') === fileName || node.getAttribute('title') === fileName) && !replies.some((reply) => reply.contains(node)));
@@ -29,7 +29,7 @@ export function captureScopedResponse({ responseIndex = 0, messageId, report = f
   const assistantSelector = '[data-message-author-role="assistant"], [data-testid="assistant-message"]';
   const nodes = [...doc.querySelectorAll(assistantSelector)].filter((node) => !node.parentElement?.closest(assistantSelector));
   const headings = [...doc.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')]
-    .filter((node) => /^ChatGPT said:/.test(node.textContent?.trim() || ""));
+    .filter((node) => /^ChatGPT said:/.test(node.textContent?.trim() || "") || node.getAttribute('data-conversation-role') === 'assistant');
   const headingRoots = headings.map((heading) => heading.nextElementSibling);
   const responseRoots = headingRoots.some((node) => (node?.textContent || '').trim()) ? headingRoots : nodes;
   // The earlier shell marks a message with data-message-id; the redesigned one marks the turn root
@@ -315,7 +315,7 @@ export function observeConversationTurns({ conversationId, stopSelector, archive
   };
   const assistantSelector = '[data-message-author-role="assistant"], [data-testid="assistant-message"]';
   const headingMessages = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,[role="heading"]')]
-    .filter((node) => /^ChatGPT said:/.test((node.textContent || '').trim()))
+    .filter((node) => /^ChatGPT said:/.test((node.textContent || '').trim()) || node.getAttribute('data-conversation-role') === 'assistant')
     .map((heading) => ({ text: renderText(heading.nextElementSibling) }));
   const nodeMessages = [...document.querySelectorAll(assistantSelector)]
     .filter((node) => !node.parentElement?.closest(assistantSelector))

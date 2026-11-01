@@ -70,7 +70,7 @@ npm run sanity:oracle:platform
 npm run verify:oracle:platform
 ```
 
-`npm run release:check` (used by `prepublishOnly`) runs `npm run verify:oracle`, `npm run release:proof:chatgpt-presets`, and `npm run smoke:platform:all`; see [Release](RELEASE.md#release-gate).
+`npm run release:check` (used by `prepublishOnly`) runs `npm run verify:oracle`, `npm run proof:capture`, `npm run release:proof:chatgpt-presets`, and `npm run smoke:platform:all`, in that order; see [Release](RELEASE.md#release-gate).
 
 ## What `platform-build` proves
 

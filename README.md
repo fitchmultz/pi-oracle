@@ -307,7 +307,7 @@ npm run verify:oracle        # everyday local gate; `npm test` is an alias
 | Publish/release gate | `npm run release:check` |
 | Brand artwork, after editing `assets/*.html` | `npm run render:assets`, then `npm run render:assets -- --check` |
 
-`npm run release:check` is the release gate: the local gate, the ChatGPT preset proof check across the eight model presets (`deep_research` is excluded because each run costs a Deep Research task), and `npm run smoke:platform:all`. It passes before a release tag is pushed, and the tag publishes to npm from GitHub Actions through trusted publishing ([Release → Publishing](docs/RELEASE.md#publishing)); `prepublishOnly` runs it for a local `npm publish`. Choose the right validation check in [Test plan → Which check to run](docs/TEST_PLAN.md#which-check-to-run); see [`docs/PLATFORM_SMOKE.md`](docs/PLATFORM_SMOKE.md) and [Release](docs/RELEASE.md).
+`npm run release:check` is the release gate: the local gate, the offline `npm run proof:capture`, the ChatGPT preset proof check across the eight model presets (`deep_research` is excluded because each run costs a Deep Research task), and `npm run smoke:platform:all`, in that order. It passes before a release tag is pushed, and the tag publishes to npm from GitHub Actions through trusted publishing ([Release → Publishing](docs/RELEASE.md#publishing)); `prepublishOnly` runs it for a local `npm publish`. Choose the right validation check in [Test plan → Which check to run](docs/TEST_PLAN.md#which-check-to-run); see [`docs/PLATFORM_SMOKE.md`](docs/PLATFORM_SMOKE.md) and [Release](docs/RELEASE.md).
 
 ## Contributing
 

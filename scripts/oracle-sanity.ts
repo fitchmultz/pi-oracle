@@ -4316,7 +4316,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:real:packed"] === "node scripts/oracle-real-smoke.mjs run --mode packed", "package.json should expose the packed real isolated pi-agent smoke gate");
   assert(pkg.scripts?.["smoke:real:source"] === "node scripts/oracle-real-smoke.mjs run --mode source", "package.json should expose source-mode real smoke only as an explicit debug path");
   assert(pkg.scripts?.["smoke:real:doctor"] === "node scripts/oracle-real-smoke.mjs doctor", "package.json should expose the real isolated pi-agent smoke doctor");
-  assert(String(pkg.scripts?.["release:check"] || "").includes("npm run smoke:platform:all"), "release checks should require the doctor-first platform smoke gate");
+  assert(pkg.scripts?.["release:check"] === "npm run verify:oracle && npm run proof:capture && npm run release:proof:chatgpt-presets && npm run smoke:platform:all", "release checks should run local verification, offline capture proof, fresh ChatGPT preset proof, then doctor-first platform smoke");
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
   assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");

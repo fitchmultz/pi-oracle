@@ -80,7 +80,12 @@ format: `type(scope): description`, lowercase imperative.
 
 ## Releases
 
-A release passes `npm run release:check` locally; pushing its `vX.Y.Z` tag then publishes it to npm from GitHub Actions through trusted publishing. See [Release](docs/RELEASE.md) for the release gate, preset proof, [publishing](docs/RELEASE.md#publishing), and evidence ledger.
+A release passes `npm run release:check` locally: the local gate, the offline capture proof,
+the fresh ChatGPT preset proof, then the Crabbox matrix. The capture proof requires Chrome or
+Chromium (auto-detected, or selected with `CHROME_BIN`); it uses only an isolated browser and
+synthetic pages, never an account. Pushing the `vX.Y.Z` tag then publishes it to npm from GitHub
+Actions through trusted publishing. See [Release](docs/RELEASE.md) for the release gate, preset
+proof, [publishing](docs/RELEASE.md#publishing), and evidence ledger.
 
 ## Security
 

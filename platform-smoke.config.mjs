@@ -25,7 +25,7 @@ export default {
       commands: ["npm run smoke:platform:all"],
     },
     release: {
-      description: "Full release gate: local verification, fresh ChatGPT preset proof, plus the doctor-first platform matrix.",
+      description: "Full release gate: local verification, offline capture proof, fresh ChatGPT preset proof, then the doctor-first platform matrix.",
       commands: ["npm run release:check"],
     },
   },

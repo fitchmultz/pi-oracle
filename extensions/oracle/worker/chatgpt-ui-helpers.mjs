@@ -856,7 +856,7 @@ export function matchesModelConfigurationOpener(entry) {
     || label === "Model"
     || label === "Model selector"
     || COMPACT_INTELLIGENCE_OPENER_PATTERN.test(label)
-    || EFFORT_LABELS.has(label)
+    || BARE_EFFORT_PATTERN.test(label)
     || THINKING_CHIP_PATTERN.test(label)
     || PRO_CHIP_PATTERN.test(label);
 }

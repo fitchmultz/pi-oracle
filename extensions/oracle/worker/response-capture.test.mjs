@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, redactTransportSecrets, resolveResearchCitations, validateArtifactBytes } from './response-capture.mjs';
+import { archiveTurns, captureExpression, collectNativeDownload, collectionOutcome, composeResearchResponse, durationLabelSeconds, observeConversationExpression, redactTransportSecrets, resolveResearchCitations, validateArtifactBytes } from './response-capture.mjs';
 import { formatOracleJobSummary } from '../shared/job-observability-helpers.mjs';
 import { chatGptGenerationActive, chatGptStreamingVisible, providerSendAccepted } from './chatgpt-flow-helpers.mjs';
 
@@ -272,24 +272,66 @@ test('reasoning-time labels convert to seconds only when they carry a duration',
 // their textContent reads "ChatGPT said:ChatGPT" / "You said:You". The observation matched the
 // heading text exactly, saw no assistant turn, and a finished Deep Research job waited 80 minutes
 // for a turn it could not see. Headings are matched by prefix now.
-test('turn headings match by prefix so the hidden print-formatting suffix is ignored', async () => {
-  const { observeConversationExpression } = await import('./response-capture.mjs');
+test('turn headings match by prefix so the hidden print-formatting suffix is ignored', () => {
   const reply = { cloneNode: () => ({ innerText: 'Launched.' }), innerText: 'Launched.' };
-  const heading = (text) => ({ textContent: text, nextElementSibling: reply });
-  const fakeDocument = (headings) => ({
-    querySelectorAll: (selector) => (selector.startsWith('h1') ? headings : []),
+  const heading = (text) => ({ textContent: text, getAttribute: () => null, nextElementSibling: reply });
+  const location = { href: 'https://chatgpt.com/c/abc123', pathname: '/c/abc123' };
+  const observe = (headings) => new Function('document', 'location',
+    'return ' + observeConversationExpression({ conversationId: 'abc123', stopSelector: '[data-testid="stop-button"]' }))(headingDocument(headings), location);
+  for (const text of ['ChatGPT said:', 'ChatGPT said:ChatGPT', ' ChatGPT said:ChatGPT ']) {
+    assert.deepEqual(observe([heading('You said:You'), heading(text)]).messages, [{ text: 'Launched.' }], text);
+  }
+  assert.deepEqual(observe([heading('You said:You'), heading('Latest response')]).messages, []);
+});
+
+function headingDocument(headings, named = []) {
+  return {
+    querySelectorAll: (selector) => selector.startsWith('h1') ? headings : selector === 'body *' ? named : [],
     createElement: () => {
       const host = { style: {}, child: undefined, appendChild(node) { host.child = node; }, remove() {} };
       Object.defineProperty(host, 'innerText', { get: () => host.child?.innerText || '' });
       return host;
     },
     body: { appendChild() {} },
-  });
+  };
+}
+
+function plainReply(text) {
+  return {
+    nodeType: 1, tagName: 'DIV', attributes: [], childNodes: [{ nodeType: 3, textContent: text }],
+    textContent: text, innerText: text, outerHTML: `<div>${text}</div>`,
+    getAttribute: () => null, querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+    cloneNode: () => plainReply(text),
+  };
+}
+
+test('assistant conversation-role headings are observed without the English heading label', () => {
+  const reply = plainReply('Role-marked reply.');
+  const heading = (role) => ({ textContent: 'Assistant', getAttribute: (name) => name === 'data-conversation-role' ? role : null, nextElementSibling: reply });
   const location = { href: 'https://chatgpt.com/c/abc123', pathname: '/c/abc123' };
-  const observe = (headings) => new Function('document', 'location',
-    'return ' + observeConversationExpression({ conversationId: 'abc123', stopSelector: '[data-testid="stop-button"]' }))(fakeDocument(headings), location);
-  for (const text of ['ChatGPT said:', 'ChatGPT said:ChatGPT', ' ChatGPT said:ChatGPT ']) {
-    assert.deepEqual(observe([heading('You said:You'), heading(text)]).messages, [{ text: 'Launched.' }], text);
-  }
-  assert.deepEqual(observe([heading('You said:You'), heading('Latest response')]).messages, []);
+  const document = headingDocument([heading('user'), heading('assistant')]);
+  const result = new Function('document', 'location', 'return ' + observeConversationExpression({ conversationId: 'abc123' }))(document, location);
+  assert.deepEqual(result.messages, [{ text: 'Role-marked reply.' }]);
+});
+
+test('assistant conversation-role headings bind capture without legacy message nodes', () => {
+  const reply = plainReply('Bound role-marked reply.');
+  const heading = { textContent: 'Assistant', getAttribute: (name) => name === 'data-conversation-role' ? 'assistant' : null, nextElementSibling: reply };
+  const result = new Function('document', 'return ' + captureExpression({ responseIndex: 0 }))(headingDocument([heading]));
+  assert.equal(result.rawText, 'Bound role-marked reply.');
+  assert.equal(result.markdown, 'Bound role-marked reply.');
+});
+
+test('assistant conversation-role headings exclude archive mentions from user-turn binding', () => {
+  const fileName = 'oracle-job.tar.zst';
+  const userTurn = { id: 'user' };
+  const assistantTurn = { id: 'assistant' };
+  const attachment = (turn) => ({ textContent: fileName, getAttribute: () => null, closest: () => turn });
+  const upload = attachment(userTurn);
+  const mention = attachment(assistantTurn);
+  const reply = plainReply(fileName);
+  reply.contains = (node) => node === mention;
+  const heading = { textContent: 'Assistant', getAttribute: (name) => name === 'data-conversation-role' ? 'assistant' : null, nextElementSibling: reply };
+  const result = new Function('document', 'fileName', `return (${archiveTurns.toString()})(fileName);`)(headingDocument([heading], [upload, mention]), fileName);
+  assert.deepEqual(result, [userTurn]);
 });

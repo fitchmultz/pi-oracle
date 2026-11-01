@@ -59,9 +59,42 @@ Per-release changes are recorded in [Changelog](../CHANGELOG.md).
 
 ## Tracking upstream
 
-- **Merge, never rebase.** Upstream commits land as explicit merge commits so shared history stays
-  intact. The latest recorded sync is upstream `d658a98` (2026-10-17, `pi-oracle` 0.7.22). It ports
-  the runtime fixes the fork shares: anonymous `ua-*` visitor sessions classified as signed out,
+- **Merge, never rebase.** Shared upstream history stays intact through explicit merge commits,
+  never rebases; later changes are selectively ported where the fork's runtime and release gates
+  diverge. The latest recorded sync is upstream `eecf79e` (2026-10-31, `pi-oracle` 0.7.23).
+  - `5c31b3d` ([#68](https://github.com/fitchmultz/pi-oracle/pull/68)): ported case-insensitive
+    bare-effort opener recognition, including removable chips, through `BARE_EFFORT_PATTERN`,
+    and assistant headings marked `data-conversation-role="assistant"` through shared turn
+    observation, capture, and archive-turn exclusion, each with red-before regression tests.
+    Already covered: the shared `matchesModelConfigurationOpener` and its declaration, generic
+    `Model` / `Model selector` and `Select ChatGPT model` buttons, compact Intelligence openers,
+    model and effort chips, `Send` / `Send prompt` throughout upload/send readiness and DOM
+    activation, and `Stop` throughout send acceptance and completion. The fork's bound-turn
+    existence and rendered-generation checks already complete replies without `Copy response`,
+    so upstream's `data-talvt-turn-state="complete"` fallback adds no missing completion path.
+    The broader family-prefix opener is not adopted: the fork deliberately rejects `Pro feedback`
+    and similar response actions while accepting numbered composer chips. The five-stop slider
+    with picker reopen, stale-stop reload, one-per-job missing-turn reload, and timed-out
+    recollection are unchanged; upstream's release metadata, documentation layout, and unpinned
+    Ubuntu tool installs do not replace the fork's versions, docs, or pinned tooling.
+  - `ab82bd9` ([#69](https://github.com/fitchmultz/pi-oracle/pull/69)): reviewed, not adopted;
+    retained-candidate transfer/checksums and native Windows SSH qualification serve upstream's
+    release pipeline, while the fork's Crabbox macOS/Ubuntu lanes and
+    `.github/workflows/release.yml` trusted publishing cover its release gate.
+  - `9141302` ([#70](https://github.com/fitchmultz/pi-oracle/pull/70)): reviewed, not adopted;
+    target-specific preflight, custom macOS SSH ports, and native-host shell portability support
+    split qualification rather than the fork's doctor-first macOS/Ubuntu release gate and
+    `.github/workflows/release.yml` trusted publishing. The `invariants.mjs` / `doctor.mjs`
+    changes add no missing fix for the fork's required lanes: provider and Windows-template
+    checks are already conditional, both required targets run together, and preflight runs on a
+    POSIX host rather than native Windows.
+  - `eecf79e` ([#71](https://github.com/fitchmultz/pi-oracle/pull/71)): reviewed, not adopted;
+    the hosted-platform qualification workflow and `ci-release-hosted.sh` /
+    `ci-release-windows.ps1` duplicate the fork-owned Crabbox macOS/Ubuntu release proof and
+    `.github/workflows/release.yml` trusted publishing with a different automation contract.
+
+  The preceding sync, upstream `d658a98` (2026-10-17, `pi-oracle` 0.7.22), ported the runtime
+  fixes the fork shares: anonymous `ua-*` visitor sessions classified as signed out,
   `/oracle-auth` reads retried across CDP navigation with failure guidance that separates browser
   verification from rejected cookies, the `/oracle-auth` launch retry for a closing
   `agent-browser` daemon, and a `before_agent_start` guard for prompt-less custom-message turns on
@@ -77,7 +110,7 @@ Per-release changes are recorded in [Changelog](../CHANGELOG.md).
   matches upstream's `"prompt" in event` form), has its own trusted-publishing release workflow in
   place of upstream's auto-publish CI, and reads Linux Chromium `v11` cookies through
   `@steipete/sweet-cookie` 0.4.4, which closes the gap upstream's native importer filled. The
-  previous sync, upstream
+  earlier sync, upstream
   `4d96ffc` (2026-09-22), imported cancellation-race and protected-profile test improvements plus
   a native Pi status smoke while keeping runtime code, package identity, CI, and release gates
   fork-owned.

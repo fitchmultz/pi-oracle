@@ -14,7 +14,7 @@ For everyday validation and choosing which check to run during development, see 
 
 ## Release gate
 
-`npm run release:check` runs the release gate in three stages; `prepublishOnly` runs it too, so a
+`npm run release:check` runs the release gate in four stages; `prepublishOnly` runs it too, so a
 local `npm publish` cannot skip it:
 
 1. `npm run verify:oracle` (`npm test` is an alias) — runs, in order: syntax and bundle checks
@@ -23,16 +23,20 @@ local `npm publish` cannot skip it:
    (`test:docs`), the three typecheck projects (`typecheck`, `typecheck:worker-helpers`,
    `typecheck:worker-runtime`), the isolated sanity harness (`sanity:oracle`, including pinned
    documentation literals), and `npm pack --dry-run` (`pack:check`).
-2. `npm run release:proof:chatgpt-presets` — checks the fresh live ChatGPT preset proof for the
+2. `npm run proof:capture` — proves capture and recollection against synthetic pages in an
+   isolated headless browser, with no account or external network. Requires Chrome or Chromium
+   (auto-detected, or selected with `CHROME_BIN`).
+3. `npm run release:proof:chatgpt-presets` — checks the fresh live ChatGPT preset proof for the
    eight model presets through the loaded extension.
-3. `npm run smoke:platform:all` — runs `npm run smoke:platform:doctor` first, then the macOS and
+4. `npm run smoke:platform:all` — runs `npm run smoke:platform:doctor` first, then the macOS and
    Ubuntu Crabbox lanes (`platform-build` and `real-extension`) using packed-install proof rather
    than source-tree `pi -e` loading. `windows-native` is an available target, not a
    release-required lane; see [Compatibility](COMPATIBILITY.md#platforms-and-runtime).
 
 Hosted CI runs only the local gate (`npm run verify:oracle`): on `main`, on pull requests, and on
-the release tag before publishing. The live preset proof and Crabbox matrix run locally in the order
-above, followed by artifact review, before the release tag is pushed ([Publishing](#publishing)).
+the release tag before publishing. The offline capture proof, live preset proof, and Crabbox
+matrix run locally in the order above, followed by artifact review, before the release tag is
+pushed ([Publishing](#publishing)).
 
 ### ChatGPT preset proof
 

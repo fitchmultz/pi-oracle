@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { parseSnapshotEntries } from "./artifact-heuristics.mjs";
 import * as flowHelpers from "./chatgpt-flow-helpers.mjs";
-import { mergeObservedSelection } from "./chatgpt-ui-helpers.mjs";
+import { matchesModelConfigurationOpener, mergeObservedSelection } from "./chatgpt-ui-helpers.mjs";
 import { classifyDeepResearchTurn, effortSelectionVisible, findDialogCloseEntry, isDeepResearchMenuEntry, parseDeepResearchWidgetText, parsePowerSliderDescription, powerSliderStepKey, powerSliderTargetLabel, snapshotCanSafelySkipModelConfiguration, snapshotHasDeepResearchPill, snapshotHasModelConfigurationUi, snapshotHasModelOpener, snapshotHasPowerSliderMenu, snapshotHasSelectedLatestModel, snapshotHasUsableComposerControls, snapshotStronglyMatchesRequestedModel, snapshotWeaklyMatchesRequestedModel, waitForStationaryControl } from "./chatgpt-ui-helpers.mjs";
 
 // Composer fragment of the authenticated redesigned shell, captured 2026-09-29 by a failed job.
@@ -47,6 +47,28 @@ test("a versioned Pro button opens configuration without attesting its effort", 
   const snapshot = '- button "6 Pro" [expanded=false, ref=e48]';
   assert.equal(snapshotHasModelOpener(snapshot), true);
   assert.equal(snapshotCanSafelySkipModelConfiguration(snapshot, { modelFamily: "pro", effort: "extended" }), false);
+});
+
+test("bare effort buttons open model configuration case-insensitively", () => {
+  for (const label of ["light", "STANDARD", "extended", "hEaVy"]) {
+    const snapshot = `- button "${label}" [expanded=false, ref=e1]`;
+    assert.equal(snapshotHasModelOpener(snapshot), true, label);
+    assert.equal(matchesModelConfigurationOpener(parseSnapshotEntries(snapshot)[0]), true, label);
+    assert.equal(snapshotCanSafelySkipModelConfiguration(snapshot, { modelFamily: "pro", effort: "extended" }), false);
+  }
+});
+
+test("removable effort buttons open model configuration case-insensitively without admitting response actions", () => {
+  for (const label of ["light", "STANDARD", "extended", "hEaVy"]) {
+    const snapshot = `- button "${label}, click to remove" [ref=e1]`;
+    assert.equal(snapshotHasModelOpener(snapshot), true, label);
+    assert.equal(matchesModelConfigurationOpener(parseSnapshotEntries(snapshot)[0]), true, label);
+    assert.equal(snapshotHasModelOpener(snapshot.replace("[ref=e1]", "[disabled, ref=e1]")), false);
+    assert.equal(snapshotHasModelOpener(snapshot.replace("- button ", "- menuitem ")), false);
+  }
+  for (const label of ["Pro feedback", "Thinking feedback", "Heavy feedback"]) {
+    assert.equal(snapshotHasModelOpener(`- button "${label}" [ref=e1]`), false, label);
+  }
 });
 
 test("a checked versioned Pro row verifies family without inventing effort", () => {

@@ -76,7 +76,7 @@
     "smoke:platform:windows-native": "node scripts/platform-smoke.mjs run --target windows-native",
     "smoke:real": "npm run smoke:real:packed",
     "smoke:real:doctor": "node scripts/oracle-real-smoke.mjs doctor",
-    "release:check": "npm run verify:oracle && npm run release:proof:chatgpt-presets && npm run smoke:platform:all",
+    "release:check": "npm run verify:oracle && npm run proof:capture && npm run release:proof:chatgpt-presets && npm run smoke:platform:all",
     "proof:capture": "node scripts/oracle-capture-proof.mjs",
     "release:proof:chatgpt-presets": "node scripts/oracle-chatgpt-preset-proof.mjs check",
     "release:proof:chatgpt-presets:run": "node scripts/oracle-chatgpt-preset-proof-run.mjs",
