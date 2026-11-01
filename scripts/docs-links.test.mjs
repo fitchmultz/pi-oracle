@@ -1,8 +1,9 @@
-// Purpose: Keep the documentation navigable as written.
+// Purpose: Keep the documentation navigable as written and free of workstation identifiers.
 // Responsibilities: Every relative link and image path in the Markdown documentation resolves to a file or
-//   directory, every heading fragment resolves to a heading or explicit HTML id in its target, and every link
+//   directory, every heading fragment resolves to a heading or explicit HTML id in its target, every link
 //   into this repository on github.com, from the documentation or the public site, names a path that exists on
-//   `main` and a fragment that resolves there.
+//   `main` and a fragment that resolves there, and no published page names a maintainer host, a real home
+//   directory, or a process id (the release ledger records evidence, not where it was produced).
 // Scope: Static checks of README.md, CONTRIBUTING.md, SECURITY.md, CHANGELOG.md, docs/*.md, site/index.html, and
 //   site/llms.txt against the working tree; no network.
 // Usage: npm run test:docs (part of npm run verify:oracle).
@@ -150,4 +151,18 @@ test("every link into this repository on github.com resolves on main", () => {
     }
   }
   assert.deepEqual(broken, []);
+});
+
+// Host names of the maintainer's machines, home directories other than the `you` placeholder, and
+// process ids with their numbers: evidence travels as job ids, commits, run ids and versions instead.
+const WORKSTATION_IDENTIFIER = /\b(?:sf-studio|sf-pc|sf-old|nyc-pc)\b|(?:\/Users\/|\/home\/|C:\\Users\\)(?!you\b)[A-Za-z0-9_-]+|\b(?:PID|pid)s?\s+\*{0,2}\d+/gu;
+
+test("the documentation names no maintainer host, home directory or process id", () => {
+  const found = [];
+  for (const file of [...MARKDOWN, ...SITE]) {
+    for (const [index, text] of read(join(ROOT, file)).split(/\r?\n/u).entries()) {
+      for (const [match] of text.matchAll(WORKSTATION_IDENTIFIER)) found.push(`${file}:${index + 1} → ${match}`);
+    }
+  }
+  assert.deepEqual(found, []);
 });

@@ -311,18 +311,18 @@ Artifact run ids live under the gitignored `.artifacts/` root.
 - MacBook activation: `omp plugin uninstall omp-oracle`, `omp plugin install omp-oracle@0.4.10`,
   `omp plugin list` confirmed 0.4.10 on Oh My Pi 18.14.1; the installed worker equals `main`;
   the in-place patch files were replaced by the install. Plugins worktree commit `827a555`
-  pushed. sf-studio (Oh My Pi 18.14.1): no oracle worker or diligence Chrome was running (the
-  auth gateway and two interactive `omp` sessions were); `bun install --frozen-lockfile
+  pushed. Second workstation (Oh My Pi 18.14.1): no oracle worker or diligence Chrome was
+  running (the auth gateway and two interactive `omp` sessions were); `bun install --frozen-lockfile`
   --dry-run` on the pushed manifest, then `git pull --ff-only` and `bun install
   --frozen-lockfile`; the worktree ended clean and even; an isolated print-mode
   `oracle_preflight` from the installed entry point reported ready.
 - Post-install job `add8c39c` (`pro_standard`, `package.json`, no agent-dir overrides):
   `extensionProvenance.packageVersion` 0.4.10 from the installed `sourcePath`; worker log
   `slider reads Instant (1 of 5)` then `set to Pro (5 of 5)`; response `OK 0.4.10`. The
-  account's saved tier is Pro again. Sessions predating the install on the MacBook: the
-  planning bridge (pid 1023, 28 Oct) and the release session itself (pid 35919, 19:33 local on
-  30 Oct); sf-studio's two interactive sessions also predate it. Not exercised: the
-  missing-turn reload live, `/oracle-auth`, Grok, the relay transport.
+  account's saved tier is Pro again. Two sessions predating the install were running on the
+  MacBook (one of them the release session) and two on the second workstation; they keep the old
+  extension code until restarted. Not exercised: the missing-turn reload live, `/oracle-auth`,
+  Grok, the relay transport.
 
 #### 0.4.9 (2026-10-28, `7ec22ac`)
 
@@ -384,18 +384,18 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   `npm audit signatures` reported 1 package with a verified attestation.
 - MacBook activation: `omp plugin uninstall omp-oracle`, `omp plugin install omp-oracle@0.4.9`,
   `omp plugin list` confirmed 0.4.9 on Oh My Pi 18.13.3; the installed capture module equals
-  `main`. Plugins worktree commit `5bb4fb6` pushed. sf-studio: no oracle worker or diligence
-  Chrome was running (14 `omp` processes were); `bun install --frozen-lockfile --dry-run` on
+  `main`. Plugins worktree commit `5bb4fb6` pushed. Second workstation: no oracle worker or
+  diligence Chrome was running (14 `omp` processes were); `bun install --frozen-lockfile --dry-run` on
   the pushed manifest, then `git pull --ff-only` and `bun install --frozen-lockfile`; the
   worktree ended clean and even; an isolated print-mode `oracle_preflight` from the installed
   entry point reported ready.
 - Post-install job `34ff0892` (`pro_standard`, `package.json`, no agent-dir overrides):
   `extensionProvenance.packageVersion` 0.4.9 from the installed `sourcePath`; worker log
   `slider reads Instant (1 of 5)` then `set to Pro (5 of 5)`; response `OK 0.4.9`. The
-  account's saved tier is Pro again. Sessions predating the install on the MacBook: the
-  planning bridge (pid 1973, 26 Oct) and five interactive `omp` sessions started 01:00–09:12
-  local on 28 Oct, including the release session; sf-studio's 14 `omp` processes also predate
-  it. Not exercised: `/oracle-auth`, Grok, the relay transport.
+  account's saved tier is Pro again. Six sessions predating the install were running on the
+  MacBook (including the release session) and 14 `omp` processes on the second workstation; they
+  keep the old extension code until restarted. Not exercised: `/oracle-auth`, Grok, the relay
+  transport.
 
 #### 0.4.8 (2026-10-24, `136ca83`)
 
@@ -482,36 +482,16 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   `05f8519a71d0d4e59f0a0d0841823d6d7b585ba9` records the manifest and lockfile activation and
   was pushed from `~/.omp/plugins`. Global agent-browser stayed at 0.39.1; the separate
   plugins-manifest copy remains 0.35.0.
-- **sf-studio installation was NOT exercised**, by the lead's explicit instruction: the
-  founder's top-level OMP PID **54109**, started **2026-10-24 17:02:51 PDT**, was running and
-  was not stopped. Its baseline OMP is 18.12.6 and global agent-browser 0.39.1. A temporary
-  copy of `origin/omp-plugins` at `05f8519` passed `bun install --frozen-lockfile --dry-run`,
-  resolving omp-oracle 0.4.8; the temporary copy was removed. No real Studio `bun install`,
-  installed-entry-point preflight, or clean/even post-activation claim is made. After the
-  founder quits that session, the activation handoff is:
-
-  ```bash
-  ssh sf-studio 'bash -s' <<'EOF'
-  export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-  if pgrep -u srs -f '(^|/)omp( |$)|[r]un-job.mjs|[d]iligence-chrome'; then
-    printf 'Quit the OMP session and wait for Oracle/browser work to stop first.\n'
-    exit 1
-  fi
-  git -C "$HOME/.omp/plugins" pull --ff-only &&
-  (cd "$HOME/.omp/plugins" && bun install --frozen-lockfile) &&
-  git -C "$HOME/.omp/plugins" status --short --branch &&
-  omp --cwd "$HOME/.omp/plugins" -p --auto-approve \
-    --session-dir /tmp/omp-oracle-studio-preflight-0.4.8/sessions \
-    --model anthropic/claude-haiku-5-5 --thinking low --no-extensions \
-    -e "$HOME/.omp/plugins/node_modules/omp-oracle/extensions/oracle/index.ts" \
-    "Call oracle_preflight only; do not submit or authenticate. Report readiness." < /dev/null
-  preflight_status=$?
-  if [ "$preflight_status" -eq 0 ]; then
-    rm -rf /tmp/omp-oracle-studio-preflight-0.4.8
-  fi
-  exit "$preflight_status"
-  EOF
-  ```
+- **Second-workstation installation was NOT exercised**, by the lead's explicit instruction: a
+  top-level OMP session started on 2026-10-24 was running there and was not stopped. Its baseline
+  OMP is 18.12.6 and global agent-browser 0.39.1. A temporary copy of `origin/omp-plugins` at
+  `05f8519` passed `bun install --frozen-lockfile --dry-run`, resolving omp-oracle 0.4.8; the
+  temporary copy was removed. No real `bun install`, installed-entry-point preflight, or
+  clean/even post-activation claim is made for that workstation. The activation handoff was a
+  guarded script: refuse while an `omp` session, Oracle worker or diligence Chrome runs there;
+  `git pull --ff-only`; `bun install --frozen-lockfile`; `git status --short --branch`; then an
+  isolated print-mode `oracle_preflight` from the installed entry point with
+  `anthropic/claude-haiku-5-5`, removing its temporary session root on success.
 
 - Installed-package Pro proof: fresh real-agent print session, using the same authorized cloud
   driver and installed entry point, submitted `pro_standard` job
@@ -521,27 +501,25 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   `Instant (1 of 5); target Pro`, then `set to Pro (5 of 5)`, restoring the account's saved
   tier to **Pro**. No diligence Chrome process was present before this job; the temporary
   post-install session root was removed.
-- MacBook top-level OMP processes predating the installed package.json mtime
-  (2026-10-24 20:30:28 PDT): planning bridge PID 5081, started 20:26:43 in
-  `~/.omp/wt/planning-bridge-main`; gateway PID 23432, started 16:53:35 in
-  `~/Development/omp-session-gateway`; release/lead PID 70731, started 2026-10-23 09:59:56
-  in `~/Development/alpha-founder`. Any already-loaded Oracle extension in those sessions
-  requires restart to refresh. Relay and internal worker processes were excluded.
-- Not exercised: Studio activation as above, live `/oracle-auth`, Deep Research, Grok,
+- Three top-level OMP processes on the MacBook predated the installed package.json mtime (a
+  planning bridge, a gateway session and the release/lead session). Any already-loaded Oracle
+  extension in those sessions requires restart to refresh. Relay and internal worker processes
+  were excluded.
+- Not exercised: second-workstation activation as above, live `/oracle-auth`, Deep Research, Grok,
   Windows native, a same-thread follow-up, and the configured early-return path against the
   live provider (covered by native fixtures instead). No failed live ChatGPT job was
   discarded or silently restaged; the only failed prerequisite was the diagnosed local
   model driver before any Oracle submission.
-- Follow-up sf-studio activation (2026-10-25): the founder explicitly authorized installation
-  with top-level OMP PID **54109** still running. `git pull --ff-only` and
+- Follow-up second-workstation activation (2026-10-25): the founder explicitly authorized
+  installation with that top-level OMP session still running. `git pull --ff-only` and
   `bun install --frozen-lockfile` activated **0.4.8** on Oh My Pi **18.12.6**; the plugins
   worktree ended clean and even with `origin/omp-plugins` at `05f8519`. An isolated print-mode
   `oracle_preflight` loaded the installed entry point with `anthropic/claude-haiku-5-5` and
   reported **ready** for ChatGPT (0/2 active, 0/2 queued); login is not verified by preflight.
   No submission or authentication was exercised, no Oracle worker or diligence Chrome
   process was present afterwards, and the temporary dry-run and preflight roots were removed.
-  PID 54109 started 2026-10-24 17:02:51 PDT, predating the installed package.json mtime
-  (2026-10-25 00:42:27 PDT); its already-loaded 0.4.7 extension requires a session restart.
+  That session predates the installed package.json mtime; its already-loaded 0.4.7 extension
+  requires a session restart.
   Documentation link checks passed 2/2. On local Node 26.12.1, the first `sanity:oracle` run
   failed with `broken-pipe archive test should record a tar pid file`; exactly one unchanged,
   isolated rerun passed. The checkout included #19 (`fff95a67`), but local `node_modules`
@@ -607,7 +585,7 @@ Artifact run ids live under the gitignored `.artifacts/` root.
   [GitHub release](https://github.com/alphastorm/omp-oracle/releases/tag/v0.4.7) name `567facf`.
 - Installed with `omp plugin uninstall omp-oracle` and `omp plugin install omp-oracle@0.4.7` on
   Oh My Pi 18.12.3 (dotfiles-private `ca4d054`, committed by the plugins worktree sync and
-  pushed). sf-studio (Oh My Pi 18.12.4): the frozen-lockfile dry run passed on
+  pushed). Second workstation (Oh My Pi 18.12.4): the frozen-lockfile dry run passed on
   `origin/omp-plugins`, then `git pull --ff-only` and `bun install --frozen-lockfile`; the
   worktree ended clean and even with origin, and an isolated print-mode `oracle_preflight` from the
   installed entry point reported ready.
