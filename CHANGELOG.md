@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Changed
+
+- the development-only `minimatch` dependency is overridden to `^11.0.1` to fix [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), because `@earendil-works/pi-coding-agent` 1.4.0 pins the vulnerable `10.2.6`; the published package does not change
+
 ## 0.4.11 - 2026-10-31
 
 ### Fixed
