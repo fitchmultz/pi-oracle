@@ -1,7 +1,7 @@
 # OMP Oracle compatibility
 
 Use this page to verify whether your host, operating system, runtime, browser, and provider
-transport are supported by `omp-oracle` (`0.4.10` on npm; the GitHub URL tracks `main`).
+transport are supported by `omp-oracle` (`0.4.11` on npm; the GitHub URL tracks `main`).
 
 Companion docs: [Operations](OPERATIONS.md) · [Release](RELEASE.md) · [Test plan](TEST_PLAN.md)
 

@@ -1,6 +1,6 @@
 {
   "name": "omp-oracle",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "description": "Asynchronous ChatGPT and Grok web-oracle jobs for Oh My Pi and pi: isolated browser auth, durable background jobs, and project-context archives.",
   "private": false,
   "license": "MIT",

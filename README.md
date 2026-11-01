@@ -284,7 +284,7 @@ See the [Security model](docs/SECURITY.md) and the [Security policy](SECURITY.md
 | Platforms | macOS and Linux pass the release gate; Windows native is declared and validated upstream, not re-qualified by this fork |
 | Providers | ChatGPT (nine presets) and Grok (`heavy`) |
 | Transports | Isolated seed profile for both providers; existing-Chrome relay and managed browser for ChatGPT |
-| Package | `omp-oracle` `0.4.10` on npm; the GitHub URL tracks `main` |
+| Package | `omp-oracle` `0.4.11` on npm; the GitHub URL tracks `main` |
 
 - **Experimental public beta:** provider UI, auth, model controls, and artifact download behavior can drift.
 - **Wake-up is best effort:** the session poller delivers one idle-gated wake-up per finished job, while the job directory on disk is the durable record.
