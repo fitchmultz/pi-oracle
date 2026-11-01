@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.7.23 - 2026-10-31
+## Unreleased
 
 ### Changed
 - update the `basic-ftp` dependency override to the patched stable release
 - publish versioned npm candidates automatically after reviewed changes merge to `main` and pass Pi compatibility checks
 - support target-specific platform preflight for distributed release checks
+- qualify retained Oracle release candidates across hosted macOS, Ubuntu, and native Windows Crabbox targets before publication
 
 ### Fixed
 - recognize ChatGPT's current model selector, send button, and completed response state

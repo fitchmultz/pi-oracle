@@ -12,11 +12,11 @@ Production hardening should keep focusing on UI drift detection, auth recovery, 
 
 ## Automatic npm releases (maintainers)
 
-Follow the [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases): merge a reviewed PR into `main` with an intentional `package.json` version bump and a matching versioned `CHANGELOG.md` section. Automation never bumps versions, overwrites releases, or republishes an existing version. Once configured and enabled, it runs existing offline compatibility checks, qualifies one candidate tarball, then publishes it without an approval step.
+The [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases) creates a reviewed patch-version PR after changes merge to `main`, then qualifies one retained candidate tarball across compatibility checks and hosted macOS, Ubuntu, and native Windows Crabbox suites before publishing the same version on npm and GitHub.
 
-Merging publishes, so before merging check the final PR head (up to date with `main`) and version against [the existing `release:check` requirements](#verification) and [packed platform proof](platform-smoke.md). Fresh all-preset ChatGPT proof must match that commit/version, satisfy the proof checker's timing and saved-response requirements, and accompany the required doctor-first macOS/Ubuntu/native-Windows evidence. Old-commit proof is not sufficient. Merging attests genuine satisfaction of these gates; it does not create proof or waive `release:check`. Authenticated and paid checks remain outside CI. Automated publication disables npm hooks to publish the checked bytes; manual `npm publish` still runs its existing `prepublishOnly` gate.
+Before releasing runtime or prompt changes, verify [the `release:check` requirements](#verification) and [packed platform proof](platform-smoke.md). Fresh all-preset ChatGPT proof must match `HEAD` or an ancestor commit whose `extensions/` and `prompts/` trees are byte-identical to `HEAD`, satisfy the proof checker's 72-hour timing and saved-response requirements, and accompany the required doctor-first macOS/Ubuntu/native-Windows evidence. Authenticated and paid checks remain outside CI. Automated publication disables npm hooks to publish the checked bytes; manual `npm publish` still runs its existing `prepublishOnly` gate.
 
-Failed/unpublished candidates can retry daily at 12:17 UTC or via manual dispatch of `npm release` on `main`, without another bump. Set repository variable `NPM_RELEASE_ENABLED` to anything other than `true` to stop new release plans; cancel pending runs separately when needed. Workflow validation is not evidence of a completed real OIDC publication.
+Set repository variable `NPM_RELEASE_ENABLED` to anything other than `true` to stop new version and release plans; cancel pending runs separately when needed. Follow the shared procedure to retry an unpublished candidate. Workflow validation is not evidence of a completed real OIDC publication.
 
 ## Verification
 
@@ -66,7 +66,7 @@ node scripts/oracle-chatgpt-preset-proof.mjs template > .artifacts/chatgpt-prese
 npm run release:proof:chatgpt-presets
 ```
 
-The proof checker is intentionally part of `release:check`; it fails if the proof is missing, stale, tied to a different package version/git head, references jobs that completed before the current commit, or lacks actual persisted ChatGPT `.tar.zst` job state and response text for any canonical preset.
+The proof checker is intentionally part of `release:check`; it fails if the proof is missing, stale, tied to a commit whose `extensions/` or `prompts/` differ from `HEAD`, references jobs that completed before the proven commit, or lacks actual persisted ChatGPT `.tar.zst` job state and response text for any canonical preset.
 
 The real runtime suite defaults to deterministic installed-tool execution so platform proof stays bounded. Provider/model defaults remain `zai/glm-5.2` for doctor/config and for optional model-agent debugging; override with `PI_ORACLE_REAL_TEST_PROVIDER` and `PI_ORACLE_REAL_TEST_MODEL` when needed. For inner-loop source loading only, use `npm run smoke:real:source`; it is not release proof. Set `PI_ORACLE_REAL_TEST_MODEL_AGENT=1` only when debugging the slower model-agent path. The optional second real-agent negative symlink check is opt-in via `PI_ORACLE_REAL_TEST_NEGATIVE_SYMLINK=1`; `npm run sanity:oracle` covers archive/symlink rejection by default without adding another model-agent turn to the platform release gate.
 

@@ -61,8 +61,25 @@ function currentGitHead() {
   return git(["rev-parse", "HEAD"]);
 }
 
-function currentGitHeadCommittedAt() {
-  return git(["show", "-s", "--format=%cI", "HEAD"]);
+function gitCommitCommittedAt(ref = "HEAD") {
+  return git(["show", "-s", "--format=%cI", ref]);
+}
+
+function isRuntimeIdenticalAncestor(candidateHead, currentHead) {
+  if (typeof candidateHead !== "string" || !/^[0-9a-f]{40}$/i.test(candidateHead)) return false;
+  if (candidateHead === currentHead) return true;
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", candidateHead, currentHead], { cwd: REPO_ROOT, stdio: "ignore" });
+    execFileSync("git", ["diff", "--exit-code", candidateHead, currentHead, "--", "extensions", "prompts"], { cwd: REPO_ROOT, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function packageMetadataAtCommit(ref) {
+  const pkg = JSON.parse(git(["show", `${ref}:package.json`]));
+  return { name: pkg.name, version: pkg.version };
 }
 
 function currentGitStatus() {
@@ -230,8 +247,6 @@ function validateProof(proof, path) {
   const errors = [];
   const { name, version } = packageMetadata();
   const gitHead = currentGitHead();
-  const gitHeadCommittedAt = currentGitHeadCommittedAt();
-  const gitHeadCommittedAtMs = Date.parse(gitHeadCommittedAt);
   const gitStatus = currentGitStatus();
   const presetRegistry = canonicalPresets();
   const requiredPresets = Object.keys(presetRegistry);
@@ -246,10 +261,17 @@ function validateProof(proof, path) {
     return errors;
   }
 
+  const proofGitHead = typeof proof.gitHead === "string" ? proof.gitHead : "";
+  const validProofHead = isRuntimeIdenticalAncestor(proofGitHead, gitHead);
+  const expectedProofHead = validProofHead ? proofGitHead : gitHead;
+  const expectedVersion = validProofHead ? packageMetadataAtCommit(expectedProofHead).version : version;
+  const gitHeadCommittedAt = gitCommitCommittedAt(expectedProofHead);
+  const gitHeadCommittedAtMs = Date.parse(gitHeadCommittedAt);
+
   if (proof.schemaVersion !== 1) errors.push("schemaVersion must be 1");
   if (proof.packageName !== name) errors.push(`packageName must be ${name}`);
-  if (proof.packageVersion !== version) errors.push(`packageVersion must match package.json version ${version}`);
-  if (proof.gitHead !== gitHead) errors.push(`gitHead must match current HEAD ${gitHead}`);
+  if (proof.packageVersion !== expectedVersion) errors.push(`packageVersion must match package.json version ${expectedVersion}`);
+  if (!validProofHead) errors.push(`gitHead must match current HEAD ${gitHead} or a runtime-identical ancestor commit`);
   if (proof.provider !== "chatgpt") errors.push('provider must be "chatgpt"');
   if (proof.extensionUnderTest !== "loaded-extension") errors.push('extensionUnderTest must be "loaded-extension"');
 
@@ -262,7 +284,7 @@ function validateProof(proof, path) {
     const maxAgeMs = maxAgeHours() * 60 * 60 * 1000;
     if (ageMs < 0) errors.push("validatedAt must not be in the future");
     if (ageMs > maxAgeMs) errors.push(`validatedAt is older than ${maxAgeHours()} hours`);
-    if (proofValidatedAtMs <= gitHeadCommittedAtMs) errors.push("validatedAt must be after current git HEAD commit time");
+    if (proofValidatedAtMs <= gitHeadCommittedAtMs) errors.push("validatedAt must be after proven git commit time");
   }
 
   const jobs = proof.jobs;
@@ -277,8 +299,8 @@ function validateProof(proof, path) {
       canonicalPreset: presetRegistry[preset],
       proofJob: jobs[preset],
       packageName: name,
-      packageVersion: version,
-      gitHead,
+      packageVersion: expectedVersion,
+      gitHead: expectedProofHead,
       gitHeadCommittedAtMs,
       proofValidatedAtMs,
       errors,
