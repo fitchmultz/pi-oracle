@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.24 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Raise the Pi floor to 1.5.0 (#74) ([6759f3e](https://github.com/fitchmultz/pi-oracle/commit/6759f3ea0af7c3975842fa4c73ff3797d95ca1f5))
+
+### What's Changed
+* Raise the Pi floor to 1.5.0 by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/74
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.23...v0.7.24
+
 ## 0.7.23 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
