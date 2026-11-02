@@ -290,7 +290,8 @@ omp --cwd /abs/project -p --mode json --session-dir /abs/session "/oracle-run su
 - The request file holds the tool's parameters (`oracle_submit`: `prompt`, `files`, optional `preset`, `provider`,
   `followUpJobId`, `chatGptConversationId`; `oracle_read`: `jobId`, optional `projectId`, `action`;
   `oracle_preflight`: optional `provider`, `followUpJobId`, `chatGptConversationId`). It goes through the tool's
-  `prepareArguments` and parameter schema exactly like a model-issued call, and a schema failure dispatches nothing.
+  `prepareArguments` and an explicit request-shape check (the schema's keys and required fields), and a
+  refused shape dispatches nothing.
 - The result file receives the exact tool result (`content`, `details`, `isError`) atomically; the command prints one
   JSON line (`{"operation","ok","jobId","status","ready","error"}`) to stdout in print mode or as an
   `oracle-command-output` message in JSON mode. A nonzero job outcome is in the result, not in the exit status.

@@ -8,6 +8,7 @@ import test from "node:test";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { parseOracleRunArgs, summarizeOracleRunResult } from "../extensions/oracle/shared/oracle-run-helpers.mjs";
+import { requestShapeError } from "../extensions/oracle/lib/run-command.js";
 
 // /oracle-run is the driver control path: the host executes the registered tool from a JSON request, no model turn.
 // Never call oracle_auth or a dispatching oracle_submit here: browser/provider qualification is a separate gate.
@@ -85,8 +86,8 @@ test("/oracle-run executes registered oracle tools host-side from JSON requests"
     await writeFile(badSubmit, JSON.stringify({ prompt: "x", files: [] }));
     await session.prompt(`/oracle-run submit ${badSubmit} ${badResult} ${badMarker}`);
     [latest] = outputs().slice(-1);
-    assert.match(latest.summary.error, /does not match the oracle_submit parameter schema/);
-    assert.equal(existsSync(badMarker), false, "a request refused by the schema dispatches nothing and writes no marker");
+    assert.match(latest.summary.error, /does not match the oracle_submit request shape \(files must be a non-empty array/);
+    assert.equal(existsSync(badMarker), false, "a request refused by the shape check dispatches nothing and writes no marker");
     assert.equal(existsSync(badResult), false);
     assert.deepEqual((await readdir(jobsDir)).sort(), ["oracle-saved-fixture"], "no job was created");
 
@@ -104,6 +105,18 @@ test("/oracle-run executes registered oracle tools host-side from JSON requests"
   } finally {
     session.dispose();
   }
+});
+
+test("oracle-run request shapes mirror the tool schemas' keys and required fields", () => {
+  assert.equal(requestShapeError("submit", { prompt: "x", files: ["README.md"], preset: "instant" }), undefined);
+  assert.match(requestShapeError("submit", { prompt: "x", files: [] }), /files must be a non-empty array/);
+  assert.match(requestShapeError("submit", { prompt: " ", files: ["README.md"] }), /prompt must be/);
+  assert.match(requestShapeError("submit", { files: ["README.md"] }), /missing field\(s\): prompt/);
+  assert.match(requestShapeError("submit", { prompt: "x", files: ["README.md"], archive: true }), /unknown field\(s\): archive/);
+  assert.equal(requestShapeError("read", { jobId: "j1", projectId: "/p", action: "read" }), undefined);
+  assert.match(requestShapeError("read", { jobId: "" }), /jobId must be/);
+  assert.equal(requestShapeError("preflight", {}), undefined);
+  assert.match(requestShapeError("preflight", { jobId: "j1" }), /unknown field\(s\): jobId/);
 });
 
 test("oracle-run argument parsing and result summaries are strict", () => {

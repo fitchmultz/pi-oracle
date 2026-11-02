@@ -4,6 +4,12 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
+## Unreleased
+
+### Fixed
+
+- `0.4.12` failed the plugin installer's extension validation (`Cannot find package 'typebox' imported from …/lib/run-command.ts`): the host rewrites the bare `typebox` specifier onto its bundled copy but not the `typebox/value` subpath. `/oracle-run` now checks the request shape explicitly (the tool schema's keys and required fields) and imports nothing from `typebox`.
+
 ## 0.4.12 - 2026-11-02
 
 ### Added

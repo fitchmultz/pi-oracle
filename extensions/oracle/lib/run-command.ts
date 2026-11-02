@@ -1,5 +1,5 @@
 // Purpose: Execute one registered oracle tool from a slash command, with no model in the loop.
-// Responsibilities: Validate the JSON request against the tool's own parameter schema, write the dispatch marker before the tool runs,
+// Responsibilities: Check the JSON request's shape (the tool schema's keys and required fields), write the dispatch marker before the tool runs,
 // and persist the exact tool result for the calling program.
 // Scope: Deterministic host-side control path for drivers that otherwise had to ask a model to type the tool call; the tools themselves are unchanged.
 // Usage: Registered by the extension entrypoint once the programmatic tool definitions are captured; drivers invoke it as `omp -p "/oracle-run …"`.
@@ -8,14 +8,11 @@ import { closeSync, existsSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
-import { Check } from "typebox/value";
 import { parseOracleRunArgs, summarizeOracleRunResult, type OracleRunInvocation, type OracleRunSummary } from "../shared/oracle-run-helpers.mjs";
 import { asRecord } from "./tools.js";
 
 export type OracleRunToolDefinition = {
   name: string;
-  parameters?: TSchema;
   prepareArguments?: (args: unknown) => unknown;
   execute(
     toolCallId: string,
@@ -25,6 +22,35 @@ export type OracleRunToolDefinition = {
     ctx: ExtensionContext,
   ): Promise<unknown>;
 };
+
+// The host validates model-issued calls against each tool's typebox schema; the installed plugin
+// resolves the bare `typebox` specifier through the host but not its `typebox/value` subpath
+// (0.4.12 failed extension validation on install), so the request shape is checked here
+// explicitly: the schema's keys and required fields, with the tool's own checks behind them.
+const REQUEST_SHAPES: Record<OracleRunInvocation["operation"], { required: readonly string[]; allowed: readonly string[] }> = {
+  preflight: { required: [], allowed: ["provider", "followUpJobId", "chatGptConversationId"] },
+  submit: { required: ["prompt", "files"], allowed: ["prompt", "files", "provider", "preset", "mode", "followUpJobId", "chatGptConversationId"] },
+  read: { required: ["jobId"], allowed: ["jobId", "projectId", "action", "responseIndex", "messageId"] },
+};
+
+function isBlank(value: unknown): boolean {
+  return typeof value !== "string" || value.trim() === "";
+}
+
+export function requestShapeError(operation: OracleRunInvocation["operation"], request: Record<string, unknown>): string | undefined {
+  const shape = REQUEST_SHAPES[operation];
+  const unknown = Object.keys(request).filter((key) => !shape.allowed.includes(key));
+  if (unknown.length > 0) return `unknown field(s): ${unknown.join(", ")}`;
+  const missing = shape.required.filter((key) => !(key in request));
+  if (missing.length > 0) return `missing field(s): ${missing.join(", ")}`;
+  if (operation === "submit") {
+    if (isBlank(request.prompt)) return "prompt must be a non-empty string";
+    const files = request.files;
+    if (!Array.isArray(files) || files.length === 0 || files.some(isBlank)) return "files must be a non-empty array of non-blank paths";
+  }
+  if (operation === "read" && isBlank(request.jobId)) return "jobId must be a non-empty string";
+  return undefined;
+}
 
 function writeExclusive(path: string, payload: string): void {
   const descriptor = openSync(path, "wx", 0o600);
@@ -65,11 +91,10 @@ export async function runOracleTool(
   if (!definition) throw new Error(`Oracle tool oracle_${invocation.operation} is not registered`);
   if (existsSync(invocation.resultPath)) throw new Error(`Result already exists; inspect it before any further operation: ${invocation.resultPath}`);
   const request = await readRequest(invocation.requestPath);
+  const shapeError = requestShapeError(invocation.operation, request);
+  if (shapeError) throw new Error(`Request does not match the oracle_${invocation.operation} request shape (${shapeError}): ${invocation.requestPath}`);
   const prepared = asRecord(definition.prepareArguments ? definition.prepareArguments(request) : request);
   if (!prepared) throw new Error(`Prepared oracle_${invocation.operation} arguments are not an object`);
-  if (definition.parameters !== undefined && !Check(definition.parameters, prepared)) {
-    throw new Error(`Request does not match the oracle_${invocation.operation} parameter schema: ${invocation.requestPath}`);
-  }
   if (invocation.markerPath) {
     writeExclusive(invocation.markerPath, `${JSON.stringify({ operation: invocation.operation, dispatch_state: "may_have_been_sent", at: new Date().toISOString() })}\n`);
     fsyncDirectory(dirname(invocation.markerPath));
