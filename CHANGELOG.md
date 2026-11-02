@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.7.23 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
 ### Changed
 - update the `basic-ftp` dependency override to the patched stable release
 - publish versioned npm candidates automatically after reviewed changes merge to `main` and pass Pi compatibility checks
@@ -10,6 +13,21 @@
 
 ### Fixed
 - recognize ChatGPT's current model selector, send button, and completed response state
+<!-- npm-release:unreleased:end -->
+
+- Automate qualified Oracle releases (3/3) (#72) ([596d8b7](https://github.com/fitchmultz/pi-oracle/commit/596d8b7c2c0591d80bdb1e8c260bc04b3cf16310))
+
+### What's Changed
+* ci: publish npm releases automatically on merge by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/64
+* chore(deps): update dependency basic-ftp to v6.2.3 by @renovate[bot] in https://github.com/fitchmultz/pi-oracle/pull/55
+* Restore Oracle ChatGPT flow and prepare release (1/2) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/68
+* Qualify retained candidates on native SSH targets (2/2) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/69
+* Support target-specific platform preflight (1/3) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/70
+* Qualify retained Oracle packages on hosted platforms (2/3) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/71
+* Automate qualified Oracle releases (3/3) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/72
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.22...v0.7.23
 
 ## 0.7.22 - 2026-10-12
 
