@@ -62,6 +62,7 @@ Per-release changes are recorded in [Changelog](../CHANGELOG.md).
 - **Merge, never rebase.** Shared upstream history stays intact through explicit merge commits,
   never rebases; later changes are selectively ported where the fork's runtime and release gates
   diverge. The latest recorded sync is upstream `eecf79e` (2026-10-31, `pi-oracle` 0.7.23).
+  Re-checked on 2026-11-02 before 0.4.12: upstream `main` is `bd91a5a` (`596d8b7`, [#72](https://github.com/fitchmultz/pi-oracle/pull/72) "Automate qualified Oracle releases (3/3)", and the 0.7.23 release chore); no file under `extensions/oracle/{lib,shared,worker}` changed, and the release-automation work serves upstream's pipeline, not the fork's Crabbox lanes and trusted publishing. Nothing ported.
   - `5c31b3d` ([#68](https://github.com/fitchmultz/pi-oracle/pull/68)): ported case-insensitive
     bare-effort opener recognition, including removable chips, through `BARE_EFFORT_PATTERN`,
     and assistant headings marked `data-conversation-role="assistant"` through shared turn

@@ -4,7 +4,7 @@ Versions from `0.1.0` are `omp-oracle` releases; the numbering restarts for the 
 identity and does not continue upstream `pi-oracle`'s `0.7.x` line. The inherited upstream
 history is kept below the divider.
 
-## Unreleased
+## 0.4.12 - 2026-11-02
 
 ### Added
 
