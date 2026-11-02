@@ -16,18 +16,11 @@ import { refreshOracleStatus, setOracleReadiness, startPoller, stopPoller } from
 import { promoteQueuedJobs } from "./lib/queue.js";
 import { assertOracleSubmitPrerequisites, hasPersistedSessionFile } from "./lib/runtime.js";
 import { classifyOracleReadinessError, registerOracleTools } from "./lib/tools.js";
+import { registerOracleRunCommand, type OracleRunToolDefinition } from "./lib/run-command.js";
 
 const PROGRAMMATIC_API_SYMBOL = Symbol.for("omp.pi-oracle.programmatic.v1");
-type ProgrammaticToolDefinition = {
-  name: string;
-  execute(
-    toolCallId: string,
-    params: Record<string, unknown>,
-    signal: AbortSignal,
-    onUpdate: (result: unknown) => void,
-    ctx: ExtensionContext,
-  ): Promise<unknown>;
-};
+// The captured definitions are the registered ToolDefinitions; /oracle-run reads their schema and prepareArguments.
+type ProgrammaticToolDefinition = OracleRunToolDefinition;
 
 function readPromptTemplate(path: string): string | undefined {
   try {
@@ -98,6 +91,7 @@ export default function oracleExtension(pi: ExtensionAPI) {
   if (!preflightTool || !submitTool || !readTool) {
     throw new Error("Pi Oracle did not register its programmatic preflight, submit, and read tools");
   }
+  registerOracleRunCommand(pi, programmaticTools);
   const abortSignal = new AbortController().signal;
   Object.defineProperty(globalThis, PROGRAMMATIC_API_SYMBOL, {
     configurable: true,

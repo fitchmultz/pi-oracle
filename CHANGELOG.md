@@ -6,6 +6,10 @@ history is kept below the divider.
 
 ## Unreleased
 
+### Added
+
+- `/oracle-run <preflight|submit|read> <request.json> <result.json> [<marker.json>]` executes the registered oracle tool host-side from a JSON request and writes the exact tool result, with no model turn; driver programs no longer ask a model to retype the tool call (a mistyped path on 2026-11-02 left a dispatch marker and no result for a completed job).
+
 ### Changed
 
 - the development-only `minimatch` dependency is overridden to `^11.0.1` to fix [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), because `@earendil-works/pi-coding-agent` 1.4.0 pins the vulnerable `10.2.6`; the published package does not change

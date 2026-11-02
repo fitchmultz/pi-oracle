@@ -159,6 +159,7 @@ User-facing commands:
 - `/oracle-status [job-id]` — inspect a job, or list recent job ids when no explicit id is given.
 - `/oracle-cancel <job-id>` — cancel a queued or active job.
 - `/oracle-clean <job-id|all>` — remove temp files for terminal jobs; recently woken terminal jobs may stay retained briefly, and a blocked cleanup returns the next eligible cleanup time.
+- `/oracle-run <preflight|submit|read> <request.json> <result.json> [<marker.json>]` — execute one oracle tool from a JSON request without a model turn, for driver programs (`omp -p --mode json "/oracle-run …"`); see [Operations → Driving oracle from a program](docs/OPERATIONS.md#driving-oracle-from-a-program).
 
 Agent-facing tools:
 

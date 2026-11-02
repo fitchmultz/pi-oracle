@@ -55,7 +55,7 @@
   "scripts": {
     "check:syntax": "node scripts/check-syntax.mjs",
     "check:oracle-extension": "npm run check:syntax && esbuild extensions/oracle/index.ts --bundle --platform=node --format=esm --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent --external:typebox --outfile=/tmp/pi-oracle-extension-check.js",
-    "test:oracle-helpers": "node --test scripts/oracle-host-compat.test.mjs scripts/oracle-native.test.mjs extensions/oracle/shared/relay-browser-helpers.test.mjs extensions/oracle/shared/managed-browser-helpers.test.mjs extensions/oracle/worker/auth-flow-helpers.test.mjs extensions/oracle/worker/chatgpt-ui-helpers.test.mjs extensions/oracle/worker/response-capture.test.mjs",
+    "test:oracle-helpers": "node --test scripts/oracle-host-compat.test.mjs scripts/oracle-native.test.mjs scripts/oracle-run.test.mjs extensions/oracle/shared/relay-browser-helpers.test.mjs extensions/oracle/shared/managed-browser-helpers.test.mjs extensions/oracle/worker/auth-flow-helpers.test.mjs extensions/oracle/worker/chatgpt-ui-helpers.test.mjs extensions/oracle/worker/response-capture.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:worker-helpers": "tsc --noEmit -p tsconfig.worker-helpers.json",
     "typecheck:worker-runtime": "tsc --noEmit -p tsconfig.worker-runtime.json",

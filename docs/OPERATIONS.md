@@ -277,6 +277,31 @@ the built-in generic Chromium cookie reader and prompts for macOS Keychain acces
   is `not_sent`, `attempted`, or `accepted`, showing whether resubmitting is safe. To retry capture of a
   completed turn without sending a prompt, run `oracle_read({ jobId, action: "recollect" })`.
 
+## Driving oracle from a program
+
+A driver that submits and reads oracle jobs from its own code (a diligence pipeline, a batch script) must not
+ask a model to type the tool call: a model that retypes a path once leaves a dispatch marker and no result, and
+the driver cannot tell whether the prompt was sent. `/oracle-run` executes the registered tool host-side instead:
+
+```sh
+omp --cwd /abs/project -p --mode json --session-dir /abs/session "/oracle-run submit /abs/submit.request.json /abs/submit.result.json /abs/submit.marker.json"
+```
+
+- The request file holds the tool's parameters (`oracle_submit`: `prompt`, `files`, optional `preset`, `provider`,
+  `followUpJobId`, `chatGptConversationId`; `oracle_read`: `jobId`, optional `projectId`, `action`;
+  `oracle_preflight`: optional `provider`, `followUpJobId`, `chatGptConversationId`). It goes through the tool's
+  `prepareArguments` and parameter schema exactly like a model-issued call, and a schema failure dispatches nothing.
+- The result file receives the exact tool result (`content`, `details`, `isError`) atomically; the command prints one
+  JSON line (`{"operation","ok","jobId","status","ready","error"}`) to stdout in print mode or as an
+  `oracle-command-output` message in JSON mode. A nonzero job outcome is in the result, not in the exit status.
+- `marker.json` (submit and read only) is created with `O_EXCL` immediately before the tool runs. No marker after the
+  command returns means nothing was dispatched and the request may be repeated; a marker without a result means the
+  prompt may have been sent, so inspect the job directory before any retry.
+- All three paths must be absolute. An existing result or marker file is never overwritten; the driver chooses a
+  fresh path per attempt.
+- Submissions need a persisted session (`--session-dir`); the job's wake-up targets that session, so a print-mode
+  driver reads completion from the job directory (`oracle_read` or the job's `job.json`), never from a wake-up.
+
 ## Troubleshooting
 
 | Symptom | First thing to do | Section |

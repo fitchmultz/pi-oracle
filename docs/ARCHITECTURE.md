@@ -73,6 +73,11 @@ poller, status footer, and command interceptors; `session_shutdown` stops the po
 - `/oracle-cancel <job-id>` — cancels a `queued` or active job by explicit id.
 - `/oracle-clean <job-id|all>` — runs runtime teardown if needed and removes job directories for terminal jobs outside the
   post-wake-up retention grace window.
+- `/oracle-run <preflight|submit|read> <request.json> <result.json> [<marker.json>]` — executes the registered
+  `oracle_preflight`, `oracle_submit` or `oracle_read` tool host-side from a JSON request (same `prepareArguments` and
+  parameter schema as a model-issued call) and writes the exact tool result; no model turn runs. The optional marker is
+  created with `O_EXCL` immediately before the tool executes, so a driver can tell "never dispatched" (no marker) from
+  "may have been sent" (marker, no result). Existing result or marker files are never overwritten.
 
 ### Tools
 
