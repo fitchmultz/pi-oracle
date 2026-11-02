@@ -4,7 +4,7 @@ The [README](../README.md) is the user entry point. Architecture and lifecycle d
 
 ## Host qualification
 
-Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `0.80.9+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
+Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `1.5.0+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
 
 Package install/use requires Node.js 22.19.0 or newer; platform smoke/release validation expects Node 24+ per `platform-smoke.config.mjs`.
 
@@ -36,8 +36,6 @@ npm run verify:oracle
 ```
 
 `npm test` runs `npm run verify:oracle`, so it is not a separate gate from the final line above.
-
-Known development dependency warning: the official Pi 1.0.0 npm package's `npm-shrinkwrap.json` still pins `brace-expansion` `5.0.9`, which has brace-expansion denial-of-service advisories. npm 11 preserves that vendor-pinned subtree even with a root override; dropping the shrinkwrap to obtain a clean audit is not a fix. The warning predates the Pi 1.0 baseline upgrade and needs an upstream host dependency fix. Dependencies embedded in a prebuilt Pi CLI bundle likewise require a fixed host distribution.
 
 `npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate now blocks unless fresh live ChatGPT preset proof exists for every canonical preset, then requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
 

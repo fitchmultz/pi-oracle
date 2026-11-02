@@ -87,12 +87,11 @@
     "typebox": "*"
   },
   "overrides": {
-    "basic-ftp": "6.2.3",
     "protobufjs": "7.6.6"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.0",
-    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",
