@@ -3526,7 +3526,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     engines?: { node?: string };
     os?: string[];
     scripts?: Record<string, string | undefined> & { test?: string; prepublishOnly?: string; "typecheck:worker-helpers"?: string; "verify:oracle"?: string };
-    overrides?: { "basic-ftp"?: string; protobufjs?: string };
+    overrides?: { protobufjs?: string };
     devDependencies?: Record<string, string | undefined>;
     peerDependencies?: Record<string, string | undefined>;
     peerDependenciesMeta?: Record<string, { optional?: boolean } | undefined>;
@@ -3932,10 +3932,9 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(developmentSource.includes("Pi `0.80.9+` is the suggested tested floor") && developmentSource.includes("optional wildcard peers"), "Development guide should document the suggested Pi 0.80.9 floor without making it a hard peer requirement");
-  assert(designSource.includes("pi` 0.80.9+") || designSource.includes("`pi` 0.80.9+"), "design doc should name the current suggested Pi 0.80.9 compatibility floor");
+  assert(developmentSource.includes("Pi `1.5.0+` is the suggested tested floor") && developmentSource.includes("optional wildcard peers"), "Development guide should document the suggested Pi 1.5.0 floor without making it a hard peer requirement");
+  assert(designSource.includes("`pi` 1.5.0+"), "design doc should name the current suggested Pi 1.5.0 compatibility floor");
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
-  assert(pkg.overrides?.["basic-ftp"] === "6.2.3", "package.json should override basic-ftp to the latest patched stable version compatible with @google/genai");
   assert(pkg.overrides?.protobufjs === "7.6.6", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
   assert(commandsSource.includes("formatOracleJobSummary"), "oracle commands should format job status output through the shared observability helper");
