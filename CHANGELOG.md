@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.25 - 2026-11-02
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Recheck unreported Cursor reviews in automatic releases (#77) ([74fb70d](https://github.com/fitchmultz/pi-oracle/commit/74fb70d76bfd56b464a5145f3463b29241901670))
+
+### What's Changed
+* Recheck unreported Cursor reviews in automatic releases by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/77
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.24...v0.7.25
+
 ## 0.7.24 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
