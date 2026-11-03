@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.7.26 - 2026-11-03
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #79 from fitchmultz/npm-version-queue-1 ([da47c8b](https://github.com/fitchmultz/pi-oracle/commit/da47c8b62551381bbd17829734e26c2de8abb75f))
+
+### What's Changed
+* Coalesce queued npm version runs by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/79
+* Restore queue: max and the final newline in npm-version.yml by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/80
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.25...v0.7.26
+
 ## 0.7.25 - 2026-11-02
 
 <!-- npm-release:unreleased:start -->
