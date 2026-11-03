@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.27 - 2026-11-03
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Skip no-op releases and restate malformed remediation dispositions (#83) ([88aa788](https://github.com/fitchmultz/pi-oracle/commit/88aa788a68fbf5ae68cef71f736ed68eea07733c))
+
+### What's Changed
+* Skip no-op releases and restate malformed remediation dispositions by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/83
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.26...v0.7.27
+
 ## 0.7.26 - 2026-11-03
 
 <!-- npm-release:unreleased:start -->
