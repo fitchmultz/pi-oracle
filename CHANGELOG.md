@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.27 - 2026-11-03
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Merge pull request #80 from fitchmultz/restore-npm-queue-max ([4993819](https://github.com/fitchmultz/pi-oracle/commit/49938197ab94447b1fc3c29588466fcdf0818e14))
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.26...v0.7.27
+
 ## 0.7.26 - 2026-11-03
 
 <!-- npm-release:unreleased:start -->
