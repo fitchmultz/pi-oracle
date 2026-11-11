@@ -59,6 +59,11 @@ try {
   Assert-NativeSuccess 'agent-browser and Pi install'
   & C:\msys64\usr\bin\pacman.exe -Sy --noconfirm --needed rsync
   Assert-NativeSuccess 'rsync install'
+  # The newest rsync does not start against the image's older libraries.
+  $rsyncPackages = & C:\msys64\usr\bin\pactree.exe --linear --unique rsync
+  Assert-NativeSuccess 'rsync dependency listing'
+  & C:\msys64\usr\bin\pacman.exe -S --noconfirm --needed @rsyncPackages
+  Assert-NativeSuccess 'rsync dependency upgrade'
   $env:PATH = "$toolDir;$([IO.Path]::GetDirectoryName($zstd));$env:PATH;C:\msys64\usr\bin"
   Write-Host "Candidate $(git rev-parse HEAD) tool versions: node=$(node.exe --version) npm=$(npm.cmd --version) browser=$(agent-browser.cmd --version) pi=$(pi.cmd --version)"
   & $crabbox --version
