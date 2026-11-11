@@ -12,7 +12,7 @@ Production hardening should keep focusing on UI drift detection, auth recovery, 
 
 ## Automatic npm releases (maintainers)
 
-The [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases) creates a reviewed patch-version PR after changes merge to `main`, then qualifies one retained candidate tarball across compatibility checks and hosted macOS, Ubuntu, and native Windows Crabbox suites before publishing the same version on npm and GitHub.
+The [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases) creates a reviewed patch-version PR after changes merge to `main`, then qualifies one retained candidate tarball across compatibility checks and hosted macOS, Ubuntu, and native Windows Crabbox suites before publishing the same version on npm and GitHub. A version PR opens when a merge changes the package users install; a merge that changes only CI, tests or development tooling ships with the next release.
 
 Before releasing runtime or prompt changes, verify [the `release:check` requirements](#verification) and [packed platform proof](platform-smoke.md). Fresh all-preset ChatGPT proof must match `HEAD` or an ancestor commit whose `extensions/` and `prompts/` trees are byte-identical to `HEAD`, satisfy the proof checker's 72-hour timing and saved-response requirements, and accompany the required doctor-first macOS/Ubuntu/native-Windows evidence. Authenticated and paid checks remain outside CI. Automated publication disables npm hooks to publish the checked bytes; manual `npm publish` still runs its existing `prepublishOnly` gate.
 
