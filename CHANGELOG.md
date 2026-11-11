@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.28 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Wake the version workflow only for release events and drop the duplicate main CI run (#85) ([0152bc6](https://github.com/fitchmultz/pi-oracle/commit/0152bc6ef514fa0e5f51b5e310d1a0970e0114f6))
+
+### What's Changed
+* Wake the version workflow only for release events and drop the duplicate main CI run by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/85
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.27...v0.7.28
+
 ## 0.7.27 - 2026-11-03
 
 <!-- npm-release:unreleased:start -->
