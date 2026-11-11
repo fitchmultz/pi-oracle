@@ -8,11 +8,11 @@ on:
       official-version:
         description: Official stable version resolved for this run; blank resolves latest
         type: string
-        default: ''
+        default: ""
       fork-ref:
         description: Maintained fork commit resolved for this run; blank resolves main
         type: string
-        default: ''
+        default: ""
 
 permissions:
   contents: read
@@ -23,8 +23,8 @@ concurrency:
 
 jobs:
   compatibility:
-    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@f407404914bf6d048e4d952c62711df5103cc7ef # main
+    uses: fitchmultz/.github/.github/workflows/pi-compatibility.yml@508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
     with:
-      automation-ref: f407404914bf6d048e4d952c62711df5103cc7ef # main
+      automation-ref: 508d2e23c75cab8fdd28bc62fc7fed2a9a0d1cca # main
       official-version: ${{ inputs.official-version }}
       fork-ref: ${{ inputs.fork-ref }}
