@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.7.29 - 2026-11-11
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Supersedes unpublished 0.7.28 from a71a3493fcebd59ecdc856aec0f35a5d98319260. Includes all changes since v0.7.27; the original release records remain unchanged.
+
+- fix: upgrade rsync's libraries on the Windows release runner (#87) ([87707f7](https://github.com/fitchmultz/pi-oracle/commit/87707f76230848db167033b8eb76a6d0c63359ba))
+
+### What's Changed
+* Wake the version workflow only for release events and drop the duplicate main CI run by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/85
+* chore(release): 0.7.28 by @pi-durable[bot] in https://github.com/fitchmultz/pi-oracle/pull/86
+* fix: upgrade rsync's libraries on the Windows release runner by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/87
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.27...v0.7.29
+
 ## 0.7.28 - 2026-11-11
 
 <!-- npm-release:unreleased:start -->
