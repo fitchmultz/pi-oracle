@@ -71,7 +71,7 @@ export function buildTargetBaseArgs(targetName, config = {}) {
       ];
     }
     case "ubuntu": {
-      const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24";
+      const image = env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24.22.3";
       return [
         "--provider", "local-container",
         "--target", "linux",

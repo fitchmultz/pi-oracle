@@ -107,7 +107,7 @@ function testTargetBaseArgsEnvPrecedence() {
     const baseline = buildTargetBaseArgs("ubuntu", {});
     assert.deepEqual(
       baseline,
-      ["--provider", "local-container", "--target", "linux", "--local-container-image", "pi-oracle-platform-smoke:node24"],
+      ["--provider", "local-container", "--target", "linux", "--local-container-image", "pi-oracle-platform-smoke:node24.22.3"],
       "default ubuntu target args should use the documented default image",
     );
 

@@ -1,6 +1,8 @@
+FROM node:24.22.3-bookworm@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS node
 FROM cimg/node:24.21
 
 USER root
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
 RUN apt-get update \
   && apt-get install -y --no-install-recommends zstd rsync \
   && rm -rf /var/lib/apt/lists/*
