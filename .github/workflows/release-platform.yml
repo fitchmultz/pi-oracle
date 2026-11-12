@@ -136,7 +136,7 @@ jobs:
         working-directory: extension
         run: |
           docker info
-          docker build -t pi-oracle-platform-smoke:node24 -f scripts/platform-smoke/Dockerfile.ubuntu .
+          docker build -t pi-oracle-platform-smoke:node24.22.3 -f scripts/platform-smoke/Dockerfile.ubuntu .
       - name: Run both required Unix suites on the retained candidate
         if: matrix.target != 'windows-native'
         working-directory: extension
