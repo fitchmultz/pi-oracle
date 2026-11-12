@@ -10,7 +10,7 @@ export default {
     source: "https://github.com/openclaw/crabbox",
     minVersion: "0.26.0",
   },
-  ubuntuContainerImage: "pi-oracle-platform-smoke:node24",
+  ubuntuContainerImage: "pi-oracle-platform-smoke:node24.22.3",
   ubuntuContainerBaseImage: "cimg/node:24.21",
   windowsParallels: {
     sourceVm: "pi-extension-windows-template",

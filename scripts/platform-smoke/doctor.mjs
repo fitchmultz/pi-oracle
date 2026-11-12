@@ -170,7 +170,7 @@ export async function runDoctor(config) {
     ok(`PI_ORACLE_SMOKE_MAC_PORT = ${env("PI_ORACLE_SMOKE_MAC_PORT") || env("PLATFORM_SMOKE_MAC_PORT") || "22"}`);
     ok(`PI_ORACLE_SMOKE_MAC_USER = ${env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER")}`);
   }
-  if (hasUbuntu) ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24"}`);
+  if (hasUbuntu) ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24.22.3"}`);
   if (hasWindows && windowsStatic) {
     ok(`Windows SSH host = ${windowsArgs[windowsArgs.indexOf("--static-host") + 1]}`);
     ok(`Windows SSH port = ${windowsArgs[windowsArgs.indexOf("--static-port") + 1]}`);

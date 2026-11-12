@@ -3697,8 +3697,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(referenceSource.includes("## Available providers and presets"), "Oracle reference should document available oracle preset ids");
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
   assert(referenceSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "Reference/design/prompts should use MiB wording for ChatGPT upload ceiling");
-  const packageNodeFloor = pkg.engines?.node?.replace(/^>=/, "");
-  assert(Boolean(packageNodeFloor) && readmeSource.includes("docs/reference.md#requirements") && referenceSource.includes(`Node.js ${packageNodeFloor} or newer`) && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should link to the documented package Node minimum, and the development guide should distinguish platform validation");
+  const packageNodeRange = pkg.engines?.node;
+  assert(Boolean(packageNodeRange) && readmeSource.includes("docs/reference.md#requirements") && referenceSource.includes("Node.js 22.23.5 (22.x), 24.22.3 (24.x), or 26.13.1 and newer") && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should link to the documented package Node minimum, and the development guide should distinguish platform validation");
   assert(developmentSource.includes("npm run check:platform-smoke") && developmentSource.includes("npm run sanity:oracle:platform"), "Development guide verification table should include the cheap platform-focused validation commands");
   assert(referenceSource.includes("Grok uploads now use `.tar.gz` archives"), "Oracle reference should document Grok's gzip archive format because Grok lacks zstd extraction tools");
   assert(referenceSource.includes("defaults.preset"), "Oracle reference should document defaults.preset");
@@ -3901,7 +3901,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("prompts"), "package.json files should include internal oracle command prompts");
   assert(pkg.pi?.extensions?.includes("./extensions/oracle/index.ts"), "package.json pi.extensions should include oracle extension entrypoint");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json should register oracle prompts so TUI slash completion can discover /oracle and /oracle-followup");
-  assert(pkg.engines?.node === ">=22.19.0", "package.json should advertise the actual Node.js support floor without an upper bound");
+  assert(pkg.engines?.node === ">=22.23.5 <23 || >=24.22.3 <25 || >=26.13.1", "package.json should exclude vulnerable and end-of-life Node.js release lines");
   assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux") && pkg.os?.includes("win32"), "package.json should declare macOS, Linux, and Windows native support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");

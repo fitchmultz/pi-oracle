@@ -17,7 +17,7 @@ To update the package later, use `pi update --extensions`, `pi update --all`, or
 You need:
 
 - macOS, Linux, or Windows native
-- Node.js 22.19.0 or newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
+- Node.js 22.23.5 (22.x), 24.22.3 (24.x), or 26.13.1 and newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
 - Suggested tested floor: `pi` 1.5.0 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use

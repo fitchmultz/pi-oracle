@@ -6,7 +6,7 @@ The [README](../README.md) is the user entry point. Architecture and lifecycle d
 
 Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `1.5.0+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
 
-Package install/use requires Node.js 22.19.0 or newer; platform smoke/release validation expects Node 24+ per `platform-smoke.config.mjs`.
+Package install/use requires Node.js 22.23.5 (22.x), 24.22.3 (24.x), or 26.13.1 and newer; platform smoke/release validation expects Node 24+ per `platform-smoke.config.mjs`.
 
 Production hardening should keep focusing on UI drift detection, auth recovery, artifact capture, platform compatibility, and environment diagnostics.
 
