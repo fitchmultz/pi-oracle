@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.7.30 - 2026-11-12
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- ci: align shared automation pins (#89) ([59444d1](https://github.com/fitchmultz/pi-oracle/commit/59444d129e1aaee6db4ec5c2ad86007652f7031d))
+
+### What's Changed
+* ci: align shared automation pins by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/89
+* fix: require patched Node security releases by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/90
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.29...v0.7.30
+
 ## 0.7.29 - 2026-11-11
 
 <!-- npm-release:unreleased:start -->
