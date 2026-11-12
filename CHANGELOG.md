@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.31 - 2026-11-12
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- chore: remove unsupported platform qualification (#92) ([57861da](https://github.com/fitchmultz/pi-oracle/commit/57861da3a11947391054c562474d34bb6510f484))
+
+### What's Changed
+* chore: remove unsupported platform qualification by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/92
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.30...v0.7.31
+
 ## 0.7.30 - 2026-11-12
 
 <!-- npm-release:unreleased:start -->
