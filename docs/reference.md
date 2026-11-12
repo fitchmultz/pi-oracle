@@ -16,7 +16,7 @@ To update the package later, use `pi update --extensions`, `pi update --all`, or
 
 You need:
 
-- macOS, Linux, or Windows native
+- Apple Silicon macOS or Linux
 - Node.js 22.23.5 (22.x), 24.22.3 (24.x), or 26.13.1 and newer for package install/use; platform smoke/release validation currently expects Node 24+ per `platform-smoke.config.mjs`
 - Suggested tested floor: `pi` 1.5.0 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
@@ -271,7 +271,7 @@ Review the code and design docs before using it with private or regulated materi
 
 ## Current limits
 
-- Experimental public beta, validated on macOS, Linux, and Windows native with Chromium-family browsers.
+- Experimental public beta, validated on Apple Silicon macOS and Linux with Chromium-family browsers.
 - Provider UI, auth, model controls, and artifact download behavior can drift.
 - Archive uploads are capped at 250 MiB for ChatGPT and 200 MiB for Grok after default exclusions and automatic whole-repo pruning.
 - A real ChatGPT or Grok web session is required for the provider you use.
