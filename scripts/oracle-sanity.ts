@@ -3671,8 +3671,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("/oracle-read [job-id]"), "README should document the user-facing oracle-read command");
   assert(readmeSource.includes("checks session and authentication readiness before gathering files"), "README quickstart should explain the early oracle preflight guard");
   assert(referenceSource.includes("context-rich relevant archive up to the selected provider's upload ceiling"), "Oracle reference should explain the context-rich archive bias for narrow /oracle requests within the upload ceiling");
-  assert(developmentSource.includes("platform-smoke.md") && developmentSource.includes("npm run smoke:platform:all"), "Development guide should document the Crabbox macOS/Ubuntu/Windows platform smoke gate");
-  assert(designSource.includes("docs/platform-smoke.md") && designSource.includes("npm run smoke:platform:all"), "design docs should link the macOS/Ubuntu/Windows platform smoke source of truth");
+  assert(developmentSource.includes("platform-smoke.md") && developmentSource.includes("npm run smoke:platform:all"), "Development guide should document the Crabbox Apple Silicon macOS/Ubuntu platform smoke gate");
+  assert(designSource.includes("docs/platform-smoke.md") && designSource.includes("npm run smoke:platform:all"), "design docs should link the Apple Silicon macOS/Ubuntu platform smoke source of truth");
   assert(referenceSource.includes("retryable archive-selection failure"), "Oracle reference should explain that archive-too-large local packing failures are retryable and should auto-narrow before surfacing to the user");
   assert(referenceSource.includes("omit `preset` and use the configured default model"), "Oracle reference should explain the default-preset bias for /oracle prompt ergonomics");
   assert(referenceSource.includes("Archive docs/reference.md plus any nearby docs or implementation files that help answer accurately"), "Oracle reference should include a narrow /oracle example that still keeps relevant surrounding context");
@@ -3681,7 +3681,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(referenceSource.includes("`oracle_auth`"), "Oracle reference should document the oracle_auth agent-facing tool");
   assert(referenceSource.includes("chromiumKeychain"), "Oracle reference should document configured Chromium keychain cookie sources");
   assert(referenceSource.includes("SWEET_COOKIE_LINUX_KEYRING"), "Oracle reference should document Sweet Cookie Linux keyring options");
-  assert(readmeSource.includes("macOS, Linux, or Windows native"), "README should document Linux and Windows native as supported platforms");
+  assert(readmeSource.includes("Apple Silicon macOS or Linux"), "README should document Apple Silicon macOS and Linux as supported platforms");
   assert(referenceSource.includes("leave `auth.chromiumKeychain` unset"), "Oracle reference should explain Linux uses Sweet Cookie options instead of macOS Keychain config");
   assert(referenceSource.includes("oracle_auth({})"), "Oracle reference should explain that agent callers can refresh stale oracle auth through oracle_auth before retrying once");
   assert(readmeSource.includes("/oracle-cancel <job-id>"), "README should document oracle-cancel as an explicit-id command");
@@ -3902,7 +3902,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.pi?.extensions?.includes("./extensions/oracle/index.ts"), "package.json pi.extensions should include oracle extension entrypoint");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json should register oracle prompts so TUI slash completion can discover /oracle and /oracle-followup");
   assert(pkg.engines?.node === ">=22.23.5 <23 || >=24.22.3 <25 || >=26.13.1", "package.json should exclude vulnerable and end-of-life Node.js release lines");
-  assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux") && pkg.os?.includes("win32"), "package.json should declare macOS, Linux, and Windows native support");
+  assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux"), "package.json should declare Apple Silicon macOS and Linux support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
   assert(pkg.scripts?.["check:platform-smoke"]?.includes("scripts/platform-smoke/targets.mjs"), "package.json should syntax-check the Crabbox platform smoke runner");
@@ -3911,8 +3911,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.["smoke:platform:doctor"] === "node scripts/platform-smoke.mjs doctor", "package.json should expose the Crabbox platform-smoke doctor");
   assert(pkg.scripts?.["smoke:platform:macos"] === "node scripts/platform-smoke.mjs run --target macos", "package.json should expose the macOS Crabbox platform smoke gate");
   assert(pkg.scripts?.["smoke:platform:ubuntu"] === "node scripts/platform-smoke.mjs run --target ubuntu", "package.json should expose the Ubuntu Crabbox platform smoke gate");
-  assert(pkg.scripts?.["smoke:platform:windows-native"] === "node scripts/platform-smoke.mjs run --target windows-native", "package.json should expose the Windows native Crabbox platform smoke gate");
-  assert(pkg.scripts?.["smoke:platform:all"] === "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "package.json should run the required macOS, Ubuntu, and Windows native Crabbox gates together after doctor");
+  assert(pkg.scripts?.["smoke:platform:all"] === "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu", "package.json should run the required Apple Silicon macOS and Ubuntu Crabbox gates together after doctor");
   assert(pkg.files?.includes("platform-smoke.config.mjs") && pkg.files?.includes("scripts/platform-smoke.mjs") && pkg.files?.includes("scripts/platform-smoke"), "package files should include the Crabbox platform smoke harness");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("typecheck:worker-helpers"), "full local verification should include worker/auth helper typechecking");
   assert(String(pkg.scripts?.["verify:oracle"] || "").includes("check:platform-smoke"), "full local verification should include platform smoke syntax checks");

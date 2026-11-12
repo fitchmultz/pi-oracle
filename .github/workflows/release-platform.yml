@@ -35,12 +35,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: macos
-            os: macos-15-intel
           - target: ubuntu
             os: ubuntu-latest
-          - target: windows-native
-            os: windows-latest
     env:
       SOURCE_REF: ${{ inputs.source-ref }}
       RELEASE_SOURCE: ${{ inputs.release-source }}
@@ -85,9 +81,6 @@ jobs:
           appendFileSync(process.env.GITHUB_ENV,
             `PI_ORACLE_RELEASE_TARBALL=${join(directory, candidate.filename)}\nPI_ORACLE_RELEASE_SHA256=${candidate.sha256}\n`);
           NODE
-      - name: Install Crabbox and zstd on macOS
-        if: matrix.target == 'macos'
-        run: brew install openclaw/tap/crabbox zstd
       - name: Install the current verified Crabbox on Ubuntu
         if: matrix.target == 'ubuntu'
         env:
@@ -105,13 +98,11 @@ jobs:
           cp -R "$dir/crabbox-runtime" "$RUNNER_TEMP/crabbox-bin/crabbox-runtime"
           echo "$RUNNER_TEMP/crabbox-bin" >> "$GITHUB_PATH"
       - name: Create isolated Unix run state
-        if: matrix.target != 'windows-native'
         run: |
           root=$(mktemp -d "$RUNNER_TEMP/oracle.XXXXXX")
           mkdir -m 700 "$root/home" "$root/tmp" "$root/npm-cache"
           touch "$root/npmrc" "$root/npm-globalrc"
           {
-            echo "ORACLE_HOST_ROOT=$root"
             echo "HOME=$root/home"
             echo "TMPDIR=$root/tmp"
             echo "NPM_CONFIG_USERCONFIG=$root/npmrc"
@@ -120,17 +111,10 @@ jobs:
             echo 'NPM_CONFIG_REGISTRY=https://registry.npmjs.org/'
           } >> "$GITHUB_ENV"
       - name: Install the reviewed npm
-        if: matrix.target != 'windows-native'
         working-directory: extension
         run: |
           PM="$(node -p 'require("./package.json").packageManager')"
           npm exec --yes --package="$PM" -- npm install --global "$PM"
-      - name: Install macOS target tools and start task-owned SSH
-        if: matrix.target == 'macos'
-        working-directory: extension
-        run: |
-          npm install --global --allow-scripts=agent-browser agent-browser
-          bash scripts/ci-release-hosted.sh start-ssh
       - name: Build the Ubuntu Crabbox image
         if: matrix.target == 'ubuntu'
         working-directory: extension
@@ -138,7 +122,6 @@ jobs:
           docker info
           docker build -t pi-oracle-platform-smoke:node24.22.3 -f scripts/platform-smoke/Dockerfile.ubuntu .
       - name: Run both required Unix suites on the retained candidate
-        if: matrix.target != 'windows-native'
         working-directory: extension
         env:
           TARGET: ${{ matrix.target }}
@@ -146,13 +129,6 @@ jobs:
           npm run check:platform-smoke
           node scripts/platform-smoke.mjs doctor --target "$TARGET"
           node scripts/platform-smoke.mjs run --target "$TARGET"
-      - name: Run both required native Windows suites on the retained candidate
-        if: matrix.target == 'windows-native'
-        working-directory: extension
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/ci-release-windows.ps1
       - name: Recheck the retained candidate and source
         shell: bash
         run: |
@@ -169,10 +145,5 @@ jobs:
           name: oracle-release-platform-${{ matrix.target }}-${{ inputs.source-ref }}
           path: |
             extension/.artifacts/platform-smoke
-            ${{ runner.temp }}/oracle.*/ssh/sshd.log
           if-no-files-found: warn
           retention-days: 7
-      - name: Stop task-owned macOS SSH
-        if: always() && matrix.target == 'macos' && env.ORACLE_HOST_ROOT != ''
-        working-directory: extension
-        run: bash scripts/ci-release-hosted.sh stop-ssh

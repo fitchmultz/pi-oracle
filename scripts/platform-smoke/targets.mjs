@@ -16,7 +16,6 @@ function makeRunId() {
 
 function platformForTarget(targetName) {
   if (targetName === "macos") return "darwin";
-  if (targetName === "windows-native") return "win32";
   return "linux";
 }
 
@@ -81,32 +80,10 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function powershellSingleQuote(value) {
-  return `'${String(value).replaceAll("'", "''")}'`;
-}
-
 export function buildRealExtensionCommand(targetName = "ubuntu", config = {}) {
   const provider = realSmokeProvider(config);
   const model = realSmokeModel(config);
   const useModelAgent = realSmokeUsesModelAgent();
-  if (targetName === "windows-native") {
-    return [
-      "$ErrorActionPreference = 'Continue'",
-      `$env:PI_ORACLE_REAL_TEST_PROVIDER = ${powershellSingleQuote(provider)}`,
-      `$env:PI_ORACLE_REAL_TEST_MODEL = ${powershellSingleQuote(model)}`,
-      `$env:PI_ORACLE_REAL_TEST_MODEL_AGENT = ${powershellSingleQuote(useModelAgent ? "1" : "")}`,
-      ...(config.releaseCandidate ? [
-        `$env:PI_ORACLE_RELEASE_TARBALL = Join-Path (Get-Location) ${powershellSingleQuote(config.releaseCandidate.path)}`,
-        `$env:PI_ORACLE_RELEASE_SHA256 = ${powershellSingleQuote(config.releaseCandidate.sha256)}`,
-      ] : []),
-      "$env:PI_ORACLE_REAL_TEST_TIMEOUT_MS = '360000'",
-      "if (-not (Test-Path -LiteralPath 'node_modules')) { npm.cmd ci; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }",
-      "npm.cmd run smoke:real:doctor",
-      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
-      "npm.cmd run smoke:real:packed",
-      "exit $LASTEXITCODE",
-    ].join("; ");
-  }
   return [
     "set -o pipefail",
     `export PI_ORACLE_REAL_TEST_PROVIDER=${shellQuote(provider)}`,
@@ -123,12 +100,6 @@ export function buildRealExtensionCommand(targetName = "ubuntu", config = {}) {
 }
 
 export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "pi-oracle", nodeValidationMajor = 24, releaseCandidate) {
-  if (targetName === "windows-native") {
-    const candidate = releaseCandidate
-      ? ` -CandidatePath ${powershellSingleQuote(releaseCandidate.path)} -CandidateSha256 ${powershellSingleQuote(releaseCandidate.sha256)}`
-      : "";
-    return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\platform-smoke\\platform-build-windows.ps1 -PackageName ${packageName} -NodeValidationMajor ${nodeValidationMajor}${candidate}`;
-  }
   const lines = [];
   lines.push("set -o pipefail");
   if (targetName === "macos") {
@@ -221,7 +192,7 @@ export function buildPlatformBuildCommand(targetName = "ubuntu", packageName = "
 }
 
 export async function runTargetSuite(config, targetName, suiteName, leaseSession) {
-  if (!["macos", "ubuntu", "windows-native"].includes(targetName)) throw new Error(`unknown target: ${targetName}`);
+  if (!["macos", "ubuntu"].includes(targetName)) throw new Error(`unknown target: ${targetName}`);
   if (!["platform-build", "real-extension"].includes(suiteName)) throw new Error(`unknown suite: ${suiteName}`);
   const runId = makeRunId();
   const suiteDir = createSuiteDir(config.artifactRoot, runId, targetName, suiteName);

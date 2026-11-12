@@ -28,7 +28,7 @@ Commands:
   run --suite <name>         Run one suite on the configured target(s)
 
 Options:
-  --target       Comma-separated target names. Supported: macos,ubuntu,windows-native
+  --target       Comma-separated target names. Supported: macos,ubuntu
   --suite        Suite name. Supported: platform-build,real-extension
   --help, -h     Show this help
 
@@ -36,9 +36,8 @@ Examples:
   node scripts/platform-smoke.mjs doctor
   node scripts/platform-smoke.mjs run --target macos
   node scripts/platform-smoke.mjs run --target ubuntu
-  node scripts/platform-smoke.mjs run --target windows-native
-  node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native --suite platform-build
-  node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native --suite real-extension
+  node scripts/platform-smoke.mjs run --target macos,ubuntu --suite platform-build
+  node scripts/platform-smoke.mjs run --target macos,ubuntu --suite real-extension
 
 Canonical workflows:
   Everyday local iteration: npm run verify:oracle
@@ -54,12 +53,6 @@ Environment:
   PLATFORM_SMOKE_MAC_USER        macOS SSH user (default: $USER)
   PLATFORM_SMOKE_MAC_WORK_ROOT   macOS Crabbox work root
   PLATFORM_SMOKE_UBUNTU_IMAGE    Optional local-container image override
-  PLATFORM_SMOKE_WINDOWS_VM      Parallels source VM (default from config)
-  PLATFORM_SMOKE_WINDOWS_SNAPSHOT Parallels snapshot (default from config)
-  PLATFORM_SMOKE_WINDOWS_HOST    Use a native Windows SSH target instead of Parallels
-  PLATFORM_SMOKE_WINDOWS_PORT    Windows SSH port (default: 22)
-  PLATFORM_SMOKE_WINDOWS_USER    Windows SSH user (default: $USER)
-  PLATFORM_SMOKE_WINDOWS_WORK_ROOT Windows work root
   PI_ORACLE_SMOKE_*              Project-specific aliases for the PLATFORM_SMOKE_* knobs above
   PI_ORACLE_RELEASE_TARBALL      Use this retained tarball for the packed platform suites
   PI_ORACLE_RELEASE_SHA256       Expected SHA-256 of the retained tarball, when supplied
