@@ -4,7 +4,7 @@ The [README](../README.md) is the user entry point. Architecture and lifecycle d
 
 ## Host qualification
 
-Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers macOS, Linux, and Windows native with Chromium-family browsers. Pi `1.5.0+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
+Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers Apple Silicon macOS and Linux with Chromium-family browsers. Pi `1.5.0+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
 
 Package install/use requires Node.js 22.23.5 (22.x), 24.22.3 (24.x), or 26.13.1 and newer; platform smoke/release validation expects Node 24+ per `platform-smoke.config.mjs`.
 
@@ -12,9 +12,9 @@ Production hardening should keep focusing on UI drift detection, auth recovery, 
 
 ## Automatic npm releases (maintainers)
 
-The [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases) creates a reviewed patch-version PR after changes merge to `main`, then qualifies one retained candidate tarball across compatibility checks and hosted macOS, Ubuntu, and native Windows Crabbox suites before publishing the same version on npm and GitHub. A version PR opens when a merge changes the package users install; a merge that changes only CI, tests or development tooling ships with the next release.
+The [shared release procedure](https://github.com/fitchmultz/.github#automatic-npm-releases) creates a reviewed patch-version PR after changes merge to `main`, then qualifies one retained candidate tarball across compatibility checks and hosted Ubuntu Crabbox suites before publishing the same version on npm and GitHub. A version PR opens when a merge changes the package users install; a merge that changes only CI, tests or development tooling ships with the next release.
 
-Before releasing runtime or prompt changes, verify [the `release:check` requirements](#verification) and [packed platform proof](platform-smoke.md). Fresh all-preset ChatGPT proof must match `HEAD` or an ancestor commit whose `extensions/` and `prompts/` trees are byte-identical to `HEAD`, satisfy the proof checker's 72-hour timing and saved-response requirements, and accompany the required doctor-first macOS/Ubuntu/native-Windows evidence. Authenticated and paid checks remain outside CI. Automated publication disables npm hooks to publish the checked bytes; manual `npm publish` still runs its existing `prepublishOnly` gate.
+Before releasing runtime or prompt changes, verify [the `release:check` requirements](#verification) and [packed platform proof](platform-smoke.md). Fresh all-preset ChatGPT proof must match `HEAD` or an ancestor commit whose `extensions/` and `prompts/` trees are byte-identical to `HEAD`, satisfy the proof checker's 72-hour timing and saved-response requirements, and accompany the required doctor-first Apple Silicon macOS/Ubuntu evidence. Authenticated and paid checks remain outside CI. Automated publication disables npm hooks to publish the checked bytes; manual `npm publish` still runs its existing `prepublishOnly` gate.
 
 Set repository variable `NPM_RELEASE_ENABLED` to anything other than `true` to stop new version and release plans; cancel pending runs separately when needed. Follow the shared procedure to retry an unpublished candidate. Workflow validation is not evidence of a completed real OIDC publication.
 
@@ -37,7 +37,7 @@ npm run verify:oracle
 
 `npm test` runs `npm run verify:oracle`, so it is not a separate gate from the final line above.
 
-`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate now blocks unless fresh live ChatGPT preset proof exists for every canonical preset, then requires doctor-first macOS, Ubuntu, and Windows native Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
+`npm publish` is guarded by `prepublishOnly`, which runs `npm run release:check`. That release gate now blocks unless fresh live ChatGPT preset proof exists for every canonical preset, then requires doctor-first Apple Silicon macOS and Ubuntu Crabbox evidence. The required Crabbox runtime suite uses packed-install proof, not source-tree `pi -e` loading.
 
 Use the narrowest validation workflow that proves the change:
 
@@ -50,7 +50,7 @@ Use the narrowest validation workflow that proves the change:
 | ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` |
 | Publish/release gate | `npm run release:check` |
 
-For macOS, Ubuntu, and Windows native package/build plus packed runtime validation, use [`docs/platform-smoke.md`](platform-smoke.md). The full release gate is:
+For Apple Silicon macOS and Ubuntu package/build plus packed runtime validation, use [`docs/platform-smoke.md`](platform-smoke.md). The full release gate is:
 
 ```bash
 npm run release:check
@@ -91,7 +91,7 @@ For manual end-to-end local-extension smoke testing, use [`docs/ORACLE_ISOLATED_
 | [`prompts/oracle.md`](../prompts/oracle.md) | Hidden `/oracle` command-dispatch workflow |
 | [`prompts/oracle-followup.md`](../prompts/oracle-followup.md) | Hidden `/oracle-followup` command-dispatch workflow |
 | `scripts/oracle-sanity-*` | Local sanity and archive-safety checks |
-| `scripts/platform-smoke*` | Crabbox macOS, Ubuntu, and Windows release smoke gate |
+| `scripts/platform-smoke*` | Crabbox Apple Silicon macOS and Ubuntu release smoke gate |
 | [`docs/ORACLE_DESIGN.md`](ORACLE_DESIGN.md) | Architecture, lifecycle, queueing, persistence, recovery behavior |
 | [`docs/ORACLE_ISOLATED_PI_VALIDATION.md`](ORACLE_ISOLATED_PI_VALIDATION.md) | Repeatable isolated `pi` validation workflow |
 | [`docs/ORACLE_RECOVERY_DRILL.md`](ORACLE_RECOVERY_DRILL.md) | Safe expired-auth recovery drill |

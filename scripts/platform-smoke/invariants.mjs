@@ -21,7 +21,7 @@ function runNode(args) {
 function testHelpTextIncludesTargetsAndExamples() {
   const result = runNode(["scripts/platform-smoke.mjs", "--help"]);
   assert.equal(result.status, 0, `help should exit cleanly: ${result.stderr}`);
-  assert.match(result.stdout, /Supported: macos,ubuntu,windows-native/, "help should list supported targets");
+  assert.match(result.stdout, /Supported: macos,ubuntu/, "help should list supported targets");
   assert.match(result.stdout, /--suite\s+Suite name\. Supported: platform-build,real-extension/, "help should list supported suites");
   assert.match(result.stdout, /npm run release:check/, "help should name the full release gate");
   assert.match(result.stdout, /PLATFORM_SMOKE_CRABBOX/, "help should document reusable platform-smoke env knobs");
@@ -101,8 +101,6 @@ function testTargetBaseArgsEnvPrecedence() {
     PLATFORM_SMOKE_MAC_WORK_ROOT: undefined,
     PI_ORACLE_SMOKE_MAC_PORT: undefined,
     PLATFORM_SMOKE_MAC_PORT: undefined,
-    PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT: undefined,
-    PLATFORM_SMOKE_WINDOWS_WORK_ROOT: undefined,
   }, () => {
     const baseline = buildTargetBaseArgs("ubuntu", {});
     assert.deepEqual(
@@ -138,13 +136,7 @@ function testTargetBaseArgsEnvPrecedence() {
     args = buildTargetBaseArgs("macos", {});
     assert.equal(args[args.indexOf("--static-port") + 1], "2201", "project macOS port takes precedence");
 
-    process.env.PLATFORM_SMOKE_WINDOWS_WORK_ROOT = "C:\\invariants\\shared-work";
-    args = buildTargetBaseArgs("windows-native", {});
-    assert(args.includes("C:\\invariants\\shared-work"), "shared PLATFORM_SMOKE_WINDOWS_WORK_ROOT override should reach target args");
 
-    process.env.PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT = "C:\\invariants\\private-work";
-    args = buildTargetBaseArgs("windows-native", {});
-    assert(args.includes("C:\\invariants\\private-work") && !args.includes("C:\\invariants\\shared-work"), "private PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT alias should win over the shared alias");
   });
 }
 
@@ -228,7 +220,7 @@ function runFakeLeaseSuites({ dir, modelAgent }) {
 }
 
 function testLeaseStopFailureSurfacesAndRescansEvidence() {
-  if (process.platform === "win32") return; // owner-waived Windows gates; execCrabbox cannot spawn a .cmd fake without a shell
+  if (process.platform === "win32") return;
   const dir = mkdtempSync(join(tmpdir(), "pi-oracle-stop-invariants-"));
   const savedStopFailure = process.env.FAKE_STOP_FAILURE;
   const savedStopSecret = process.env.FAKE_STOP_SECRET;
@@ -313,7 +305,7 @@ function testSourceSmokeExplicitlyDebugOnly() {
 function testCanonicalWorkflowConfig() {
   const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   assert.equal(config.requiredCrabbox?.minVersion, "0.26.0", "Crabbox baseline should match the documented provider contract");
-  assert.equal(pkg.scripts["smoke:platform:all"], "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native", "full platform smoke should remain doctor-first and cover all required targets");
+  assert.equal(pkg.scripts["smoke:platform:all"], "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu", "full platform smoke should remain doctor-first and cover all required targets");
   assert.match(pkg.scripts["release:check"], /npm run verify:oracle && npm run release:proof:chatgpt-presets && npm run smoke:platform:all/, "release check should combine local verification, ChatGPT preset proof, and full platform smoke");
 }
 

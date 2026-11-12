@@ -4,7 +4,7 @@
 export default {
   packageName: "pi-oracle",
   artifactRoot: ".artifacts/platform-smoke",
-  requiredTargets: ["macos", "ubuntu", "windows-native"],
+  requiredTargets: ["macos", "ubuntu"],
   requiredSuites: ["platform-build", "real-extension"],
   requiredCrabbox: {
     source: "https://github.com/openclaw/crabbox",
@@ -12,10 +12,7 @@ export default {
   },
   ubuntuContainerImage: "pi-oracle-platform-smoke:node24.22.3",
   ubuntuContainerBaseImage: "cimg/node:24.21",
-  windowsParallels: {
-    sourceVm: "pi-extension-windows-template",
-    snapshot: "crabbox-ready",
-  },
+
   nodeValidationMajor: 24,
   realSmoke: {
     defaultProvider: "zai",

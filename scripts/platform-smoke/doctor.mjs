@@ -45,14 +45,6 @@ function realSmokeProvider(config) {
   return process.env.PI_ORACLE_REAL_TEST_PROVIDER || config.realSmoke?.defaultProvider || "zai";
 }
 
-function windowsVmName(config) {
-  return env("PI_ORACLE_SMOKE_WINDOWS_VM") || env("PLATFORM_SMOKE_WINDOWS_VM") || config.windowsParallels?.sourceVm || "pi-extension-windows-template";
-}
-
-function windowsSnapshotName(config) {
-  return env("PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT") || env("PLATFORM_SMOKE_WINDOWS_SNAPSHOT") || config.windowsParallels?.snapshot || "crabbox-ready";
-}
-
 function requiredRealSmokeAuthEnv(config) {
   if (!(config.requiredSuites ?? []).includes("real-extension")) return [];
   if (!truthy(process.env.PI_ORACLE_REAL_TEST_MODEL_AGENT)) return [];
@@ -77,43 +69,15 @@ function runCrabboxDoctor(cbox, label, args, timeout = 120_000) {
 }
 
 function runTargetToolProbe(cbox, targetName, config) {
-  const required = targetName === "windows-native"
-    ? ["node", "npm", "git", "tar", "zstd", "agent-browser"]
-    : ["node", "npm", "git", "tar", "rsync", "zstd", "agent-browser"];
-  const command = targetName === "windows-native"
-    ? `cmd.exe /c "where node && where npm && where git && where tar && where zstd && where agent-browser && zstd --version && agent-browser --version && echo tools-ok"`
-    : `missing=""; for tool in ${required.join(" ")}; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done; if [ -n "$missing" ]; then echo "missing=$missing"; exit 1; fi; zstd --version >/dev/null && agent-browser --version >/dev/null && echo tools-ok`;
+  const required = ["node", "npm", "git", "tar", "rsync", "zstd", "agent-browser"];
+  const command = `missing=""; for tool in ${required.join(" ")}; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done; if [ -n "$missing" ]; then echo "missing=$missing"; exit 1; fi; zstd --version >/dev/null && agent-browser --version >/dev/null && echo tools-ok`;
   const baseArgs = buildTargetBaseArgs(targetName, config);
   if (targetName === "macos") baseArgs.push("--reclaim");
   const result = silent(cbox, ["run", ...baseArgs, "--no-sync", "--shell", command], {
     env: { ...process.env, CRABBOX_SYNC_GIT_SEED: "false" },
-    timeout: targetName === "windows-native" ? 300_000 : 180_000,
+    timeout: 180_000,
   });
   result?.includes("tools-ok") ? ok(`${targetName} required target tools OK`) : fail(`${targetName} required target tools missing or probe failed${result ? `: ${result.split(/\r?\n/).slice(-3).join(" | ")}` : ""}`);
-}
-
-function verifyWindowsTemplate(config) {
-  const vm = windowsVmName(config);
-  const snapshot = windowsSnapshotName(config);
-  const prlctl = resolveCommand("prlctl");
-  if (!prlctl) {
-    fail("prlctl not found on host PATH");
-    return;
-  }
-  ok(`prlctl: ${prlctl}`);
-  const list = silent("prlctl", ["list", "--all", "-j"], { timeout: 30_000 });
-  const vms = parseJson(list);
-  const vmRecord = Array.isArray(vms) ? vms.find((entry) => entry.name === vm || entry.ID === vm) : undefined;
-  if (!vmRecord) fail(`Windows source VM not found: ${vm}`);
-  else if (vmRecord.status !== "stopped") fail(`Windows source VM ${vm} must be stopped; status=${vmRecord.status}`);
-  else ok(`Windows source VM stopped: ${vm}`);
-
-  const snapshotsText = silent("prlctl", ["snapshot-list", vm, "-j"], { timeout: 30_000 });
-  const snapshots = parseJson(snapshotsText);
-  const snapshotRecord = snapshots ? Object.values(snapshots).find((entry) => entry?.name === snapshot) : undefined;
-  if (!snapshotRecord) fail(`Windows snapshot not found: ${snapshot}`);
-  else if (snapshotRecord.state !== "poweroff") fail(`Windows snapshot ${snapshot} must be poweroff; state=${snapshotRecord.state}`);
-  else ok(`Windows snapshot poweroff/forkable: ${snapshot}`);
 }
 
 function verifyPackageExclusions() {
@@ -159,9 +123,6 @@ export async function runDoctor(config) {
   const targets = config.requiredTargets ?? [];
   const hasMac = targets.includes("macos");
   const hasUbuntu = targets.includes("ubuntu");
-  const hasWindows = targets.includes("windows-native");
-  const windowsArgs = hasWindows ? buildTargetBaseArgs("windows-native", config) : [];
-  const windowsStatic = windowsArgs.includes("--static-host");
   console.log("\n── Environment ──");
   const cbox = env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") || "crabbox";
   ok(`Crabbox binary = ${resolveCommand(cbox) ?? cbox}${env("PI_ORACLE_SMOKE_CRABBOX") || env("PLATFORM_SMOKE_CRABBOX") ? " (env override)" : " (PATH)"}`);
@@ -171,13 +132,6 @@ export async function runDoctor(config) {
     ok(`PI_ORACLE_SMOKE_MAC_USER = ${env("PI_ORACLE_SMOKE_MAC_USER") || env("PLATFORM_SMOKE_MAC_USER") || env("USER")}`);
   }
   if (hasUbuntu) ok(`PI_ORACLE_SMOKE_UBUNTU_IMAGE = ${env("PI_ORACLE_SMOKE_UBUNTU_IMAGE") || env("PLATFORM_SMOKE_UBUNTU_IMAGE") || config.ubuntuContainerImage || "pi-oracle-platform-smoke:node24.22.3"}`);
-  if (hasWindows && windowsStatic) {
-    ok(`Windows SSH host = ${windowsArgs[windowsArgs.indexOf("--static-host") + 1]}`);
-    ok(`Windows SSH port = ${windowsArgs[windowsArgs.indexOf("--static-port") + 1]}`);
-  } else if (hasWindows) {
-    ok(`PI_ORACLE_SMOKE_WINDOWS_VM = ${windowsVmName(config)}`);
-    ok(`PI_ORACLE_SMOKE_WINDOWS_SNAPSHOT = ${windowsSnapshotName(config)}`);
-  }
 
   console.log("\n── Crabbox ──");
   const resolvedCbox = resolveCommand(cbox);
@@ -192,15 +146,13 @@ export async function runDoctor(config) {
   }
   const providers = silent(cbox, ["providers"], { timeout: 30_000 }) ?? "";
   const neededProviders = new Set([
-    ...(hasMac || (hasWindows && windowsStatic) ? ["ssh"] : []),
+    ...(hasMac ? ["ssh"] : []),
     ...(hasUbuntu ? ["local-container"] : []),
-    ...(hasWindows && !windowsStatic ? ["parallels"] : []),
   ]);
   for (const provider of neededProviders) {
     new RegExp(`^${provider}$`, "m").test(providers) ? ok(`provider available: ${provider}`) : fail(`crabbox providers missing ${provider}`);
   }
   if (hasMac) runCrabboxDoctor(cbox, "macOS static SSH", buildTargetBaseArgs("macos", config), 120_000);
-  if (hasWindows) runCrabboxDoctor(cbox, windowsStatic ? "Windows native SSH" : "Windows native Parallels", windowsArgs, 180_000);
   if (hasUbuntu) runCrabboxDoctor(cbox, "local-container", buildTargetBaseArgs("ubuntu", config), 120_000);
 
   console.log("\n── Host tools ──");
@@ -215,7 +167,6 @@ export async function runDoctor(config) {
     const major = Number(nodeVersion.replace(/^v/, "").split(".")[0]);
     if (major < (config.nodeValidationMajor ?? 24)) fail(`Node ${nodeVersion}; need ${config.nodeValidationMajor ?? 24}+ for smoke validation`);
   }
-  if (hasWindows && !windowsStatic) verifyWindowsTemplate(config);
 
   console.log("\n── Auth environment ──");
   const requiredAuth = requiredRealSmokeAuthEnv(config);

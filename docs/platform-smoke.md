@@ -1,17 +1,16 @@
 # pi-oracle Crabbox platform smoke
 
-`pi-oracle` uses Crabbox for the local release-blocking platform gate. The gate runs on macOS, Ubuntu Linux, and native Windows and is meant to catch broken package installs, platform assumptions, and real `pi` tool-call failures before push or publish.
+`pi-oracle` uses Crabbox for the local release-blocking platform gate. The gate runs on Apple Silicon macOS and Ubuntu Linux and is meant to catch broken package installs, platform assumptions, and real `pi` tool-call failures before push or publish.
 
 ## Source of truth
 
 - Config: [`../platform-smoke.config.mjs`](../platform-smoke.config.mjs)
 - CLI: [`../scripts/platform-smoke.mjs`](../scripts/platform-smoke.mjs)
 - Target runner: [`../scripts/platform-smoke/targets.mjs`](../scripts/platform-smoke/targets.mjs)
-- Windows build script: [`../scripts/platform-smoke/platform-build-windows.ps1`](../scripts/platform-smoke/platform-build-windows.ps1)
 - Real runtime smoke: [`../scripts/oracle-real-smoke.mjs`](../scripts/oracle-real-smoke.mjs)
 - Artifact root: `.artifacts/platform-smoke/` (gitignored)
 
-Required targets: `macos`, `ubuntu`, `windows-native`.
+Required targets: `macos`, `ubuntu`.
 Required suites: `platform-build`, `real-extension`.
 Crabbox baseline: `0.26.0` or newer.
 
@@ -31,8 +30,6 @@ Target setup:
 
 - macOS: Remote Login enabled; noninteractive `ssh $USER@localhost` works; `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` are on the SSH PATH. Use `PI_ORACLE_SMOKE_MAC_PORT` or `PLATFORM_SMOKE_MAC_PORT` for a non-default SSH port.
 - Ubuntu: Docker is running and the configured image (`PI_ORACLE_SMOKE_UBUNTU_IMAGE`, default `pi-oracle-platform-smoke:node24.22.3`) has `node`, `npm`, `git`, `tar`, `rsync`, `zstd`, and `agent-browser` on PATH. The Dockerfile preserves the Ubuntu base and replaces its Node executable with the checksum-pinned official Node 24.22.3 executable. Build the local image when needed with `docker build -t pi-oracle-platform-smoke:node24.22.3 -f scripts/platform-smoke/Dockerfile.ubuntu .`.
-- Windows native: by default, Parallels has stopped source VM `pi-extension-windows-template` and the configured power-off snapshot (`crabbox-ready` by default for this repo). The template must have OpenSSH, PowerShell, Git, Node/npm, `tar`, `zstd`, and `agent-browser` on PATH. Do not bake API keys, browser sessions, project checkouts, `.pi` state, artifacts, or secrets into the template.
-- Alternatively, set `PI_ORACLE_SMOKE_WINDOWS_HOST` to a native Windows SSH host, and set `PI_ORACLE_SMOKE_WINDOWS_USER`, `PI_ORACLE_SMOKE_WINDOWS_PORT` (default 22), and `PI_ORACLE_SMOKE_WINDOWS_NATIVE_WORK_ROOT` for that target as needed. Crabbox uses its SSH provider instead of Parallels; the target needs the same tools on its SSH PATH. The `PLATFORM_SMOKE_WINDOWS_*` aliases also work.
 
 Real runtime suite auth:
 
@@ -53,7 +50,7 @@ Use the narrowest workflow that proves the change. Do not run the full platform 
 | ChatGPT preset release proof | `npm run release:proof:chatgpt-presets` | Fresh loaded-extension proof exists for every canonical ChatGPT preset. |
 | Publish/release gate | `npm run release:check` | Local verification (`verify:oracle`) passes, fresh ChatGPT preset proof exists, then the doctor-first platform matrix passes. |
 
-Platform-sensitive changes include archive behavior, process cleanup, runtime/browser profile handling, package metadata, Crabbox harness code, or anything that may differ across macOS/Linux/Windows.
+Platform-sensitive changes include archive behavior, process cleanup, runtime/browser profile handling, package metadata, Crabbox harness code, or anything that may differ across Apple Silicon macOS/Linux.
 
 ## Commands
 
@@ -70,9 +67,6 @@ node scripts/platform-smoke.mjs doctor --target macos
 npm run smoke:platform:macos
 node scripts/platform-smoke.mjs doctor --target ubuntu
 npm run smoke:platform:ubuntu
-node scripts/platform-smoke.mjs doctor --target windows-native
-npm run smoke:platform:windows-native
-node scripts/platform-smoke.mjs run --target windows-native --suite real-extension
 ```
 
 `doctor --target` checks the selected targets' providers and tools; without it,
@@ -152,17 +146,3 @@ Each suite writes reviewable evidence under:
 `platform-build` also writes packed install extracts (`packed-tarball.txt`, `packed-node-install.*`, `pi-install.*`, `pi-list.*`). Passing suites require `summary.ok === true`, `assertions.ok === true`, and `artifact-manifest.missing.length === 0`.
 
 Artifacts are local evidence only. Do not commit or share them without redaction. Secret scans fail on bearer/API-key/cookie-like values.
-
-## Windows template maintenance
-
-When Windows lacks a reusable tool such as `zstd` or `agent-browser`, update the shared `pi-extension-windows-template` infrastructure rather than adding a per-run installer:
-
-1. revert/switch `pi-extension-windows-template` to the current canonical `crabbox-ready` snapshot;
-2. boot the template;
-3. install/update the reusable tool globally without secrets;
-4. verify from a fresh SSH session: `node --version`, `npm --version`, `git --version`, `tar --version`, `zstd --version`, `agent-browser --version`, and `agent-browser install`;
-5. remove downloads, caches, checkouts, `.pi`, `.artifacts`, `.debug`, browser auth/session state, and secrets;
-6. shut down cleanly;
-7. create/promote the configured power-off `crabbox-ready` snapshot;
-8. run `npm run smoke:platform:doctor` and `npm run smoke:platform:windows-native` against the promoted snapshot;
-9. clean stale clones/leases.
