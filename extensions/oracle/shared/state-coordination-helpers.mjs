@@ -4,10 +4,11 @@
 // Usage: Imported by lib/locks.ts and worker/state-locks.mjs so both layers share identical crash-recovery semantics.
 // Invariants/Assumptions: State lives under a private per-machine directory, and final published state dirs must never appear without complete metadata.
 
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { isProcessAlive } from "./process-helpers.mjs";
 
 const DEFAULT_WAIT_MS = 30_000;
@@ -15,10 +16,6 @@ const POLL_MS = 200;
 export const ORACLE_METADATA_WRITE_GRACE_MS = 1_000;
 /** Incomplete `.tmp-*` dirs are in-flight atomic creates; a 1s grace is too short under multi-process sweep + slow FS. */
 export const ORACLE_TMP_STATE_DIR_GRACE_MS = 60_000;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * @param {string} path
@@ -35,7 +32,7 @@ async function ensurePrivateDir(path) {
  * @returns {string}
  */
 export function hashOracleStateKey(kind, key) {
-  return `${kind}-${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+  return `${kind}-${hash("sha256", key, "hex").slice(0, 24)}`;
 }
 
 /**

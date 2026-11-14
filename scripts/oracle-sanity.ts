@@ -3931,8 +3931,8 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
-  assert(developmentSource.includes("Pi `1.5.0+` is the suggested tested floor") && developmentSource.includes("optional wildcard peers"), "Development guide should document the suggested Pi 1.5.0 floor without making it a hard peer requirement");
-  assert(designSource.includes("`pi` 1.5.0+"), "design doc should name the current suggested Pi 1.5.0 compatibility floor");
+  assert(developmentSource.includes(`Pi \`${piBaseline}+\` is the suggested tested floor`) && developmentSource.includes("optional wildcard peers"), `Development guide should document the suggested Pi ${piBaseline} floor without making it a hard peer requirement`);
+  assert(designSource.includes(`\`pi\` ${piBaseline}+`), `design doc should name the current suggested Pi ${piBaseline} compatibility floor`);
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");
   assert(pkg.overrides?.protobufjs === "7.6.6", "package.json should override protobufjs to a patched stable version compatible with @google/genai");
   assert(commandsSource.includes("Cancel a queued or active oracle job"), "oracle commands should allow queued-job cancellation");
