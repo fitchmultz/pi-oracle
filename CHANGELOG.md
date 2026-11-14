@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.32 - 2026-11-14
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Raise the Pi floor to 1.5.2 and use native crypto.hash and timers/promises (#94) ([5f3e7e5](https://github.com/fitchmultz/pi-oracle/commit/5f3e7e51cc9aefb01e11ed049201cb6e2e1c16bd))
+
+### What's Changed
+* Raise the Pi floor to 1.5.2 and use native crypto.hash and timers/promises by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/94
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.31...v0.7.32
+
 ## 0.7.31 - 2026-11-12
 
 <!-- npm-release:unreleased:start -->
