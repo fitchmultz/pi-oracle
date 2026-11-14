@@ -3,7 +3,7 @@
 // Scope: Worker runtime behavior only; shared concurrency/process helpers live in extensions/oracle/shared and extension-side policy remains in lib modules.
 // Usage: Spawned as a detached Node process with a job id argument by the oracle extension queue/submission flows.
 // Invariants/Assumptions: Job state is persisted under worker-held locks, browser/session artifacts live under the configured oracle directories, and cleanup preserves durable recovery semantics.
-import { createHash, randomUUID } from "node:crypto";
+import { hash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile, chmod, cp as copyDirectory, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -1948,7 +1948,7 @@ async function waitForChatCompletion(job, baselineAssistantCount) {
 
 async function sha256(path) {
   const buffer = await readFile(path);
-  return createHash("sha256").update(buffer).digest("hex");
+  return hash("sha256", buffer, "hex");
 }
 
 async function detectType(path) {

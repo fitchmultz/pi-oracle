@@ -3,7 +3,7 @@
 // Scope: Extension-facing job management only; low-level shared process and state primitives live in extensions/oracle/shared.
 // Usage: Imported by oracle commands, tools, queue logic, poller flows, and runtime cleanup/reconciliation paths.
 // Invariants/Assumptions: Job mutations happen under per-job locks, worker identity checks defend against PID reuse, and persisted jobs remain the source of truth.
-import { createHash, randomUUID } from "node:crypto";
+import { hash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -679,7 +679,7 @@ export async function reconcileStaleOracleJobs(): Promise<OracleJob[]> {
 
 export async function sha256File(path: string): Promise<string> {
   const buffer = await readFile(path);
-  return createHash("sha256").update(buffer).digest("hex");
+  return hash("sha256", buffer, "hex");
 }
 
 export async function tryClaimNotification(jobId: string, claimedBy: string, now = new Date().toISOString()): Promise<OracleJob | undefined> {
