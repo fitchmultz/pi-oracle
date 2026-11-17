@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.34 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- ci: release through direct signed version commits (PEA-211) (#98) ([73819b9](https://github.com/fitchmultz/pi-oracle/commit/73819b9f1fd12c4d16b0183ab108771de873f582))
+
+### What's Changed
+* ci: release through direct signed version commits (PEA-211) (1/1) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/98
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.33...v0.7.34
+
 ## 0.7.33 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->
