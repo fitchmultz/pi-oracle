@@ -4,8 +4,7 @@
 // Usage: Loaded by pi as the extension module declared in package.json.
 // Invariants/Assumptions: Oracle only runs against persisted sessions, and startup maintenance should be best-effort without breaking session initialization.
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadOracleConfig } from "./lib/config.js";
 import { registerOracleCommands } from "./lib/commands.js";
@@ -54,7 +53,7 @@ function oracleDispatchMessage(command: "oracle" | "oracle-followup", args: stri
 }
 
 export default function oracleExtension(pi: ExtensionAPI) {
-  const extensionDir = dirname(fileURLToPath(import.meta.url));
+  const extensionDir = import.meta.dirname;
   const workerPath = join(extensionDir, "worker", "run-job.mjs");
   const authWorkerPath = join(extensionDir, "worker", "auth-bootstrap.mjs");
   const promptDir = join(extensionDir, "..", "..", "prompts");
