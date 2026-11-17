@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.33 - 2026-11-17
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- refactor(worker): use node timers and events for worker waits (#96) ([2bbd932](https://github.com/fitchmultz/pi-oracle/commit/2bbd9323171b648bc4a39d0c2fcbdcae1fa216df))
+
+### What's Changed
+* Use Node timers, events, and import.meta.dirname in the worker by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/96
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.32...v0.7.33
+
 ## 0.7.32 - 2026-11-14
 
 <!-- npm-release:unreleased:start -->
