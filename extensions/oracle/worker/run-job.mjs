@@ -9,6 +9,8 @@ import { appendFile, chmod, cp as copyDirectory, mkdir, readFile, rename, rm, st
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   buildConversationLeaseMetadata,
   buildRuntimeLeaseMetadata,
@@ -219,10 +221,6 @@ async function heartbeat(patch = undefined, options = {}) {
 async function log(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
   await secureAppendText(`${jobDir}/logs/worker.log`, line);
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function killProcessTree(child) {
@@ -548,22 +546,11 @@ function browserBaseArgs(job, options = {}) {
 }
 
 function waitForChildClose(child, timeoutMs) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(false);
-    }, timeoutMs);
-    timer.unref?.();
-    child.once("close", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(true);
-    });
-  });
+  if (!child || child.exitCode !== null || child.signalCode !== null) return true;
+  return Promise.race([
+    once(child, "close").then(() => true, () => false),
+    sleep(timeoutMs, false, { ref: false }),
+  ]);
 }
 
 async function terminateBrowserProcess() {
