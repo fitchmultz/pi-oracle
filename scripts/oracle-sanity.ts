@@ -1738,7 +1738,7 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
   assert(pi.sentUserMessages.at(-1)?.content === "/oracle Read README.md", "oracle input interceptor should reinject the compact user command so prompt history survives session reloads");
   const beforeAgentStart = pi.handlers.get("before_agent_start");
   assert(beforeAgentStart, "oracle extension should inject hidden dispatch instructions before the reinjected user command reaches the model");
-  const injection = await beforeAgentStart({ prompt: "/oracle Read README.md" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
+  const injection = await beforeAgentStart({ messageType: "user", prompt: "/oracle Read README.md" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
   const message = injection?.message;
   assert(message?.display === false, "oracle before-agent injection should hide verbose dispatch instructions from the visible transcript");
   assert(String(message?.content || "").includes("Read README.md"), "oracle before-agent injection should include the user request in hidden dispatch instructions");
@@ -1747,9 +1747,11 @@ async function testOraclePromptCommandsInjectHiddenInstructions(): Promise<void>
   const followupHandled = await inputHandler({ text: "/oracle-followup job-123 continue", source: "interactive" }, tuiCtx) as { action?: string };
   assert(followupHandled?.action === "handled", "TUI /oracle-followup input should be handled before prompt-template expansion");
   assert(pi.sentUserMessages.at(-1)?.content === "/oracle-followup job-123 continue", "oracle-followup interceptor should reinject the compact user command for prompt history");
-  const followupInjection = await beforeAgentStart({ prompt: "/oracle-followup job-123 continue" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
+  const followupInjection = await beforeAgentStart({ messageType: "user", prompt: "/oracle-followup job-123 continue" }, tuiCtx) as { message?: { display?: boolean; content?: unknown } };
   const followupMessage = followupInjection?.message;
   assert(followupMessage?.display === false && String(followupMessage.content || "").includes("job-123 continue"), "oracle-followup before-agent injection should hide verbose dispatch instructions while preserving arguments");
+  const customStartInjection = await beforeAgentStart({ messageType: "custom", message: { customType: "oracle-job-wakeup", content: "/oracle Do not parse" } }, tuiCtx);
+  assert(customStartInjection === undefined, "oracle before-agent injection should ignore custom-message starts");
 
   const usageUi = createUiStub();
   const usageCtx = createExtensionCtx({ getSessionFile: () => "/tmp/oracle-sanity-hidden-prompt-session.jsonl" } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], usageUi, process.cwd(), "tui");
@@ -3698,7 +3700,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(readmeSource.includes("Grok") && readmeSource.includes("200 MiB"), "README should document Grok provider upload ceiling");
   assert(referenceSource.includes("250 MiB for ChatGPT") && designSource.includes("250 MiB for ChatGPT") && promptSource.includes("250 MiB for ChatGPT") && followUpPromptSource.includes("250 MiB for ChatGPT"), "Reference/design/prompts should use MiB wording for ChatGPT upload ceiling");
   const packageNodeRange = pkg.engines?.node;
-  assert(Boolean(packageNodeRange) && readmeSource.includes("docs/reference.md#requirements") && referenceSource.includes("Node.js 22.23.5 (22.x), 24.22.3 (24.x), or 26.13.1 and newer") && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should link to the documented package Node minimum, and the development guide should distinguish platform validation");
+  assert(Boolean(packageNodeRange) && readmeSource.includes("docs/reference.md#requirements") && referenceSource.includes("Node.js 24.22.3 (24.x) or 26.13.1 and newer") && developmentSource.includes("Node.js 24.22.3 (24.x) or 26.13.1 and newer") && developmentSource.includes("Node 24+ per `platform-smoke.config.mjs`"), "README should link to the documented package Node minimum, and the development guide should match it and document platform validation");
   assert(developmentSource.includes("npm run check:platform-smoke") && developmentSource.includes("npm run sanity:oracle:platform"), "Development guide verification table should include the cheap platform-focused validation commands");
   assert(referenceSource.includes("Grok uploads now use `.tar.gz` archives"), "Oracle reference should document Grok's gzip archive format because Grok lacks zstd extraction tools");
   assert(referenceSource.includes("defaults.preset"), "Oracle reference should document defaults.preset");
@@ -3901,7 +3903,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.files?.includes("prompts"), "package.json files should include internal oracle command prompts");
   assert(pkg.pi?.extensions?.includes("./extensions/oracle/index.ts"), "package.json pi.extensions should include oracle extension entrypoint");
   assert(pkg.pi?.prompts?.includes("./prompts"), "package.json should register oracle prompts so TUI slash completion can discover /oracle and /oracle-followup");
-  assert(pkg.engines?.node === ">=22.23.5 <23 || >=24.22.3 <25 || >=26.13.1", "package.json should exclude vulnerable and end-of-life Node.js release lines");
+  assert(pkg.engines?.node === ">=24.22.3 <25 || >=26.13.1", "package.json should exclude vulnerable and end-of-life Node.js release lines");
   assert(pkg.os?.includes("darwin") && pkg.os?.includes("linux"), "package.json should declare Apple Silicon macOS and Linux support");
   assert(pkg.scripts?.test === "npm run verify:oracle", "package.json should expose the local verification gate through npm test");
   assert(pkg.scripts?.["typecheck:worker-helpers"] === "tsc --noEmit -p tsconfig.worker-helpers.json", "package.json should statically typecheck extracted worker/auth helpers");
@@ -3931,6 +3933,7 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
+  assert(referenceSource.includes(`Suggested tested floor: \`pi\` ${piBaseline} or newer`), `Oracle reference should document the suggested Pi ${piBaseline} floor`);
   assert(developmentSource.includes(`Pi \`${piBaseline}+\` is the suggested tested floor`) && developmentSource.includes("optional wildcard peers"), `Development guide should document the suggested Pi ${piBaseline} floor without making it a hard peer requirement`);
   assert(designSource.includes(`\`pi\` ${piBaseline}+`), `design doc should name the current suggested Pi ${piBaseline} compatibility floor`);
   assert(configSource.includes("ProjectTrustStore") && configSource.includes("saved untrusted decision"), "oracle project config loading should preserve compatibility while respecting explicit Pi distrust state");

@@ -72,13 +72,10 @@ test("native Oracle dispatch handles user prompts and idle custom completions wi
     assert.equal(session.getLastAssistantText(), "completion handled");
     assert.equal(faux.state.callCount, 2, "custom completion must actually trigger a model turn");
     assert.equal(dispatches().length, 1, "custom notification text must never inject /oracle instructions");
-    if ("messageType" in starts[0]) {
-      assert.equal(starts.length, 2, "the new host must emit a custom start event");
-      assert.equal(starts[1].messageType, "custom");
-      assert.equal("prompt" in starts[1], false);
-    } else {
-      assert.equal(starts.length, 1, "the old host only emits user start events");
-    }
+    assert.equal(starts.length, 2, "idle custom completions must emit a custom start event");
+    assert.equal(starts[0].messageType, "user");
+    assert.equal(starts[1].messageType, "custom");
+    assert.equal("prompt" in starts[1], false);
     assert.deepEqual(await readdir(jobsDir), [], "status must not submit a browser job");
     assert.deepEqual(errors, []);
   } finally {
