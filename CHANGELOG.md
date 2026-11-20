@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.35 - 2026-11-20
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- chore: raise Pi floor to 1.6.0 and drop Node 22 support (PEA-222) (#99) ([cd1774a](https://github.com/fitchmultz/pi-oracle/commit/cd1774adeee42f8b59b13759dd8e404e227dc24a))
+
+### What's Changed
+* chore: bump Pi floor to 1.6.0, drop Node 22, and clean pre-1.6.0 shims (PEA-222) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/99
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.34...v0.7.35
+
 ## 0.7.34 - 2026-11-17
 
 <!-- npm-release:unreleased:start -->
