@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.7.36 - 2026-11-21
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- ci: refresh the shared automation pin to 1f78bd6 (PEA-225) (#100) ([3aafb35](https://github.com/fitchmultz/pi-oracle/commit/3aafb359eb7dafa70cd1bf11c2c53c903fc6e378))
+
+### What's Changed
+* ci: refresh the shared automation pin to 1f78bd6 (PEA-225) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/100
+* fix: respect abort signal during oracle_submit and archive packing by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/101
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.35...v0.7.36
+
 ## 0.7.35 - 2026-11-20
 
 <!-- npm-release:unreleased:start -->
