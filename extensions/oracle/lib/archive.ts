@@ -215,15 +215,31 @@ async function shouldExcludeArchiveChild(
   return shouldExcludeArchivePath(relativePath, isDirectoryLike, options);
 }
 
-async function expandArchiveEntries(cwd: string, relativePath: string, options?: { forceIncludeSubtree?: boolean }): Promise<string[]> {
+function createArchiveAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error && signal.reason.name === "AbortError") {
+    return signal.reason;
+  }
+  const message = typeof signal.reason === "string" && signal.reason.trim()
+    ? signal.reason
+    : "Oracle archive creation was cancelled";
+  return new DOMException(message, "AbortError");
+}
+
+function throwIfArchiveAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw createArchiveAbortError(signal);
+}
+
+async function expandArchiveEntries(cwd: string, relativePath: string, options?: { forceIncludeSubtree?: boolean; signal?: AbortSignal }): Promise<string[]> {
+  throwIfArchiveAborted(options?.signal);
   const normalized = posix.normalize(relativePath).replace(/^\.\//, "");
   if (normalized === ".") {
     const children = await readdir(cwd, { withFileTypes: true });
     const results: string[] = [];
     for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+      throwIfArchiveAborted(options?.signal);
       const childRelative = child.name;
       if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child)) continue;
-      if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative));
+      if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative, { signal: options?.signal }));
       else results.push(childRelative);
     }
     return results;
@@ -237,9 +253,10 @@ async function expandArchiveEntries(cwd: string, relativePath: string, options?:
   const children = await readdir(absolute, { withFileTypes: true });
   const results: string[] = [];
   for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+    throwIfArchiveAborted(options?.signal);
     const childRelative = posix.join(normalized, child.name);
     if (await shouldExcludeArchiveChild(join(cwd, childRelative), childRelative, child, { forceInclude: options?.forceIncludeSubtree })) continue;
-    if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative, { forceIncludeSubtree: options?.forceIncludeSubtree }));
+    if (child.isDirectory()) appendArchiveEntries(results, await expandArchiveEntries(cwd, childRelative, { forceIncludeSubtree: options?.forceIncludeSubtree, signal: options?.signal }));
     else results.push(childRelative);
   }
   return results;
@@ -248,11 +265,14 @@ async function expandArchiveEntries(cwd: string, relativePath: string, options?:
 async function resolveExpandedArchiveEntriesFromInputs(
   cwd: string,
   entries: Array<{ absolute: string; relative: string }>,
+  signal?: AbortSignal,
 ): Promise<string[]> {
+  throwIfArchiveAborted(signal);
   const expandedGroups = await Promise.all(entries.map(async (entry) => {
+    throwIfArchiveAborted(signal);
     const statEntry = await lstat(entry.absolute);
     const forceIncludeSubtree = statEntry.isDirectory() && entry.relative !== "." && shouldExcludeArchivePath(entry.relative, true);
-    return expandArchiveEntries(cwd, entry.relative, { forceIncludeSubtree });
+    return expandArchiveEntries(cwd, entry.relative, { forceIncludeSubtree, signal });
   }));
   return Array.from(new Set(mergeArchiveEntryGroups(expandedGroups))).sort();
 }
@@ -265,8 +285,12 @@ function isWholeRepoArchiveSelection(entries: Array<{ absolute: string; relative
   return entries.length === 1 && entries[0]?.relative === ".";
 }
 
-async function measureArchiveEntrySizes(cwd: string, entries: string[]): Promise<ArchiveSizeBreakdownRow[]> {
-  return Promise.all(entries.map(async (relativePath) => ({ relativePath, bytes: (await lstat(join(cwd, relativePath))).size })));
+async function measureArchiveEntrySizes(cwd: string, entries: string[], signal?: AbortSignal): Promise<ArchiveSizeBreakdownRow[]> {
+  throwIfArchiveAborted(signal);
+  return Promise.all(entries.map(async (relativePath) => {
+    throwIfArchiveAborted(signal);
+    return { relativePath, bytes: (await lstat(join(cwd, relativePath))).size };
+  }));
 }
 
 function formatArchiveOversizeError(args: {
@@ -474,123 +498,167 @@ async function writeNonWindowsTarArchiveFile(
   archivePath: string,
   listPath: string,
   createCompressionTarget: (env: NodeJS.ProcessEnv) => ArchiveCompressionTarget,
-  options?: { commandTimeoutMs?: number },
+  options?: { commandTimeoutMs?: number; signal?: AbortSignal },
 ): Promise<number> {
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv();
-    const tarArgs = ["--null", "-cf", "-", "-C", cwd, "-T", basename(listPath)];
-    const tar = spawn(process.env.PI_ORACLE_TEST_TAR_BIN ?? "tar", tarArgs, {
-      cwd: dirname(listPath),
-      env: scrubbedEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const target = createCompressionTarget(scrubbedEnv);
-
-    let stderr = "";
-    let settled = false;
-    let timedOut = false;
-    let targetDone = false;
-    let targetCode: number | null | undefined;
-    let targetError: Error | undefined;
-    let timeout: NodeJS.Timeout | undefined;
-    let killGraceTimer: NodeJS.Timeout | undefined;
-    let tarCode: number | null | undefined;
-
-    const commandTimeoutMs = options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS;
-    const clearTimers = () => {
-      if (timeout) clearTimeout(timeout);
-      if (killGraceTimer) clearTimeout(killGraceTimer);
-    };
-
-    const terminateChildren = () => {
-      tar.kill("SIGTERM");
-      target.terminate();
-      killGraceTimer = setTimeout(() => {
-        tar.kill("SIGKILL");
-        target.kill();
-      }, ARCHIVE_COMMAND_KILL_GRACE_MS);
-      killGraceTimer.unref?.();
-    };
-
-    const rejectOnce = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      terminateChildren();
-      rejectPromise(error);
-    };
-
-    const finish = () => {
-      if (settled || tarCode === undefined || !targetDone) return;
-      settled = true;
-      clearTimers();
-      if (timedOut) {
-        rejectPromise(new Error(stderr || formatArchiveTimeoutMessage(commandTimeoutMs)));
-        return;
-      }
-      if (targetError) {
-        rejectPromise(targetError);
-        return;
-      }
-      if (tarCode === 0 && (targetCode === undefined || targetCode === 0)) {
-        resolvePromise();
-        return;
-      }
-      const compressionStatus = targetCode === undefined ? "" : `, ${target.name}=${targetCode}`;
-      rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}${compressionStatus})`));
-    };
-
-    const handlePipeError = (error: unknown) => {
-      const normalized = error instanceof Error ? error : new Error(String(error));
-      if (ARCHIVE_PIPE_FAILURE_ERROR_CODES.has(getErrorCode(normalized) ?? "")) {
-        stderr = `${stderr}${stderr ? "\n" : ""}${normalized.message}`;
-        target.unpipe(tar.stdout);
-        terminateChildren();
-        finish();
-        return;
-      }
-      rejectOnce(normalized);
-    };
-
-    if (commandTimeoutMs > 0) {
-      timeout = setTimeout(() => {
-        timedOut = true;
-        stderr = `${stderr}${stderr ? "\n" : ""}${formatArchiveTimeoutMessage(commandTimeoutMs)}`;
-        terminateChildren();
-      }, commandTimeoutMs);
-      timeout.unref?.();
+  const signal = options?.signal;
+  throwIfArchiveAborted(signal);
+  let onAbort: (() => void) | undefined;
+  const clearAbortListener = () => {
+    if (signal && onAbort) {
+      signal.removeEventListener("abort", onAbort);
+      onAbort = undefined;
     }
+  };
 
-    tar.stderr.on("data", (data) => {
-      stderr += String(data);
-    });
-    target.pipe?.on("data", (data) => {
-      stderr += String(data);
-    });
-    tar.on("error", (error) => rejectOnce(error instanceof Error ? error : new Error(String(error))));
-    tar.stdout.on("error", handlePipeError);
-    target.input.on("error", handlePipeError);
-    tar.on("close", (code) => {
-      tarCode = code;
-      finish();
-    });
-    target.done.then(
-      (code) => {
-        targetCode = code;
-        targetDone = true;
-        if (code !== 0 && tarCode === undefined) terminateChildren();
-        finish();
-      },
-      (error) => {
-        targetError = error instanceof Error ? error : new Error(String(error));
-        targetDone = true;
-        if (tarCode === undefined) terminateChildren();
-        finish();
-      },
-    );
-    tar.stdout.pipe(target.input);
-  });
+  try {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const scrubbedEnv = sweetCookieSafeStoragePasswordScrubbedEnv();
+      const tarArgs = ["--null", "-cf", "-", "-C", cwd, "-T", basename(listPath)];
+      const tar = spawn(process.env.PI_ORACLE_TEST_TAR_BIN ?? "tar", tarArgs, {
+        cwd: dirname(listPath),
+        env: scrubbedEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const target = createCompressionTarget(scrubbedEnv);
 
+      let stderr = "";
+      let settled = false;
+      let timedOut = false;
+      let terminationRequested = false;
+      let targetDone = false;
+      let targetCode: number | null | undefined;
+      let targetError: Error | undefined;
+      let timeout: NodeJS.Timeout | undefined;
+      let killGraceTimer: NodeJS.Timeout | undefined;
+      let tarCode: number | null | undefined;
+
+      const commandTimeoutMs = options?.commandTimeoutMs ?? ARCHIVE_COMMAND_TIMEOUT_MS;
+      const clearTimers = () => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+        if (killGraceTimer) {
+          clearTimeout(killGraceTimer);
+          killGraceTimer = undefined;
+        }
+      };
+
+      const maybeClearKillGraceTimer = () => {
+        if (tarCode !== undefined && targetDone && killGraceTimer) {
+          clearTimeout(killGraceTimer);
+          killGraceTimer = undefined;
+        }
+      };
+
+      const terminateChildren = () => {
+        if (terminationRequested) return;
+        terminationRequested = true;
+        target.unpipe(tar.stdout);
+        tar.kill("SIGTERM");
+        target.terminate();
+        killGraceTimer = setTimeout(() => {
+          tar.kill("SIGKILL");
+          target.kill();
+        }, ARCHIVE_COMMAND_KILL_GRACE_MS);
+        killGraceTimer.unref?.();
+      };
+
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearAbortListener();
+        clearTimers();
+        terminateChildren();
+        rejectPromise(error);
+      };
+
+      const finish = () => {
+        maybeClearKillGraceTimer();
+        if (settled || tarCode === undefined || !targetDone) return;
+        settled = true;
+        clearAbortListener();
+        clearTimers();
+        if (timedOut) {
+          rejectPromise(new Error(stderr || formatArchiveTimeoutMessage(commandTimeoutMs)));
+          return;
+        }
+        if (targetError) {
+          rejectPromise(targetError);
+          return;
+        }
+        if (tarCode === 0 && (targetCode === undefined || targetCode === 0)) {
+          resolvePromise();
+          return;
+        }
+        const compressionStatus = targetCode === undefined ? "" : `, ${target.name}=${targetCode}`;
+        rejectPromise(new Error(stderr || `archive command failed (tar=${tarCode}${compressionStatus})`));
+      };
+
+      const handlePipeError = (error: unknown) => {
+        if (settled) return;
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        if (ARCHIVE_PIPE_FAILURE_ERROR_CODES.has(getErrorCode(normalized) ?? "")) {
+          stderr = `${stderr}${stderr ? "\n" : ""}${normalized.message}`;
+          target.unpipe(tar.stdout);
+          terminateChildren();
+          finish();
+          return;
+        }
+        rejectOnce(normalized);
+      };
+
+      if (commandTimeoutMs > 0) {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          stderr = `${stderr}${stderr ? "\n" : ""}${formatArchiveTimeoutMessage(commandTimeoutMs)}`;
+          terminateChildren();
+        }, commandTimeoutMs);
+        timeout.unref?.();
+      }
+
+      tar.stderr.on("data", (data) => {
+        stderr += String(data);
+      });
+      target.pipe?.on("data", (data) => {
+        stderr += String(data);
+      });
+      tar.on("error", (error) => rejectOnce(error instanceof Error ? error : new Error(String(error))));
+      tar.stdout.on("error", handlePipeError);
+      target.input.on("error", handlePipeError);
+      tar.on("close", (code) => {
+        tarCode = code;
+        finish();
+      });
+      target.done.then(
+        (code) => {
+          targetCode = code;
+          targetDone = true;
+          if (!settled && code !== 0 && tarCode === undefined) terminateChildren();
+          finish();
+        },
+        (error) => {
+          targetError = error instanceof Error ? error : new Error(String(error));
+          targetDone = true;
+          if (!settled && tarCode === undefined) terminateChildren();
+          finish();
+        },
+      );
+      if (signal) {
+        onAbort = () => rejectOnce(createArchiveAbortError(signal));
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      tar.stdout.pipe(target.input);
+    });
+  } finally {
+    clearAbortListener();
+  }
+
+  throwIfArchiveAborted(signal);
   return (await stat(archivePath)).size;
 }
 
@@ -599,7 +667,7 @@ async function writeTarGzipArchiveFile(
   entries: string[],
   archivePath: string,
   listPath: string,
-  options?: { commandTimeoutMs?: number },
+  options?: { commandTimeoutMs?: number; signal?: AbortSignal },
 ): Promise<number> {
   if (process.platform === "win32") {
     const timeoutController = new AbortController();
@@ -625,7 +693,7 @@ async function writeZstdArchiveFile(
   entries: string[],
   archivePath: string,
   listPath: string,
-  options?: { commandTimeoutMs?: number },
+  options?: { commandTimeoutMs?: number; signal?: AbortSignal },
 ): Promise<number> {
   if (process.platform === "win32") {
     const timeoutController = new AbortController();
@@ -651,8 +719,9 @@ async function writeArchiveFile(
   entries: string[],
   archivePath: string,
   listPath: string,
-  options?: { commandTimeoutMs?: number; archiveFormat?: OracleArchiveFormat },
+  options?: { commandTimeoutMs?: number; archiveFormat?: OracleArchiveFormat; signal?: AbortSignal },
 ): Promise<number> {
+  throwIfArchiveAborted(options?.signal);
   await writeFile(listPath, Buffer.from(`${entries.join("\0")}\0`), { mode: 0o600 });
   await rm(archivePath, { force: true }).catch(() => undefined);
 
@@ -666,11 +735,12 @@ export async function createArchiveForTesting(
   cwd: string,
   files: string[],
   archivePath: string,
-  options?: { maxBytes?: number; adaptivePruneMinBytes?: number; commandTimeoutMs?: number; archiveFormat?: OracleArchiveFormat },
+  options?: { maxBytes?: number; adaptivePruneMinBytes?: number; commandTimeoutMs?: number; archiveFormat?: OracleArchiveFormat; signal?: AbortSignal },
 ): Promise<ArchiveCreationResult> {
+  throwIfArchiveAborted(options?.signal);
   const archiveInputs = resolveArchiveInputs(cwd, files);
   const wholeRepoSelection = isWholeRepoArchiveSelection(archiveInputs);
-  let expandedEntries = await resolveExpandedArchiveEntriesFromInputs(cwd, archiveInputs);
+  let expandedEntries = await resolveExpandedArchiveEntriesFromInputs(cwd, archiveInputs, options?.signal);
   if (expandedEntries.length === 0) {
     throw new Error("Oracle archive inputs are empty after default exclusions");
   }
@@ -684,14 +754,22 @@ export async function createArchiveForTesting(
 
   try {
     while (true) {
+      throwIfArchiveAborted(options?.signal);
       if (expandedEntries.length === 0) {
         throw new Error("Oracle archive inputs are empty after default exclusions and automatic size pruning");
       }
 
-      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath, { commandTimeoutMs: options?.commandTimeoutMs, archiveFormat: options?.archiveFormat });
+      const archiveBytes = await writeArchiveFile(cwd, expandedEntries, archivePath, listPath, {
+        commandTimeoutMs: options?.commandTimeoutMs,
+        archiveFormat: options?.archiveFormat,
+        signal: options?.signal,
+      });
       if (archiveBytes <= maxBytes) {
+        throwIfArchiveAborted(options?.signal);
+        const sha256 = await sha256File(archivePath);
+        throwIfArchiveAborted(options?.signal);
         return {
-          sha256: await sha256File(archivePath),
+          sha256,
           archiveBytes,
           initialArchiveBytes,
           autoPrunedPrefixes,
@@ -700,7 +778,7 @@ export async function createArchiveForTesting(
       }
 
       if (initialArchiveBytes === undefined) initialArchiveBytes = archiveBytes;
-      const entrySizes = await measureArchiveEntrySizes(cwd, expandedEntries);
+      const entrySizes = await measureArchiveEntrySizes(cwd, expandedEntries, options?.signal);
       if (!wholeRepoSelection) {
         throw new Error(formatArchiveOversizeError({ archiveBytes, maxBytes, entrySizes, autoPrunedPrefixes, adaptivePruneMinBytes }));
       }
@@ -720,6 +798,13 @@ export async function createArchiveForTesting(
   }
 }
 
-export async function createArchive(cwd: string, files: string[], archivePath: string, maxBytes = DEFAULT_MAX_ARCHIVE_BYTES, archiveFormat: OracleArchiveFormat = DEFAULT_ARCHIVE_FORMAT): Promise<ArchiveCreationResult> {
-  return createArchiveForTesting(cwd, files, archivePath, { maxBytes, archiveFormat });
+export async function createArchive(
+  cwd: string,
+  files: string[],
+  archivePath: string,
+  maxBytes = DEFAULT_MAX_ARCHIVE_BYTES,
+  archiveFormat: OracleArchiveFormat = DEFAULT_ARCHIVE_FORMAT,
+  signal?: AbortSignal,
+): Promise<ArchiveCreationResult> {
+  return createArchiveForTesting(cwd, files, archivePath, { maxBytes, archiveFormat, signal });
 }

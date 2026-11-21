@@ -1694,6 +1694,269 @@ async function testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config: Oracl
   }
 }
 
+async function testOracleSubmitCancelsCleanlyOnAbort(): Promise<void> {
+  if (process.platform === "win32") return;
+  await resetOracleStateDir();
+  const fixtureDir = await mkdtemp(join(tmpdir(), `oracle-sanity-submit-abort-${randomUUID()}-`));
+  const projectRoot = join(fixtureDir, "repo");
+  const agentDir = join(fixtureDir, "agent");
+  const agentExtensionsDir = join(agentDir, "extensions");
+  const seedDir = join(agentExtensionsDir, "oracle-auth-seed-profile");
+  const runtimeProfilesDir = join(agentExtensionsDir, "oracle-runtime-profiles");
+  const binDir = join(fixtureDir, "bin");
+  const fakeWorkerPath = join(fixtureDir, "fake-worker.mjs");
+  const workerLaunchedPath = join(fixtureDir, "worker-launched.txt");
+  const zstdMarkerPath = join(fixtureDir, "zstd-ready.txt");
+  const zstdPidPath = join(fixtureDir, "zstd.pid");
+  const zstdTarBufferPath = join(fixtureDir, "zstd-stdin.tar");
+  const realZstdPath = execFileSync("which", ["zstd"], { encoding: "utf8" }).trim();
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const originalZstdBin = process.env.PI_ORACLE_TEST_ZSTD_BIN;
+
+  await mkdir(join(projectRoot, ".git"), { recursive: true, mode: 0o700 });
+  await mkdir(agentExtensionsDir, { recursive: true, mode: 0o700 });
+  await mkdir(seedDir, { recursive: true, mode: 0o700 });
+  await mkdir(binDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(seedDir, ".oracle-seed-generation"), `${new Date().toISOString()}\n`, { mode: 0o600 });
+  await writeFile(join(projectRoot, "README.md"), "# abort cancel fixture\n", { encoding: "utf8", mode: 0o600 });
+  await writeFile(
+    join(agentExtensionsDir, "oracle.json"),
+    `${JSON.stringify({ browser: { authSeedProfileDir: seedDir, runtimeProfilesDir, maxConcurrentJobs: 1 } }, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+  await writeFile(
+    fakeWorkerPath,
+    `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(workerLaunchedPath)}, "launched\\n", { mode: 0o600 });\nprocess.exit(0);\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+  await writeExecutableScript(
+    join(binDir, "zstd"),
+    `#!/bin/sh
+cat > ${shellQuote(zstdTarBufferPath)}
+printf '%s\\n' "$$" > ${shellQuote(zstdPidPath)}
+printf 'ready\\n' > ${shellQuote(zstdMarkerPath)}
+sleep 2 &
+sleep_pid=$!
+trap 'kill "$sleep_pid" 2>/dev/null || true; exit 143' TERM INT
+wait "$sleep_pid"
+exec ${shellQuote(realZstdPath)} "$@" < ${shellQuote(zstdTarBufferPath)}
+`,
+  );
+
+  const pi = createPiHarness();
+  registerOracleTools(pi as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI, fakeWorkerPath);
+  const submitTool = pi.tools.get("oracle_submit");
+  assert(submitTool?.execute, "oracle submit tool should register for abort cancellation testing");
+
+  const sessionFile = `/tmp/oracle-sanity-session-submit-abort-${randomUUID()}.jsonl`;
+  const ctx = createExtensionCtx({ getSessionFile: () => sessionFile } as import("@earendil-works/pi-coding-agent").ExtensionContext["sessionManager"], createUiStub(), projectRoot);
+  const listTempOracleArchives = () => new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("oracle-archive-")));
+  const tempArchivesBefore = listTempOracleArchives();
+  const findNewTempArchives = () => [...listTempOracleArchives()].filter((name) => !tempArchivesBefore.has(name));
+
+  let blockerJobId: string | undefined;
+  let blockerRuntimeId: string | undefined;
+  let admissionLock: Awaited<ReturnType<typeof acquireLock>> | undefined;
+  const createdJobIds = new Set<string>();
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    process.env.PI_ORACLE_TEST_ZSTD_BIN = join(binDir, "zstd");
+
+    // 1. Direct path: abort while zstd is compressing after tar has finished.
+    const directController = new AbortController();
+    const directPromise = submitTool.execute!(
+      "oracle-submit-abort-direct",
+      { prompt: "abort direct", files: ["."] },
+      directController.signal,
+      () => {},
+      ctx,
+    ) as Promise<{ details?: unknown }>;
+
+    assert(await waitForPath(zstdMarkerPath, 5_000), "fake zstd should reach compression stage before abort");
+    const directZstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
+    assert(Number.isFinite(directZstdPid), "fake zstd should record its pid for direct abort test");
+    directController.abort();
+
+    const directResult = await directPromise;
+    const directError = asRecord(asRecord(directResult.details)?.error);
+    const directJob = asRecord(asRecord(directResult.details)?.job);
+    if (typeof directJob?.id === "string") createdJobIds.add(directJob.id);
+    assert(directError?.code === "submission_cancelled", `direct abort should return submission_cancelled, got ${JSON.stringify(directError)}`);
+    assert(directJob === undefined, "direct abort before launch should not return a started job");
+    assert(await waitForPidExit(directZstdPid, 2_000), "direct abort should terminate the running zstd process promptly");
+    assert(listOracleJobDirs().length === 0, `direct abort should leave no job record on disk, found ${listOracleJobDirs().length}`);
+    assert(!(await pathExists(workerLaunchedPath)), "direct abort should not launch the worker");
+    assert(listLeaseMetadata("runtime").length === 0, "direct abort should leave no runtime leases");
+    assert(findNewTempArchives().length === 0, `direct abort should remove temporary archive files, found ${findNewTempArchives().join(", ")}`);
+
+    // 2. Queued path: abort during archive packing when the concurrency slot is held by a live job.
+    await rm(zstdMarkerPath, { force: true });
+    await rm(zstdPidPath, { force: true });
+    const blockerConfig = loadOracleConfig(projectRoot, { projectConfigTrusted: false });
+    blockerJobId = await createJobForTest(blockerConfig, projectRoot, sessionFile, { initialState: "submitted" });
+    const blockerJob = readJob(blockerJobId);
+    assert(blockerJob, "blocker job should exist for queued abort test");
+    blockerRuntimeId = blockerJob.runtimeId;
+    await updateJob(blockerJobId, (current) => ({
+      ...current,
+      workerPid: process.pid,
+      heartbeatAt: new Date().toISOString(),
+    }));
+    await acquireRuntimeLease(blockerConfig, {
+      jobId: blockerJobId,
+      runtimeId: blockerJob.runtimeId,
+      runtimeSessionName: blockerJob.runtimeSessionName,
+      runtimeProfileDir: blockerJob.runtimeProfileDir,
+      projectId: blockerJob.projectId,
+      sessionId: blockerJob.sessionId,
+      createdAt: new Date().toISOString(),
+    });
+
+    const queuedController = new AbortController();
+    const queuedPromise = submitTool.execute!(
+      "oracle-submit-abort-queued",
+      { prompt: "abort queued", files: ["."] },
+      queuedController.signal,
+      () => {},
+      ctx,
+    ) as Promise<{ details?: unknown }>;
+
+    assert(await waitForPath(zstdMarkerPath, 5_000), "fake zstd should reach compression stage before queued abort");
+    const queuedZstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
+    assert(Number.isFinite(queuedZstdPid), "fake zstd should record its pid for queued abort test");
+    queuedController.abort();
+
+    const queuedResult = await queuedPromise;
+    const queuedError = asRecord(asRecord(queuedResult.details)?.error);
+    const queuedJob = asRecord(asRecord(queuedResult.details)?.job);
+    if (typeof queuedJob?.id === "string") createdJobIds.add(queuedJob.id);
+    assert(queuedError?.code === "submission_cancelled", `queued abort should return submission_cancelled, got ${JSON.stringify(queuedError)}`);
+    assert(queuedJob === undefined, "queued abort before enqueue should not return a job");
+    assert(await waitForPidExit(queuedZstdPid, 2_000), "queued abort should terminate the running zstd process promptly");
+    const jobsAfterQueuedAbort = listOracleJobDirs().map((dir) => readJob(dir)).filter((job): job is NonNullable<typeof job> => Boolean(job));
+    assert(
+      jobsAfterQueuedAbort.length === 1 && jobsAfterQueuedAbort[0]?.id === blockerJobId,
+      `queued abort should not persist a queued job, found ${jobsAfterQueuedAbort.map((job) => `${job.id}:${job.status}`).join(", ")}`,
+    );
+    assert(!(await pathExists(workerLaunchedPath)), "queued abort should not launch a worker");
+    assert(findNewTempArchives().length === 0, `queued abort should remove temporary archive files, found ${findNewTempArchives().join(", ")}`);
+
+    // 2b. Queued path late abort: abort fires after the pre-createJob check while the queued job directory is being created.
+    delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    const lateQueuedController = new AbortController();
+    const lateQueuedParams = { files: ["."] } as { prompt: string; files: string[] };
+    Object.defineProperty(lateQueuedParams, "prompt", {
+      enumerable: true,
+      get() {
+        lateQueuedController.abort();
+        return "abort during queued job creation";
+      },
+    });
+    const lateQueuedResult = await submitTool.execute!(
+      "oracle-submit-abort-queued-late",
+      lateQueuedParams,
+      lateQueuedController.signal,
+      () => {},
+      ctx,
+    ) as { details?: unknown };
+    const lateQueuedError = asRecord(asRecord(lateQueuedResult.details)?.error);
+    const lateQueuedJob = asRecord(asRecord(lateQueuedResult.details)?.job);
+    if (typeof lateQueuedJob?.id === "string") createdJobIds.add(lateQueuedJob.id);
+    assert(lateQueuedError?.code === "submission_cancelled", `late queued abort should return submission_cancelled, got ${JSON.stringify(lateQueuedError)}`);
+    assert(lateQueuedJob === undefined, "late queued abort during job creation should remove the unlaunched queued job");
+    const jobsAfterLateQueuedAbort = listOracleJobDirs().map((dir) => readJob(dir)).filter((job): job is NonNullable<typeof job> => Boolean(job));
+    assert(
+      jobsAfterLateQueuedAbort.length === 1 && jobsAfterLateQueuedAbort[0]?.id === blockerJobId,
+      `late queued abort should not leave a durable queued job behind, found ${jobsAfterLateQueuedAbort.map((job) => `${job.id}:${job.status}`).join(", ")}`,
+    );
+    assert(!(await pathExists(workerLaunchedPath)), "late queued abort should not launch a worker");
+    assert(findNewTempArchives().length === 0, `late queued abort should leave no temporary archive files, found ${findNewTempArchives().join(", ")}`);
+
+    // Clean up blocker before admission-lock and direct late-abort tests.
+    await releaseRuntimeLease(blockerRuntimeId);
+    blockerRuntimeId = undefined;
+    await cleanupJob(blockerJobId);
+    blockerJobId = undefined;
+
+    // 2c. Direct path late abort: abort fires during createJob/rename before spawnWorker.
+    const lateDirectController = new AbortController();
+    const lateDirectParams = { files: ["."] } as { prompt: string; files: string[] };
+    Object.defineProperty(lateDirectParams, "prompt", {
+      enumerable: true,
+      get() {
+        lateDirectController.abort();
+        return "abort before worker spawn";
+      },
+    });
+    const lateDirectResult = await submitTool.execute!(
+      "oracle-submit-abort-direct-late",
+      lateDirectParams,
+      lateDirectController.signal,
+      () => {},
+      ctx,
+    ) as { details?: unknown };
+    const lateDirectError = asRecord(asRecord(lateDirectResult.details)?.error);
+    const lateDirectJob = asRecord(asRecord(lateDirectResult.details)?.job);
+    if (typeof lateDirectJob?.id === "string") createdJobIds.add(lateDirectJob.id);
+    assert(lateDirectError?.code === "submission_cancelled", `late direct abort should return submission_cancelled, got ${JSON.stringify(lateDirectError)}`);
+    assert(lateDirectJob === undefined, "late direct abort before spawn should remove the unlaunched job");
+    assert(listOracleJobDirs().length === 0, `late direct abort should leave no job record on disk, found ${listOracleJobDirs().length}`);
+    assert(!(await pathExists(workerLaunchedPath)), "late direct abort should not launch the worker");
+    assert(listLeaseMetadata("runtime").length === 0, "late direct abort should release runtime leases");
+    assert(findNewTempArchives().length === 0, `late direct abort should leave no temporary archive files, found ${findNewTempArchives().join(", ")}`);
+
+    // 3. Admission-lock path: archive completes, then abort fires while waiting for the admission lock.
+    admissionLock = await acquireLock("admission", "global", { processPid: process.pid, source: "oracle-sanity-abort-lock" });
+    const lockController = new AbortController();
+    const lockPromise = submitTool.execute!(
+      "oracle-submit-abort-admission-lock",
+      { prompt: "abort during admission lock", files: ["."] },
+      lockController.signal,
+      () => {},
+      ctx,
+    ) as Promise<{ details?: unknown }>;
+
+    const waitArchiveDeadline = Date.now() + 5_000;
+    while (Date.now() < waitArchiveDeadline && findNewTempArchives().length === 0) {
+      await sleep(25);
+    }
+    assert(findNewTempArchives().length > 0, "admission-lock abort test should observe the packed temp archive before aborting");
+    lockController.abort();
+
+    const lockResult = await Promise.race([
+      lockPromise,
+      sleep(2_000).then(() => {
+        throw new Error("oracle_submit did not cancel promptly while waiting for the admission lock");
+      }),
+    ]);
+    const lockError = asRecord(asRecord(lockResult.details)?.error);
+    const lockJob = asRecord(asRecord(lockResult.details)?.job);
+    if (typeof lockJob?.id === "string") createdJobIds.add(lockJob.id);
+    assert(lockError?.code === "submission_cancelled", `admission-lock abort should return submission_cancelled, got ${JSON.stringify(lockError)}`);
+    assert(lockJob === undefined, "admission-lock abort should not persist a job");
+    assert(listOracleJobDirs().length === 0, `admission-lock abort should leave no job record on disk, found ${listOracleJobDirs().length}`);
+    assert(!(await pathExists(workerLaunchedPath)), "admission-lock abort should not launch the worker");
+    assert(listLeaseMetadata("runtime").length === 0, "admission-lock abort should leave no runtime leases");
+    assert(findNewTempArchives().length === 0, `admission-lock abort should remove temporary archive files, found ${findNewTempArchives().join(", ")}`);
+  } finally {
+    await releaseLock(admissionLock).catch(() => undefined);
+    if (blockerRuntimeId) await releaseRuntimeLease(blockerRuntimeId).catch(() => undefined);
+    if (blockerJobId) await cleanupJob(blockerJobId).catch(() => undefined);
+    for (const id of createdJobIds) {
+      const persisted = readJob(id);
+      await releaseConversationLease(persisted?.conversationId).catch(() => undefined);
+      await releaseRuntimeLease(persisted?.runtimeId).catch(() => undefined);
+      await cleanupJob(id).catch(() => undefined);
+    }
+    if (originalZstdBin === undefined) delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    else process.env.PI_ORACLE_TEST_ZSTD_BIN = originalZstdBin;
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+}
+
 async function testOracleStatusListsRecentJobIdsWhenNoExplicitId(config: OracleConfig): Promise<void> {
   await resetOracleStateDir();
   const fakeWorkerPath = join(tmpdir(), `oracle-sanity-status-recent-jobs-${randomUUID()}.mjs`);
@@ -4384,6 +4647,105 @@ while :; do sleep 1; done
   }
 }
 
+async function testArchiveAbortCancelsCleanly(): Promise<void> {
+  if (process.platform === "win32") return;
+  const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-abort-"));
+  const binDir = await mkdtemp(join(tmpdir(), "oracle-archive-abort-bin-"));
+  const zstdArchivePath = join(tmpdir(), `oracle-archive-abort-${randomUUID()}.tar.zst`);
+  const gzipArchivePath = join(tmpdir(), `oracle-archive-abort-${randomUUID()}.tar.gz`);
+  const tarPidPath = join(binDir, "tar.pid");
+  const zstdPidPath = join(binDir, "zstd.pid");
+  const originalTarBin = process.env.PI_ORACLE_TEST_TAR_BIN;
+  const originalZstdBin = process.env.PI_ORACLE_TEST_ZSTD_BIN;
+
+  try {
+    await mkdir(join(fixtureDir, "src"), { recursive: true });
+    await writeFile(join(fixtureDir, "src", "main.ts"), "export const main = true;\n");
+
+    // 1. Pre-aborted signal with custom reason should fail immediately as AbortError without spawning tools.
+    const preAborted = new AbortController();
+    preAborted.abort("user pressed escape");
+    let preAbortedError: unknown;
+    try {
+      await createArchiveForTesting(fixtureDir, ["."], zstdArchivePath, { signal: preAborted.signal });
+    } catch (error) {
+      preAbortedError = error;
+    }
+    assert(preAbortedError instanceof Error && preAbortedError.name === "AbortError", `pre-aborted createArchive should throw AbortError, got ${String(preAbortedError)}`);
+
+    // 2. Abort while tar + zstd are active should reject with AbortError and kill both children.
+    await writeExecutableScript(
+      join(binDir, "tar"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(tarPidPath)}
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`,
+    );
+    await writeExecutableScript(
+      join(binDir, "zstd"),
+      `#!/bin/sh
+printf '%s\\n' "$$" > ${shellQuote(zstdPidPath)}
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`,
+    );
+    process.env.PI_ORACLE_TEST_TAR_BIN = join(binDir, "tar");
+    process.env.PI_ORACLE_TEST_ZSTD_BIN = join(binDir, "zstd");
+
+    const zstdController = new AbortController();
+    const zstdPromise = createArchiveForTesting(fixtureDir, ["."], zstdArchivePath, {
+      commandTimeoutMs: 15_000,
+      signal: zstdController.signal,
+    });
+    assert(await waitForPath(tarPidPath, 2_000), "archive abort test should observe tar pid before abort");
+    assert(await waitForPath(zstdPidPath, 2_000), "archive abort test should observe zstd pid before abort");
+    const tarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
+    const zstdPid = Number.parseInt((await readFile(zstdPidPath, "utf8")).trim(), 10);
+    zstdController.abort();
+
+    let zstdAbortError: unknown;
+    try {
+      await zstdPromise;
+    } catch (error) {
+      zstdAbortError = error;
+    }
+    assert(zstdAbortError instanceof Error && zstdAbortError.name === "AbortError", `zstd archive abort should reject with AbortError, got ${String(zstdAbortError)}`);
+    assert(await waitForPidExit(tarPid, 2_000), "zstd archive abort should terminate tar promptly");
+    assert(await waitForPidExit(zstdPid, 2_000), "zstd archive abort should terminate zstd promptly");
+
+    // 3. Abort while tar + gzip are active (Grok archive format) should reject with AbortError and kill tar.
+    await rm(tarPidPath, { force: true });
+    const gzipController = new AbortController();
+    const gzipPromise = createArchiveForTesting(fixtureDir, ["."], gzipArchivePath, {
+      archiveFormat: "tar.gz",
+      commandTimeoutMs: 15_000,
+      signal: gzipController.signal,
+    });
+    assert(await waitForPath(tarPidPath, 2_000), "gzip archive abort test should observe tar pid before abort");
+    const gzipTarPid = Number.parseInt((await readFile(tarPidPath, "utf8")).trim(), 10);
+    gzipController.abort();
+
+    let gzipAbortError: unknown;
+    try {
+      await gzipPromise;
+    } catch (error) {
+      gzipAbortError = error;
+    }
+    assert(gzipAbortError instanceof Error && gzipAbortError.name === "AbortError", `gzip archive abort should reject with AbortError, got ${String(gzipAbortError)}`);
+    assert(await waitForPidExit(gzipTarPid, 2_000), "gzip archive abort should terminate tar promptly");
+  } finally {
+    if (originalTarBin === undefined) delete process.env.PI_ORACLE_TEST_TAR_BIN;
+    else process.env.PI_ORACLE_TEST_TAR_BIN = originalTarBin;
+    if (originalZstdBin === undefined) delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    else process.env.PI_ORACLE_TEST_ZSTD_BIN = originalZstdBin;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+    await rm(zstdArchivePath, { force: true });
+    await rm(gzipArchivePath, { force: true });
+  }
+}
+
 async function testArchiveSubprocessesScrubSafeStoragePasswords(): Promise<void> {
   if (process.platform === "win32") return;
   const fixtureDir = await mkdtemp(join(tmpdir(), "oracle-archive-env-scrub-"));
@@ -6142,6 +6504,7 @@ async function runPlatformSanity(): Promise<void> {
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
+  await testArchiveAbortCancelsCleanly();
   await testArchiveSubprocessesScrubSafeStoragePasswords();
   await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();
@@ -6184,6 +6547,7 @@ async function main() {
   await testWorkspaceRootProjectIdentityCoversSubdirectories(config);
   await testWorkspaceRootFallsBackToProjectMarkersWithoutGit();
   await testOracleSubmitUsesWorkspaceRootForSubdirectoryCwd(config);
+  await testOracleSubmitCancelsCleanlyOnAbort();
   await testOracleStatusListsRecentJobIdsWhenNoExplicitId(config);
   await testOraclePromptCommandsInjectHiddenInstructions();
   await testOracleStatusAndReadEmitPrintModeOutput(config);
@@ -6237,6 +6601,7 @@ async function main() {
   await testArchiveResolutionPreservesSignificantWhitespace();
   await testArchiveRejectsSymlinkEscapes();
   await testArchiveSubprocessTimeoutKillsHungChildren();
+  await testArchiveAbortCancelsCleanly();
   await testArchiveSubprocessesScrubSafeStoragePasswords();
   await testArchiveBrokenPipeRejectsCleanly();
   await testArchiveAutoPrunesNestedBuildDirsWhenWholeRepoIsTooLarge();

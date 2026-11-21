@@ -11,6 +11,7 @@ export declare function acquireStateLock(
   key: string,
   metadata: unknown,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<string>;
 export declare function releaseStatePath(path: string | undefined): Promise<void>;
 export declare function withStateLock<T>(
@@ -20,6 +21,7 @@ export declare function withStateLock<T>(
   metadata: unknown,
   fn: () => Promise<T>,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<T>;
 export declare function createStateLease(
   stateDir: string,

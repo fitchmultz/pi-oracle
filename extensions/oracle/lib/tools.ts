@@ -336,6 +336,22 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function createSubmissionAbortError(signal: AbortSignal): Error {
+  if (isAbortError(signal.reason)) return signal.reason;
+  const message = typeof signal.reason === "string" && signal.reason.trim()
+    ? signal.reason
+    : "Oracle submission was cancelled before launch.";
+  return new DOMException(message, "AbortError");
+}
+
+function throwIfSubmissionAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw createSubmissionAbortError(signal);
+}
+
 function buildOracleQueueSnapshot(
   job: NonNullable<ReturnType<typeof readJob>>,
   queuePosition?: { position: number; depth: number },
@@ -403,6 +419,14 @@ function buildOracleToolErrorDetails(toolName: OracleToolErrorSource, error: unk
       rejectedValue: params.preset,
       allowedValues: [...ORACLE_SUBMIT_PRESET_IDS],
       suggestedNextStep: "Retry with one of the canonical preset ids, or omit preset to use the configured default.",
+    };
+  }
+
+  if (toolName === "oracle_submit" && isAbortError(error)) {
+    return {
+      code: "submission_cancelled",
+      message: "Oracle submission was cancelled before launch. No job was started.",
+      suggestedNextStep: "Do not retry unless the user asks for the oracle job again.",
     };
   }
 
@@ -859,8 +883,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
     ],
     parameters: ORACLE_SUBMIT_PARAMS,
     prepareArguments: prepareOracleSubmitArguments,
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       try {
+        throwIfSubmissionAborted(signal);
         const projectCwd = getProjectId(ctx.cwd);
         const baseConfig = loadOracleConfig(projectCwd, { projectConfigTrustCwd: ctx.cwd, projectConfigTrusted: isOracleProjectTrusted(ctx) });
         const originSessionFile = requirePersistedSessionFile(getSessionFile(ctx), "submit oracle jobs");
@@ -894,7 +919,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           await withGlobalReconcileLock({ processPid: process.pid, source: "oracle_submit", cwd: projectCwd }, async () => {
             await reconcileStaleOracleJobs();
             await pruneTerminalOracleJobs();
-          });
+          }, { signal });
         } catch (error) {
           if (!isLockTimeoutError(error, "reconcile", "global")) throw error;
         }
@@ -913,10 +938,25 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
         let spawnedWorker: Awaited<ReturnType<typeof spawnWorker>> | undefined;
 
         try {
-          archive = await createArchive(projectCwd, params.files, tempArchivePath, archivePlan.maxArchiveBytes, archivePlan.archiveFormat);
+          throwIfSubmissionAborted(signal);
+          archive = await createArchive(projectCwd, params.files, tempArchivePath, archivePlan.maxArchiveBytes, archivePlan.archiveFormat, signal);
+          throwIfSubmissionAborted(signal);
           const currentArchive = archive;
           await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
+            const abortBeforeCommitIfCancelled = async () => {
+              if (!signal?.aborted) return;
+              if (job) {
+                const removed = await rm(getJobDir(job.id), { recursive: true, force: true })
+                  .then(() => true)
+                  .catch(() => false);
+                if (removed) job = undefined;
+              }
+              throw createSubmissionAbortError(signal);
+            };
+
+            throwIfSubmissionAborted(signal);
             await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
+            throwIfSubmissionAborted(signal);
 
             const admittedAt = new Date().toISOString();
             const runtimeAttempt = await tryAcquireRuntimeLease(config, {
@@ -945,8 +985,9 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                 throw new Error(queueAdmissionFailure);
               }
 
+              throwIfSubmissionAborted(signal);
               queued = true;
-              job = await createJob(
+              const createdQueuedJob = await createJob(
                 jobId,
                 {
                   prompt: params.prompt,
@@ -962,11 +1003,14 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                 runtime,
                 { initialState: "queued", createdAt: admittedAt },
               );
-              await rename(tempArchivePath, job.archivePath);
-              job = await updateJob(job.id, (current) => ({
+              job = createdQueuedJob;
+              await rename(tempArchivePath, createdQueuedJob.archivePath);
+              await abortBeforeCommitIfCancelled();
+              job = await updateJob(createdQueuedJob.id, (current) => ({
                 ...current,
                 archiveSha256: currentArchive.sha256,
               }));
+              await abortBeforeCommitIfCancelled();
               queuedSubmissionDurable = true;
               return;
             }
@@ -989,7 +1033,8 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
               conversationLeaseAcquired = true;
             }
 
-            job = await createJob(
+            throwIfSubmissionAborted(signal);
+            const createdDirectJob = await createJob(
               jobId,
               {
                 prompt: params.prompt,
@@ -1005,18 +1050,20 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
               runtime,
               { initialState: "submitted", createdAt: admittedAt },
             );
-            await rename(tempArchivePath, job.archivePath);
-            spawnedWorker = await spawnWorker(workerPath, job.id);
+            job = createdDirectJob;
+            await rename(tempArchivePath, createdDirectJob.archivePath);
+            await abortBeforeCommitIfCancelled();
+            spawnedWorker = await spawnWorker(workerPath, createdDirectJob.id);
             workerSpawned = true;
             const worker = spawnedWorker;
-            job = await updateJob(job.id, (current) => ({
+            job = await updateJob(createdDirectJob.id, (current) => ({
               ...current,
               archiveSha256: currentArchive.sha256,
               workerPid: worker.pid,
               workerNonce: worker.nonce,
               workerStartedAt: worker.startedAt,
             }));
-          });
+          }, { signal });
           if (!job || !archive) throw new Error(`Oracle submission ${jobId} did not persist job metadata durably`);
           if (ctx.hasUI) refreshOracleStatus(ctx);
 
@@ -1095,15 +1142,24 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           if (spawnedWorker) {
             await terminateWorkerPid(spawnedWorker.pid, spawnedWorker.startedAt).catch(() => undefined);
           }
+          let settledJob: OracleJob | undefined;
           if (job && (!latest || !isTerminalOracleJob(latest))) {
             const failedAt = new Date().toISOString();
-            await updateJob(job.id, (current) => transitionOracleJobPhase(current, "failed", {
+            const cancelledBeforeLaunch = isAbortError(error) && !workerSpawned && !queuedSubmissionDurable;
+            settledJob = await updateJob(job.id, (current) => transitionOracleJobPhase(current, cancelledBeforeLaunch ? "cancelled" : "failed", {
               at: failedAt,
               source: "oracle:submit",
-              message: `Submission failed before durable worker handoff: ${message}`,
-              patch: {
-                error: message,
-              },
+              message: cancelledBeforeLaunch
+                ? "Submission cancelled before worker launch."
+                : `Submission failed before durable worker handoff: ${message}`,
+              patch: cancelledBeforeLaunch
+                ? {
+                  error: message,
+                  notifiedAt: failedAt,
+                }
+                : {
+                  error: message,
+                },
             })).catch(() => undefined);
           }
           const cleanupReport = await cleanupRuntimeArtifacts({
@@ -1116,10 +1172,11 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             await appendCleanupWarnings(job.id, cleanupReport.warnings).catch(() => undefined);
           }
           if (ctx.hasUI) refreshOracleStatus(ctx);
+          const reportedJob = settledJob ?? latest ?? job;
           return buildOracleToolErrorResult("oracle_submit", error, params, {
-            job: latest ?? job,
+            job: reportedJob,
             jobDetails: {
-              queue: latest ? buildOracleQueueSnapshot(latest, latest.status === "queued" ? getQueuePosition(latest.id) : undefined) : undefined,
+              queue: reportedJob ? buildOracleQueueSnapshot(reportedJob, reportedJob.status === "queued" ? getQueuePosition(reportedJob.id) : undefined) : undefined,
               archiveBytes: archive?.archiveBytes,
               initialArchiveBytes: archive?.initialArchiveBytes,
               autoPrunedArchivePaths: archive?.autoPrunedPrefixes,
