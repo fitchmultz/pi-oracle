@@ -211,21 +211,37 @@ export async function sweepStaleStateLocks(stateDir, now = Date.now()) {
 }
 
 /**
+ * @param {AbortSignal | undefined} signal
+ * @returns {void}
+ */
+function throwIfLockAborted(signal) {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error && signal.reason.name === "AbortError") throw signal.reason;
+  const message = typeof signal.reason === "string" && signal.reason.trim()
+    ? signal.reason
+    : "Oracle lock wait was aborted";
+  throw new DOMException(message, "AbortError");
+}
+
+/**
  * @param {string} stateDir
  * @param {string} kind
  * @param {string} key
  * @param {unknown} metadata
  * @param {number} [timeoutMs]
+ * @param {AbortSignal} [signal]
  * @returns {Promise<string>}
  */
-export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs = DEFAULT_WAIT_MS) {
+export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs = DEFAULT_WAIT_MS, signal = undefined) {
   const parentDir = getStateLocksDir(stateDir);
   const path = join(parentDir, hashOracleStateKey(kind, key));
   const deadline = Date.now() + timeoutMs;
+  throwIfLockAborted(signal);
   await ensurePrivateDir(stateDir);
   await ensurePrivateDir(parentDir);
 
   while (Date.now() < deadline) {
+    throwIfLockAborted(signal);
     try {
       await createStateDirAtomically(parentDir, path, metadata);
       return path;
@@ -233,7 +249,7 @@ export async function acquireStateLock(stateDir, kind, key, metadata, timeoutMs 
       if (!isStateDirExistsError(error)) throw error;
       if (await maybeReclaimStaleLock(path)) continue;
     }
-    await sleep(POLL_MS);
+    await sleep(POLL_MS, undefined, { signal });
   }
 
   throw new Error(`Timed out waiting for oracle ${kind} lock: ${key}`);
@@ -262,10 +278,11 @@ export async function releaseStatePath(path) {
  * @param {unknown} metadata
  * @param {() => Promise<T>} fn
  * @param {number} [timeoutMs]
+ * @param {AbortSignal} [signal]
  * @returns {Promise<T>}
  */
-export async function withStateLock(stateDir, kind, key, metadata, fn, timeoutMs = DEFAULT_WAIT_MS) {
-  const handle = await acquireStateLock(stateDir, kind, key, metadata, timeoutMs);
+export async function withStateLock(stateDir, kind, key, metadata, fn, timeoutMs = DEFAULT_WAIT_MS, signal = undefined) {
+  const handle = await acquireStateLock(stateDir, kind, key, metadata, timeoutMs, signal);
   try {
     return await fn();
   } finally {

@@ -60,10 +60,10 @@ export async function acquireLock(
   kind: string,
   key: string,
   metadata: unknown,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<OracleLockHandle> {
   return {
-    path: await acquireStateLock(getOracleStateDir(), kind, key, metadata, options?.timeoutMs),
+    path: await acquireStateLock(getOracleStateDir(), kind, key, metadata, options?.timeoutMs, options?.signal),
   };
 }
 
@@ -76,9 +76,9 @@ export async function withLock<T>(
   key: string,
   metadata: unknown,
   fn: () => Promise<T>,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
-  return withStateLock(getOracleStateDir(), kind, key, metadata, fn, options?.timeoutMs);
+  return withStateLock(getOracleStateDir(), kind, key, metadata, fn, options?.timeoutMs, options?.signal);
 }
 
 export function isLockTimeoutError(error: unknown, kind?: string, key?: string): boolean {
@@ -94,10 +94,10 @@ export async function withAuthLock<T>(metadata: unknown, fn: () => Promise<T>): 
 export async function withGlobalReconcileLock<T>(
   metadata: unknown,
   fn: () => Promise<T>,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
   await sweepStaleLocks();
-  return withLock("reconcile", "global", metadata, fn, { timeoutMs: options?.timeoutMs ?? 30_000 });
+  return withLock("reconcile", "global", metadata, fn, { timeoutMs: options?.timeoutMs ?? 30_000, signal: options?.signal });
 }
 
 export async function withJobLock<T>(jobId: string, metadata: unknown, fn: () => Promise<T>): Promise<T> {
