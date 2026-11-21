@@ -1842,14 +1842,71 @@ exec ${shellQuote(realZstdPath)} "$@" < ${shellQuote(zstdTarBufferPath)}
     assert(!(await pathExists(workerLaunchedPath)), "queued abort should not launch a worker");
     assert(findNewTempArchives().length === 0, `queued abort should remove temporary archive files, found ${findNewTempArchives().join(", ")}`);
 
-    // Clean up blocker before admission-lock abort test.
+    // 2b. Queued path late abort: abort fires after the pre-createJob check while the queued job directory is being created.
+    delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
+    const lateQueuedController = new AbortController();
+    const lateQueuedParams = { files: ["."] } as { prompt: string; files: string[] };
+    Object.defineProperty(lateQueuedParams, "prompt", {
+      enumerable: true,
+      get() {
+        lateQueuedController.abort();
+        return "abort during queued job creation";
+      },
+    });
+    const lateQueuedResult = await submitTool.execute!(
+      "oracle-submit-abort-queued-late",
+      lateQueuedParams,
+      lateQueuedController.signal,
+      () => {},
+      ctx,
+    ) as { details?: unknown };
+    const lateQueuedError = asRecord(asRecord(lateQueuedResult.details)?.error);
+    const lateQueuedJob = asRecord(asRecord(lateQueuedResult.details)?.job);
+    if (typeof lateQueuedJob?.id === "string") createdJobIds.add(lateQueuedJob.id);
+    assert(lateQueuedError?.code === "submission_cancelled", `late queued abort should return submission_cancelled, got ${JSON.stringify(lateQueuedError)}`);
+    assert(lateQueuedJob === undefined, "late queued abort during job creation should remove the unlaunched queued job");
+    const jobsAfterLateQueuedAbort = listOracleJobDirs().map((dir) => readJob(dir)).filter((job): job is NonNullable<typeof job> => Boolean(job));
+    assert(
+      jobsAfterLateQueuedAbort.length === 1 && jobsAfterLateQueuedAbort[0]?.id === blockerJobId,
+      `late queued abort should not leave a durable queued job behind, found ${jobsAfterLateQueuedAbort.map((job) => `${job.id}:${job.status}`).join(", ")}`,
+    );
+    assert(!(await pathExists(workerLaunchedPath)), "late queued abort should not launch a worker");
+    assert(findNewTempArchives().length === 0, `late queued abort should leave no temporary archive files, found ${findNewTempArchives().join(", ")}`);
+
+    // Clean up blocker before admission-lock and direct late-abort tests.
     await releaseRuntimeLease(blockerRuntimeId);
     blockerRuntimeId = undefined;
     await cleanupJob(blockerJobId);
     blockerJobId = undefined;
 
+    // 2c. Direct path late abort: abort fires during createJob/rename before spawnWorker.
+    const lateDirectController = new AbortController();
+    const lateDirectParams = { files: ["."] } as { prompt: string; files: string[] };
+    Object.defineProperty(lateDirectParams, "prompt", {
+      enumerable: true,
+      get() {
+        lateDirectController.abort();
+        return "abort before worker spawn";
+      },
+    });
+    const lateDirectResult = await submitTool.execute!(
+      "oracle-submit-abort-direct-late",
+      lateDirectParams,
+      lateDirectController.signal,
+      () => {},
+      ctx,
+    ) as { details?: unknown };
+    const lateDirectError = asRecord(asRecord(lateDirectResult.details)?.error);
+    const lateDirectJob = asRecord(asRecord(lateDirectResult.details)?.job);
+    if (typeof lateDirectJob?.id === "string") createdJobIds.add(lateDirectJob.id);
+    assert(lateDirectError?.code === "submission_cancelled", `late direct abort should return submission_cancelled, got ${JSON.stringify(lateDirectError)}`);
+    assert(lateDirectJob === undefined, "late direct abort before spawn should remove the unlaunched job");
+    assert(listOracleJobDirs().length === 0, `late direct abort should leave no job record on disk, found ${listOracleJobDirs().length}`);
+    assert(!(await pathExists(workerLaunchedPath)), "late direct abort should not launch the worker");
+    assert(listLeaseMetadata("runtime").length === 0, "late direct abort should release runtime leases");
+    assert(findNewTempArchives().length === 0, `late direct abort should leave no temporary archive files, found ${findNewTempArchives().join(", ")}`);
+
     // 3. Admission-lock path: archive completes, then abort fires while waiting for the admission lock.
-    delete process.env.PI_ORACLE_TEST_ZSTD_BIN;
     admissionLock = await acquireLock("admission", "global", { processPid: process.pid, source: "oracle-sanity-abort-lock" });
     const lockController = new AbortController();
     const lockPromise = submitTool.execute!(

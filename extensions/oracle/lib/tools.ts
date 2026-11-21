@@ -943,6 +943,17 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
           throwIfSubmissionAborted(signal);
           const currentArchive = archive;
           await withLock("admission", "global", { jobId, processPid: process.pid }, async () => {
+            const abortBeforeCommitIfCancelled = async () => {
+              if (!signal?.aborted) return;
+              if (job) {
+                const removed = await rm(getJobDir(job.id), { recursive: true, force: true })
+                  .then(() => true)
+                  .catch(() => false);
+                if (removed) job = undefined;
+              }
+              throw createSubmissionAbortError(signal);
+            };
+
             throwIfSubmissionAborted(signal);
             await promoteQueuedJobsWithinAdmissionLock({ workerPath, source: "oracle_submit" });
             throwIfSubmissionAborted(signal);
@@ -976,7 +987,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
 
               throwIfSubmissionAborted(signal);
               queued = true;
-              job = await createJob(
+              const createdQueuedJob = await createJob(
                 jobId,
                 {
                   prompt: params.prompt,
@@ -992,11 +1003,14 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
                 runtime,
                 { initialState: "queued", createdAt: admittedAt },
               );
-              await rename(tempArchivePath, job.archivePath);
-              job = await updateJob(job.id, (current) => ({
+              job = createdQueuedJob;
+              await rename(tempArchivePath, createdQueuedJob.archivePath);
+              await abortBeforeCommitIfCancelled();
+              job = await updateJob(createdQueuedJob.id, (current) => ({
                 ...current,
                 archiveSha256: currentArchive.sha256,
               }));
+              await abortBeforeCommitIfCancelled();
               queuedSubmissionDurable = true;
               return;
             }
@@ -1020,7 +1034,7 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
             }
 
             throwIfSubmissionAborted(signal);
-            job = await createJob(
+            const createdDirectJob = await createJob(
               jobId,
               {
                 prompt: params.prompt,
@@ -1036,18 +1050,13 @@ export function registerOracleTools(pi: ExtensionAPI, workerPath: string, authWo
               runtime,
               { initialState: "submitted", createdAt: admittedAt },
             );
-            await rename(tempArchivePath, job.archivePath);
-            if (signal?.aborted) {
-              const removed = await rm(getJobDir(job.id), { recursive: true, force: true })
-                .then(() => true)
-                .catch(() => false);
-              if (removed) job = undefined;
-              throw createSubmissionAbortError(signal);
-            }
-            spawnedWorker = await spawnWorker(workerPath, job.id);
+            job = createdDirectJob;
+            await rename(tempArchivePath, createdDirectJob.archivePath);
+            await abortBeforeCommitIfCancelled();
+            spawnedWorker = await spawnWorker(workerPath, createdDirectJob.id);
             workerSpawned = true;
             const worker = spawnedWorker;
-            job = await updateJob(job.id, (current) => ({
+            job = await updateJob(createdDirectJob.id, (current) => ({
               ...current,
               archiveSha256: currentArchive.sha256,
               workerPid: worker.pid,
