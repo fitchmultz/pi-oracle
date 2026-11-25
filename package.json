@@ -83,6 +83,7 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "overrides": {
@@ -91,6 +92,7 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "1.6.1",
     "@earendil-works/pi-coding-agent": "1.6.1",
+    "@earendil-works/pi-tui": "1.6.1",
     "@types/node": "^22.19.19",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.3",
