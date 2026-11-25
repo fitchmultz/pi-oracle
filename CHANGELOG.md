@@ -2,8 +2,22 @@
 
 ## Unreleased
 
+## 0.7.37 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
 - Add argument completions for `/oracle-auth` (`chatgpt`, `grok`) and `/oracle-clean` (`all`)
 - Raise the tested Pi floor to `1.6.1`
+<!-- npm-release:unreleased:end -->
+
+- ci: pin shared automation to 788061a and pass RELEASE_APP_PRIVATE_KEY (#102) ([19af1b4](https://github.com/fitchmultz/pi-oracle/commit/19af1b45d2310aff01e2073886038207144b919f))
+
+### What's Changed
+* ci: pin shared automation to 788061a and pass RELEASE_APP_PRIVATE_KEY by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/102
+* chore: enforce 2-day npm min-release-age cooldown by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/103
+* Add slash-command argument completions and update Pi to 1.6.1 by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/104
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.36...v0.7.37
 
 ## 0.7.36 - 2026-11-21
 
