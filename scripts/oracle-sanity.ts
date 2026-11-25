@@ -4189,10 +4189,12 @@ async function testOraclePromptTemplateCutover(): Promise<void> {
   assert(pkg.scripts?.prepublishOnly === "npm run release:check", "package publishing should be guarded by the release verification gate");
   const piBaseline = pkg.devDependencies?.["@earendil-works/pi-coding-agent"];
   assert(typeof piBaseline === "string" && /^\d+\.\d+\.\d+$/.test(piBaseline), "package.json should pin an exact stable Pi development baseline");
-  assert(pkg.devDependencies?.["@earendil-works/pi-ai"] === piBaseline, "Pi development dependencies should use one coherent baseline");
+  for (const dep of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
+    assert(pkg.devDependencies?.[dep] === piBaseline, "Pi development dependencies should use one coherent baseline");
+  }
   assert(pkg.peerDependencies?.["@earendil-works/pi-ai"] === "*", "package.json should declare the runtime StringEnum import as an optional wildcard peer");
   assert(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"] === "*", "package.json should keep pi runtime packages as wildcard peers instead of hard-pinning the tested Pi floor");
-  for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox"]) {
+  for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
     assert(pkg.peerDependenciesMeta?.[peer]?.optional === true, `package.json should keep ${peer} optional for Pi loader-provided runtime resolution`);
   }
   assert(Array.isArray(pkg.pi?.prompts) && pkg.pi.prompts.includes("./prompts"), "package manifest should expose prompt templates for slash completion");
