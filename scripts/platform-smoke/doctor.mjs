@@ -1,6 +1,6 @@
 // Preflight checks for the pi-oracle Crabbox platform smoke gate.
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { buildTargetBaseArgs } from "./crabbox-runner.mjs";
@@ -73,11 +73,22 @@ function runTargetToolProbe(cbox, targetName, config) {
   const command = `missing=""; for tool in ${required.join(" ")}; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done; if [ -n "$missing" ]; then echo "missing=$missing"; exit 1; fi; zstd --version >/dev/null && agent-browser --version >/dev/null && echo tools-ok`;
   const baseArgs = buildTargetBaseArgs(targetName, config);
   if (targetName === "macos") baseArgs.push("--reclaim");
-  const result = silent(cbox, ["run", ...baseArgs, "--no-sync", "--shell", command], {
+  const { status, signal, error, stdout, stderr } = spawnSync(cbox, ["run", ...baseArgs, "--no-sync", "--shell", command], {
+    encoding: "utf8",
     env: { ...process.env, CRABBOX_SYNC_GIT_SEED: "false" },
     timeout: 180_000,
   });
-  result?.includes("tools-ok") ? ok(`${targetName} required target tools OK`) : fail(`${targetName} required target tools missing or probe failed${result ? `: ${result.split(/\r?\n/).slice(-3).join(" | ")}` : ""}`);
+  if (!error && status === 0 && stdout?.includes("tools-ok")) {
+    ok(`${targetName} required target tools OK`);
+    return;
+  }
+  const outcome = error?.message ?? (signal ? `signal ${signal}` : `exit ${status}`);
+  const details = [`Crabbox ${outcome}`];
+  for (const [stream, output] of [["stderr", stderr], ["stdout", stdout]]) {
+    const tail = output?.trim().split(/\r?\n/).slice(-3).join(" | ");
+    if (tail) details.push(`${stream}: ${tail}`);
+  }
+  fail(`${targetName} required target tools missing or probe failed: ${details.join("; ")}`);
 }
 
 function verifyPackageExclusions() {

@@ -47,6 +47,36 @@ function testEmptyTargetSelectionRejected() {
   }
 }
 
+function testTargetToolProbeReportsCrabboxFailure() {
+  const dir = mkdtempSync(join(tmpdir(), "pi-oracle-doctor-invariants-"));
+  try {
+    const crabbox = join(dir, "crabbox");
+    writeFileSync(crabbox, `#!/bin/sh
+case "$1" in
+  --version) echo 0.84.0 ;;
+  providers) echo local-container ;;
+  doctor) echo '{"ok":true}' ;;
+  run) echo 'timed out waiting for SSH during before command' >&2; exit 5 ;;
+  *) exit 9 ;;
+esac
+`, { mode: 0o700 });
+    writeFileSync(join(dir, "docker"), "#!/bin/sh\necho stub-docker\n", { mode: 0o700 });
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { runDoctor } from "./scripts/platform-smoke/doctor.mjs";
+      await runDoctor({ requiredTargets: ["ubuntu"], artifactRoot: process.argv[1] });
+    `, join(dir, "artifacts")], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, PI_ORACLE_SMOKE_CRABBOX: crabbox, PATH: `${dir}:${process.env.PATH}` },
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /ubuntu required target tools missing or probe failed.*Crabbox exit 5.*timed out waiting for SSH during before command/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function testPackedInstallCommandRendering() {
   const command = buildPlatformBuildCommand("ubuntu", config.packageName, config.nodeValidationMajor);
   assert.match(command, /verify:oracle:platform/, "platform-build should run the platform-focused verification gate");
@@ -333,6 +363,7 @@ function testRealSmokeExpensiveAgentPathsAreOptIn() {
 testHelpTextIncludesTargetsAndExamples();
 testTargetSelection();
 testEmptyTargetSelectionRejected();
+testTargetToolProbeReportsCrabboxFailure();
 testPackedInstallCommandRendering();
 testRealExtensionPackedInstallRendering();
 testManifestFailure();
