@@ -6,9 +6,10 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { formatOracleCancelOutcome, formatOracleJobSummary } from "../shared/job-observability-helpers.mjs";
 import { runOracleAuthBootstrap } from "./auth.js";
-import { normalizeOracleProviderAlias, type OracleProvider } from "./config.js";
+import { normalizeOracleProviderAlias, ORACLE_PROVIDERS, type OracleProvider } from "./config.js";
 import { isOracleProjectTrusted } from "./trust.js";
 import {
   cancelOracleJob,
@@ -75,6 +76,11 @@ function parseOracleAuthProvider(args: string): OracleProvider | undefined {
   throw new Error("Usage: /oracle-auth [chatgpt|grok]");
 }
 
+const ORACLE_AUTH_COMPLETION_DESCRIPTIONS: Record<OracleProvider, string> = {
+  chatgpt: "Sync ChatGPT cookies from the configured browser profile",
+  grok: "Sync Grok cookies from the configured browser profile",
+};
+
 function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, message: string, level: "info" | "warning" | "error" = "info"): void {
   if (ctx.mode === "print") {
     process.stdout.write(`${message}\n`);
@@ -95,6 +101,17 @@ function emitCommandOutput(pi: ExtensionAPI, ctx: ExtensionCommandContext, messa
 export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string, workerPath: string): void {
   pi.registerCommand("oracle-auth", {
     description: "Sync ChatGPT or Grok cookies from the configured local browser profile into the provider auth seed profile",
+    getArgumentCompletions: (prefix) => {
+      const query = prefix.trimStart();
+      if (/\s/.test(query)) return null;
+      const items: AutocompleteItem[] = ORACLE_PROVIDERS.map((provider) => ({
+        value: provider,
+        label: provider,
+        description: ORACLE_AUTH_COMPLETION_DESCRIPTIONS[provider],
+      }));
+      const matches = fuzzyFilter(items, query, (item) => item.label);
+      return matches.length > 0 ? matches : null;
+    },
     handler: async (args, ctx) => {
       try {
         const provider = parseOracleAuthProvider(args);
@@ -194,6 +211,17 @@ export function registerOracleCommands(pi: ExtensionAPI, authWorkerPath: string,
 
   pi.registerCommand("oracle-clean", {
     description: "Remove oracle temp files for terminal jobs; recently woken jobs may stay retained briefly",
+    getArgumentCompletions: (prefix) => {
+      const query = prefix.trimStart();
+      if (/\s/.test(query)) return null;
+      const items: AutocompleteItem[] = [{
+        value: "all",
+        label: "all",
+        description: "Remove temp files for all terminal oracle jobs in this project",
+      }];
+      const matches = fuzzyFilter(items, query, (item) => item.label);
+      return matches.length > 0 ? matches : null;
+    },
     handler: async (args, ctx: ExtensionCommandContext) => {
       const target = args.trim();
       if (!target) {

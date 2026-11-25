@@ -83,3 +83,70 @@ test("native Oracle dispatch handles user prompts and idle custom completions wi
     session.dispose();
   }
 });
+
+test("native Oracle fixed-option commands provide fuzzy argument completions", { timeout: 30_000 }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "oracle-native-completions-"));
+  const agentDir = join(root, "agent");
+  await mkdir(agentDir);
+  const oldEnv = { ...process.env };
+  Object.assign(process.env, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1" });
+  t.after(async () => {
+    for (const key of Object.keys(process.env)) if (!(key in oldEnv)) delete process.env[key];
+    Object.assign(process.env, oldEnv);
+    await rm(root, { recursive: true, force: true });
+  });
+  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  const loader = new DefaultResourceLoader({
+    cwd: root,
+    agentDir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noThemes: true,
+    noContextFiles: true,
+    additionalExtensionPaths: [fileURLToPath(new URL("../", import.meta.url))],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  assert.equal(loader.getExtensions().extensions.length, 1);
+  const oracleExt = loader.getExtensions().extensions[0];
+  assert.ok(oracleExt, "oracle extension should load");
+
+  const authCmd = oracleExt.commands.get("oracle-auth");
+  assert.equal(typeof authCmd?.getArgumentCompletions, "function");
+  const allAuth = await authCmd.getArgumentCompletions("");
+  assert.deepEqual(allAuth?.map(({ value, label }) => ({ value, label })), [
+    { value: "chatgpt", label: "chatgpt" },
+    { value: "grok", label: "grok" },
+  ]);
+  assert.ok(allAuth?.every((item) => typeof item.description === "string" && item.description.length > 0));
+  assert.deepEqual((await authCmd.getArgumentCompletions("   "))?.map(({ value }) => value), ["chatgpt", "grok"]);
+  assert.deepEqual((await authCmd.getArgumentCompletions("ch"))?.map(({ value }) => value), ["chatgpt"]);
+  assert.deepEqual((await authCmd.getArgumentCompletions("  CGT"))?.map(({ value }) => value), ["chatgpt"]);
+  assert.deepEqual((await authCmd.getArgumentCompletions("g"))?.map(({ value }) => value), ["grok", "chatgpt"]);
+  assert.equal(await authCmd.getArgumentCompletions("chatgpt "), null);
+  assert.equal(await authCmd.getArgumentCompletions("chatgpt extra"), null);
+  assert.equal(await authCmd.getArgumentCompletions("ch apt"), null);
+  assert.equal(await authCmd.getArgumentCompletions("unknown"), null);
+
+  // Mutating returned completion items must not affect subsequent calls.
+  allAuth[0].value = "mutated";
+  assert.deepEqual((await authCmd.getArgumentCompletions("ch"))?.map(({ value }) => value), ["chatgpt"]);
+
+  const cleanCmd = oracleExt.commands.get("oracle-clean");
+  assert.equal(typeof cleanCmd?.getArgumentCompletions, "function");
+  const allClean = await cleanCmd.getArgumentCompletions("");
+  assert.deepEqual(allClean?.map(({ value, label }) => ({ value, label })), [{ value: "all", label: "all" }]);
+  assert.ok(typeof allClean?.[0]?.description === "string" && allClean[0].description.length > 0);
+  assert.deepEqual((await cleanCmd.getArgumentCompletions("  L"))?.map(({ value }) => value), ["all"]);
+  assert.equal(await cleanCmd.getArgumentCompletions("all "), null);
+  assert.equal(await cleanCmd.getArgumentCompletions("all extra"), null);
+  assert.equal(await cleanCmd.getArgumentCompletions("a l"), null);
+  assert.equal(await cleanCmd.getArgumentCompletions("job-123"), null);
+
+  for (const dynamicOnly of ["oracle-status", "oracle-read", "oracle-cancel"]) {
+    const cmd = oracleExt.commands.get(dynamicOnly);
+    assert.ok(cmd, `${dynamicOnly} should be registered`);
+    assert.equal(cmd.getArgumentCompletions, undefined, `${dynamicOnly} has no fixed keyword options`);
+  }
+});

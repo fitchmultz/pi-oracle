@@ -18,7 +18,7 @@ You need:
 
 - Apple Silicon macOS or Linux
 - Node.js 24.22.3 (24.x) or 26.13.1 and newer for package install/use; platform smoke/release validation expects Node 24+ per `platform-smoke.config.mjs`
-- Suggested tested floor: `pi` 1.6.0 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
+- Suggested tested floor: `pi` 1.6.1 or newer; older pi versions are not blocked by package metadata but are outside the current validation baseline
 - Google Chrome/Chromium or another Chromium-family browser
 - ChatGPT or Grok already signed in to the configured local browser profile for the provider you plan to use
 - `agent-browser` and `tar` available on the machine; `zstd` is also required when submitting ChatGPT `.tar.zst` archives

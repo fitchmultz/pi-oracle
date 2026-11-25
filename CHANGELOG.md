@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add argument completions for `/oracle-auth` (`chatgpt`, `grok`) and `/oracle-clean` (`all`)
+- Raise the tested Pi floor to `1.6.1`
+
 ## 0.7.36 - 2026-11-21
 
 <!-- npm-release:unreleased:start -->
