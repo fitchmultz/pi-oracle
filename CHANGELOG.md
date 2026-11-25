@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.7.38 - 2026-11-25
+
+<!-- npm-release:unreleased:start -->
+<!-- npm-release:unreleased:end -->
+
+- Report Crabbox target probe failures (#105) ([14b73d7](https://github.com/fitchmultz/pi-oracle/commit/14b73d7f0842b399716808de2671fe7f2c43b5d7))
+
+### What's Changed
+* Report Crabbox target probe failures by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/105
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.37...v0.7.38
+
 ## 0.7.37 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
