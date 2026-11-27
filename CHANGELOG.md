@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+## 0.7.39 - 2026-11-27
+
+<!-- npm-release:unreleased:start -->
 - Raise the tested Pi floor to `1.7.0`
+<!-- npm-release:unreleased:end -->
+
+- chore: raise Pi floor to 1.7.0 (PEA-240) (#106) ([4fec6b0](https://github.com/fitchmultz/pi-oracle/commit/4fec6b0e65bd5ad9bdc4a13614a8092eef06f807))
+
+### What's Changed
+* chore: raise Pi floor to 1.7.0 (PEA-240) by @fitchmultz in https://github.com/fitchmultz/pi-oracle/pull/106
+
+
+**Full Changelog**: https://github.com/fitchmultz/pi-oracle/compare/v0.7.38...v0.7.39
 
 ## 0.7.38 - 2026-11-25
 
