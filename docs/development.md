@@ -4,7 +4,7 @@ The [README](../README.md) is the user entry point. Architecture and lifecycle d
 
 ## Host qualification
 
-Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers Apple Silicon macOS and Linux with Chromium-family browsers. Pi `1.6.1+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
+Required offline qualification targets are the latest stable official Pi and latest maintained fork `main`, resolving version/commit once per workflow run and retaining exact SDK/CLI evidence. Locked development dependencies are reproducible snapshots, not validation targets; the platform-smoke harness covers Apple Silicon macOS and Linux with Chromium-family browsers. Pi `1.7.0+` is the suggested tested floor for project-trust-aware package/runtime validation, but pi-bundled runtime packages remain optional wildcard peers so npm peer ranges do not block users from trying newer pi releases.
 
 Package install/use requires Node.js 24.22.3 (24.x) or 26.13.1 and newer; platform smoke/release validation expects Node 24+ per `platform-smoke.config.mjs`.
 
