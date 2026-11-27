@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Raise the tested Pi floor to `1.7.0`
+
 ## 0.7.38 - 2026-11-25
 
 <!-- npm-release:unreleased:start -->
